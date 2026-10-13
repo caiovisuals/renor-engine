@@ -1,0 +1,157 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "RenorBench v0 case",
+  "type": "object",
+  "required": [
+    "id",
+    "category",
+    "query",
+    "relevant",
+    "split"
+  ],
+  "properties": {
+    "id": {
+      "type": "string"
+    },
+    "category": {
+      "type": "string",
+      "enum": [
+        "stable_fact",
+        "semantic_paraphrase",
+        "correction_supersession",
+        "current_vs_historical",
+        "temporal",
+        "multi_hop",
+        "distractor_resistance",
+        "abstention",
+        "provenance",
+        "cross_client_continuity",
+        "negation",
+        "multi_attribute",
+        "deletion_erasure"
+      ]
+    },
+    "query": {
+      "type": "string"
+    },
+    "relevant": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "match"
+        ],
+        "properties": {
+          "match": {
+            "type": "string"
+          },
+          "relevance": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 3
+          },
+          "notePath": {
+            "type": "string"
+          },
+          "role": {
+            "type": "string",
+            "enum": [
+              "positive",
+              "supporting",
+              "forbidden"
+            ],
+            "description": "Explicit evidence role. Default: relevance >= 2 -> positive; relevance 1 -> forbidden (superseded/contradictory value that is not the answer); relevance absent -> positive. Forbidden targets never count for Hit/Recall/MRR/nDCG and trigger contradictionFirst when ranked first among gold matches."
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "expectedAnswer": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "shouldAbstain": {
+      "type": "boolean",
+      "default": false
+    },
+    "split": {
+      "type": "string",
+      "enum": [
+        "dev",
+        "test"
+      ]
+    },
+    "notes": {
+      "type": "string"
+    },
+    "requiredEvidence": {
+      "type": "array",
+      "description": "Evidence that must ALL be retrieved (multi-hop/multi-attribute); scored by recallAllAtK.",
+      "items": {
+        "type": "object",
+        "required": [
+          "match"
+        ],
+        "properties": {
+          "match": {
+            "type": "string"
+          },
+          "relevance": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 3
+          },
+          "notePath": {
+            "type": "string"
+          },
+          "role": {
+            "type": "string",
+            "enum": [
+              "positive",
+              "supporting",
+              "forbidden"
+            ],
+            "description": "Explicit evidence role. Default: relevance >= 2 -> positive; relevance 1 -> forbidden (superseded/contradictory value that is not the answer); relevance absent -> positive. Forbidden targets never count for Hit/Recall/MRR/nDCG and trigger contradictionFirst when ranked first among gold matches."
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "forbiddenEvidence": {
+      "type": "array",
+      "description": "Evidence that must NEVER be retrieved within top-10 (deletion/erasure); violations aggregate into forbiddenRetrievalRate.",
+      "items": {
+        "type": "object",
+        "required": [
+          "match"
+        ],
+        "properties": {
+          "match": {
+            "type": "string"
+          },
+          "relevance": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 3
+          },
+          "notePath": {
+            "type": "string"
+          },
+          "role": {
+            "type": "string",
+            "enum": [
+              "positive",
+              "supporting",
+              "forbidden"
+            ],
+            "description": "Explicit evidence role. Default: relevance >= 2 -> positive; relevance 1 -> forbidden (superseded/contradictory value that is not the answer); relevance absent -> positive. Forbidden targets never count for Hit/Recall/MRR/nDCG and trigger contradictionFirst when ranked first among gold matches."
+          }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
+}

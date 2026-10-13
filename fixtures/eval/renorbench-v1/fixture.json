@@ -1,0 +1,40 @@
+{
+  "version": 1,
+  "description": "RenorBench v1 dev fixture. Six heterogeneous families in one mixed vault; all identities and facts are fictional. Erasure notes are deleted after the first indexing pass, then the index is rebuilt from scratch — deletion cases must not resurface.",
+  "relativeMtimeDays": {
+    "People/Ava-current.md": 0,
+    "History/Ava-previous.md": 365,
+    "Noise/Adjacent-memories.md": 14,
+    "Topics/Music-distractors.md": 7,
+    "People/Maya-current.md": 2,
+    "People/Noah-current.md": 3,
+    "People/Lena-current.md": 1,
+    "History/Maya-history.md": 400,
+    "History/Noah-history.md": 380,
+    "History/Lena-history.md": 420,
+    "Topics/Household-music.md": 30,
+    "Topics/Household-shared.md": 20,
+    "Chats/iris-moving.md": 3,
+    "Chats/iris-old.md": 200,
+    "Chats/theo-drink.md": 10,
+    "Chats/theo-old.md": 400,
+    "Chats/bob-old.md": 150,
+    "Projects/Fjord-timeline.md": 30,
+    "Projects/Fjord-decision-log.md": 200,
+    "Projects/Fjord-v1-notes.md": 500,
+    "Projects/Fjord-status.md": 2,
+    "Projects/Fjord-plans.md": 1,
+    "Projects/Acme-team.md": 120,
+    "Preferences/rui.md": 5,
+    "Preferences/rui-old.md": 500,
+    "Preferences/nadia.md": 8,
+    "Preferences/nadia-old.md": 400,
+    "Preferences/contact-rules.md": 6,
+    "Erasure/zenith-notes.md": 20,
+    "Erasure/old-journal.md": 25
+  },
+  "deleteAfterIndex": [
+    "Erasure/zenith-notes.md",
+    "Erasure/old-journal.md"
+  ]
+}

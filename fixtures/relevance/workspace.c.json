@@ -1,0 +1,37 @@
+{
+  "description": "Third synthetic workspace, held-out only: an engineering team's project memory in the shape agents actually write through remember (task-style subjects, long multi-clause objects), so the bar is also tested on dense facts rather than short attribute values. Fictional company, no real user data.",
+  "facts": [
+    { "subject": "billing-webhook-retries task", "predicate": "design_decision_2026-09-14", "object": "Webhook deliveries to customer endpoints retry with exponential backoff (30 seconds, 2 minutes, 10 minutes, 1 hour, 6 hours) for at most 24 hours; after that the event is marked dead and surfaced in the dashboard. Retries are idempotent through the delivery id, and a 410 response permanently disables the endpoint." },
+    { "subject": "search-index-rebuild task", "predicate": "root_cause_and_fix_direction", "object": "The nightly rebuild doubled in duration because every shard was re-embedded even when its content hash was unchanged. Fix direction: skip unchanged shards using the stored content hash and re-embed only the delta. Measured on 1,000 shards: 41 minutes before, 6 minutes after." },
+    { "subject": "auth-session-expiry task", "predicate": "verified_fixes_and_followup", "object": "Sessions were expiring after 15 minutes of inactivity instead of 24 hours because the refresh cookie was set without Max-Age. Fixed and verified in staging on 2026-09-21; follow-up: add a regression test that asserts the cookie lifetime." },
+    { "subject": "mobile-offline-sync task", "predicate": "scope_decision", "object": "Offline sync ships for notes only in v1; attachments and comments are deferred to v2 because conflict resolution for binary files needs its own design. Conflicts on notes use last-writer-wins with a visible 'edited elsewhere' marker." },
+    { "subject": "customer-export task", "predicate": "status", "object": "Blocked on legal review of the export format; engineering work is complete and sits behind a feature flag named export_v2." },
+    { "subject": "customer-export task", "predicate": "owner", "object": "Dana Whitfield" },
+    { "subject": "feature-flags", "predicate": "naming_convention", "object": "Flags are snake_case, prefixed with the owning team, and removed within two releases after full rollout, for example growth_new_onboarding." },
+    { "subject": "incident-2026-09-02", "predicate": "summary", "object": "Checkout returned 502 for 14 minutes after a bad config push to the edge proxy. Rolled back by reverting the config; detection came from a synthetic monitor, not from customers." },
+    { "subject": "release-process", "predicate": "freeze_window", "object": "Code freeze starts Wednesday 12:00 UTC before a Friday release; only fixes labelled release-blocker may merge during the freeze." },
+    { "subject": "database-migrations", "predicate": "policy", "object": "Migrations must be backwards compatible with the previous release, so every schema change ships in two steps: add first, remove one release later. Never rename a column in place." },
+    { "subject": "observability", "predicate": "log_retention", "object": "Application logs are kept for 30 days in hot storage and 12 months in cold storage; audit logs are kept for 7 years." },
+    { "subject": "api-rate-limits", "predicate": "default_limits", "object": "Free tier: 60 requests per minute; paid tier: 600 requests per minute; bursts up to twice the limit for ten seconds." },
+    { "subject": "onboarding-experiment", "predicate": "result", "object": "The shorter three-step onboarding lifted activation from 41 percent to 47 percent over two weeks with 9,000 users per arm; the change shipped to 100 percent of users on 2026-09-18." },
+    { "subject": "team-ritual", "predicate": "retro_cadence", "object": "Retrospective every second Friday at 15:00, rotating facilitator, action items tracked in the team wiki." },
+    { "subject": "vendor-pdf-renderer", "predicate": "decision", "object": "Chose the self-hosted renderer over the SaaS API because per-document pricing would exceed 4,000 dollars a month at projected volume and because customer documents must not leave our network." },
+    { "subject": "payments-provider-migration", "predicate": "target_date", "object": "Cutover planned for 2026-11-04 with a two week dual-write period beforehand." },
+    { "subject": "oncall", "predicate": "escalation_policy", "object": "Page the primary first; if there is no acknowledgement within 10 minutes page the secondary; after 20 minutes page the engineering manager." },
+    { "subject": "dev-environment", "predicate": "setup_note", "object": "Run make bootstrap once; it installs the toolchain, starts the local database in Docker and seeds fixtures. Requires Docker Desktop 4.30 or newer." },
+    { "subject": "code-review", "predicate": "norm", "object": "Pull requests over 400 changed lines should be split; every PR needs one approval from the owning team and a passing CI run." },
+    { "subject": "performance-budget", "predicate": "web_vitals_targets", "object": "Largest contentful paint under 2.5 seconds and interaction to next paint under 200 milliseconds at the 75th percentile on mobile." },
+    { "subject": "analytics-pipeline", "predicate": "warehouse", "object": "Events land in the warehouse through a streaming ingest with a typical delay of five minutes; dashboards are rebuilt hourly." },
+    { "subject": "data-privacy", "predicate": "deletion_sla", "object": "Account deletion requests are completed within 30 days, including backups being aged out on the normal rotation." },
+    { "subject": "design-system", "predicate": "tokens_decision", "object": "Spacing uses a 4 pixel base scale; colors are defined as semantic tokens, never raw hex values, so dark mode needs no component changes." },
+    { "subject": "hiring", "predicate": "interview_loop", "object": "Four rounds: recruiter screen, technical screen, a system design interview and a values conversation with the engineering manager." }
+  ],
+  "notes": [
+    { "slug": "flaky", "date": "2026-09-05", "text": "Spent the afternoon debugging the flaky end-to-end test in the checkout flow; the root cause was a race between the cart fetch and the coupon service mock. Fixed by awaiting the network idle state before asserting." },
+    { "slug": "notifications", "date": "2026-09-09", "text": "Architecture review for the notifications service: agreed on a queue-backed design with at-least-once delivery and a per-user digest to avoid spamming; the open question is whether to build SMS in-house." },
+    { "slug": "monitoring", "date": "2026-09-12", "text": "Vendor call with the monitoring provider: the renewal quote came back 18 percent higher; asked for a multi-year discount and a clearer usage breakdown before signing." },
+    { "slug": "q4", "date": "2026-09-16", "text": "Planning for Q4: the three bets are the payments migration, offline sync v1 and the self-serve admin console. Capacity is the constraint, so the admin console may slip to Q1." },
+    { "slug": "postmortem", "date": "2026-09-04", "text": "Postmortem action items from the checkout 502: add config validation in CI, add a canary stage to config pushes, and page on error rate rather than on synthetic checks alone." },
+    { "slug": "reading", "date": "2026-09-23", "text": "Reading group this week covered the paper on consistent hashing; the takeaway is to prefer bounded-load variants for our cache tier." }
+  ]
+}

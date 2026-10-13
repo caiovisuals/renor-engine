@@ -1,0 +1,22 @@
+[
+  {
+    "question_id": "review-q0", "question_type": "single-session-user", "question": "What drink does Morgan prefer?", "answer": "hibiscus tea", "question_date": "2023/05/20 (Sat) 02:10",
+    "haystack_session_ids": ["drink/evidence", "unrelated"], "haystack_dates": ["2023/05/19 (Fri) 02:10", "2023/05/18 (Thu) 02:10"],
+    "haystack_sessions": [[{"role":"user","content":"My name is Morgan. My favorite beverage is hibiscus tea. I drink it every evening after dinner.","has_answer":true}], [{"role":"user","content":"The documentary discussed astronomy, telescope mirrors and the history of observatories on remote mountains."}]], "answer_session_ids": ["drink/evidence"]
+  },
+  {
+    "question_id": "review-q1", "question_type": "multi-session", "question": "Which cities did Casey live in, first and then after moving?", "answer": "Lisbon then Boston", "question_date": "2023/06/21 (Wed) 12:00",
+    "haystack_session_ids": ["old-city", "new-city"], "haystack_dates": ["2023/05/19 (Fri) 02:10", "2023/06/20 (Tue) 12:00"],
+    "haystack_sessions": [[{"role":"user","content":"Casey here. I live in Lisbon and usually walk along the river after working at the local library.","has_answer":true}], [{"role":"user","content":"Casey here again. I have now moved to Boston from Lisbon, so Boston is my current home city.","has_answer":true}]], "answer_session_ids": ["old-city", "new-city"]
+  },
+  {
+    "question_id": "review-q2_abs", "question_type": "single-session-user", "question": "What is Morgan's passport number?", "answer": "unknown", "question_date": "2023/05/20 (Sat) 02:10",
+    "haystack_session_ids": ["travel"], "haystack_dates": ["2023/05/19 (Fri) 02:10"],
+    "haystack_sessions": [[{"role":"user","content":"Morgan plans to take a train trip next summer and is researching scenic routes and museum opening hours."}]], "answer_session_ids": []
+  },
+  {
+    "question_id": "review-q3", "question_type": "single-session-assistant", "question": "Which musical instrument did the assistant recommend Riley learn?", "answer": "cello", "question_date": "2023/05/20 (Sat) 02:10",
+    "haystack_session_ids": ["recommendation", "noise"], "haystack_dates": ["2023/05/19 (Fri) 02:10", "2023/05/18 (Thu) 02:10"],
+    "haystack_sessions": [[{"role":"assistant","content":"Riley, based on your interest in orchestral string instruments I recommend learning the cello with a local teacher.","has_answer":true}], [{"role":"user","content":"The supermarket had fresh strawberries, bread, carrots and a discount on ground coffee beans this morning."}]], "answer_session_ids": ["recommendation"]
+  }
+]

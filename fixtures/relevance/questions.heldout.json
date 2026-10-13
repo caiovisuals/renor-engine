@@ -1,0 +1,1384 @@
+{
+ "split": "heldout",
+ "note": "Written after the decision rule and the bar rule were frozen on the dev split; never used to tune anything. Workspace b is a different fictional person; workspace c is an engineering team's project memory with long multi-clause facts (its 'personal-absent' questions are about what that team has not recorded). Workspace c's questions and the 'long' agent-style requests (h125-h136) were added before any held-out score existed.",
+ "questions": [
+  {
+   "id": "h001",
+   "workspace": "a",
+   "q": "What city do I live in?",
+   "lang": "en",
+   "category": "direct",
+   "expect": "answerable",
+   "answer": [
+    "Lisbon"
+   ]
+  },
+  {
+   "id": "h002",
+   "workspace": "a",
+   "q": "Which phone do I have?",
+   "lang": "en",
+   "category": "direct",
+   "expect": "answerable",
+   "answer": [
+    "Pixel 9"
+   ]
+  },
+  {
+   "id": "h003",
+   "workspace": "a",
+   "q": "What is my favorite band?",
+   "lang": "en",
+   "category": "direct",
+   "expect": "answerable",
+   "answer": [
+    "Radiohead"
+   ]
+  },
+  {
+   "id": "h004",
+   "workspace": "a",
+   "q": "What is my birthday?",
+   "lang": "en",
+   "category": "direct",
+   "expect": "answerable",
+   "answer": [
+    "March 14"
+   ]
+  },
+  {
+   "id": "h005",
+   "workspace": "a",
+   "q": "Which language did I grow up speaking?",
+   "lang": "en",
+   "category": "paraphrase",
+   "expect": "answerable",
+   "answer": [
+    "Portuguese"
+   ]
+  },
+  {
+   "id": "h006",
+   "workspace": "a",
+   "q": "What am I allergic to?",
+   "lang": "en",
+   "category": "paraphrase",
+   "expect": "answerable",
+   "answer": [
+    "Peanuts"
+   ]
+  },
+  {
+   "id": "h007",
+   "workspace": "a",
+   "q": "What do I usually drink at a cafe?",
+   "lang": "en",
+   "category": "paraphrase",
+   "expect": "answerable",
+   "answer": [
+    "Flat white"
+   ]
+  },
+  {
+   "id": "h008",
+   "workspace": "a",
+   "q": "Is there a day I keep free of meetings?",
+   "lang": "en",
+   "category": "paraphrase",
+   "expect": "answerable",
+   "answer": [
+    "Wednesday"
+   ]
+  },
+  {
+   "id": "h009",
+   "workspace": "a",
+   "q": "What runs the continuous integration for Atlas?",
+   "lang": "en",
+   "category": "paraphrase",
+   "expect": "answerable",
+   "answer": [
+    "GitHub Actions"
+   ]
+  },
+  {
+   "id": "h010",
+   "workspace": "a",
+   "q": "What programming language is the Atlas backend written in?",
+   "lang": "en",
+   "category": "paraphrase",
+   "expect": "answerable",
+   "answer": [
+    "Go"
+   ]
+  },
+  {
+   "id": "h011",
+   "workspace": "a",
+   "q": "When does the Atlas on-call rotation hand off?",
+   "lang": "en",
+   "category": "paraphrase",
+   "expect": "answerable",
+   "answer": [
+    "Monday"
+   ]
+  },
+  {
+   "id": "h012",
+   "workspace": "a",
+   "q": "How often does the mobile app ship a release?",
+   "lang": "en",
+   "category": "paraphrase",
+   "expect": "answerable",
+   "answer": [
+    "second Thursday"
+   ]
+  },
+  {
+   "id": "h013",
+   "workspace": "a",
+   "q": "At what hour do I hit the gym?",
+   "lang": "en",
+   "category": "paraphrase",
+   "expect": "answerable",
+   "answer": [
+    "07:00"
+   ]
+  },
+  {
+   "id": "h014",
+   "workspace": "a",
+   "q": "How early do I wake up?",
+   "lang": "en",
+   "category": "paraphrase",
+   "expect": "answerable",
+   "answer": [
+    "06:30"
+   ]
+  },
+  {
+   "id": "h015",
+   "workspace": "a",
+   "q": "laptop",
+   "lang": "en",
+   "category": "short",
+   "expect": "answerable",
+   "answer": [
+    "ThinkPad"
+   ]
+  },
+  {
+   "id": "h016",
+   "workspace": "a",
+   "q": "airline",
+   "lang": "en",
+   "category": "short",
+   "expect": "answerable",
+   "answer": [
+    "TAP"
+   ]
+  },
+  {
+   "id": "h017",
+   "workspace": "a",
+   "q": "wife",
+   "lang": "en",
+   "category": "short",
+   "expect": "answerable",
+   "answer": [
+    "Marta"
+   ]
+  },
+  {
+   "id": "h018",
+   "workspace": "a",
+   "q": "ci provider",
+   "lang": "en",
+   "category": "short",
+   "expect": "answerable",
+   "answer": [
+    "GitHub Actions"
+   ]
+  },
+  {
+   "id": "h019",
+   "workspace": "a",
+   "q": "Plan my Tuesday morning, I want to work out first",
+   "lang": "en",
+   "category": "partial",
+   "expect": "answerable",
+   "answer": [
+    "Tuesdays"
+   ]
+  },
+  {
+   "id": "h020",
+   "workspace": "a",
+   "q": "Schedule a team sync for Wednesday",
+   "lang": "en",
+   "category": "partial",
+   "expect": "answerable",
+   "answer": [
+    "Wednesday"
+   ]
+  },
+  {
+   "id": "h021",
+   "workspace": "a",
+   "q": "Suggest a vegetarian friendly place for a team lunch",
+   "lang": "en",
+   "category": "partial",
+   "expect": "answerable",
+   "answer": [
+    "Vegetarian"
+   ]
+  },
+  {
+   "id": "h022",
+   "workspace": "a",
+   "q": "Remind me when I land in Tokyo for the trip",
+   "lang": "en",
+   "category": "partial",
+   "expect": "answerable",
+   "answer": [
+    "Tokyo"
+   ]
+  },
+  {
+   "id": "h023",
+   "workspace": "a",
+   "q": "Come si chiama mia moglie?",
+   "lang": "it",
+   "category": "non-english",
+   "expect": "answerable",
+   "answer": [
+    "Marta"
+   ]
+  },
+  {
+   "id": "h024",
+   "workspace": "a",
+   "q": "¿En qué ciudad vivo?",
+   "lang": "es",
+   "category": "non-english",
+   "expect": "answerable",
+   "answer": [
+    "Lisbon"
+   ]
+  },
+  {
+   "id": "h025",
+   "workspace": "a",
+   "q": "A que horas acordo?",
+   "lang": "pt",
+   "category": "non-english",
+   "expect": "answerable",
+   "answer": [
+    "06:30"
+   ]
+  },
+  {
+   "id": "h026",
+   "workspace": "a",
+   "q": "Welche Programmiersprache mag ich am liebsten?",
+   "lang": "de",
+   "category": "non-english",
+   "expect": "answerable",
+   "answer": [
+    "Rust"
+   ]
+  },
+  {
+   "id": "h027",
+   "workspace": "a",
+   "q": "How many runs per week is my training plan?",
+   "lang": "en",
+   "category": "note",
+   "expect": "answerable",
+   "answer": [
+    "four runs"
+   ]
+  },
+  {
+   "id": "h028",
+   "workspace": "a",
+   "q": "What changed about billing recently?",
+   "lang": "en",
+   "category": "note",
+   "expect": "answerable",
+   "answer": [
+    "customer portal"
+   ]
+  },
+  {
+   "id": "h029",
+   "workspace": "a",
+   "q": "Quando é a reunião com o contabilista?",
+   "lang": "pt",
+   "category": "note",
+   "expect": "answerable",
+   "answer": [
+    "sexta"
+   ]
+  },
+  {
+   "id": "h030",
+   "workspace": "a",
+   "q": "How do I center a div in CSS?",
+   "lang": "en",
+   "category": "off-topic",
+   "expect": "unanswerable"
+  },
+  {
+   "id": "h031",
+   "workspace": "a",
+   "q": "What year did the Berlin Wall fall?",
+   "lang": "en",
+   "category": "off-topic",
+   "expect": "unanswerable"
+  },
+  {
+   "id": "h032",
+   "workspace": "a",
+   "q": "Convert 72 Fahrenheit to Celsius",
+   "lang": "en",
+   "category": "off-topic",
+   "expect": "unanswerable"
+  },
+  {
+   "id": "h033",
+   "workspace": "a",
+   "q": "Who painted the Mona Lisa?",
+   "lang": "en",
+   "category": "off-topic",
+   "expect": "unanswerable"
+  },
+  {
+   "id": "h034",
+   "workspace": "a",
+   "q": "Explain how a transformer neural network works",
+   "lang": "en",
+   "category": "off-topic",
+   "expect": "unanswerable"
+  },
+  {
+   "id": "h035",
+   "workspace": "a",
+   "q": "Suggest a name for a new bakery",
+   "lang": "en",
+   "category": "off-topic",
+   "expect": "unanswerable"
+  },
+  {
+   "id": "h036",
+   "workspace": "a",
+   "q": "What is my mother's phone number?",
+   "lang": "en",
+   "category": "personal-absent",
+   "expect": "unanswerable"
+  },
+  {
+   "id": "h037",
+   "workspace": "a",
+   "q": "What is my gym membership card number?",
+   "lang": "en",
+   "category": "personal-absent",
+   "expect": "unanswerable"
+  },
+  {
+   "id": "h038",
+   "workspace": "a",
+   "q": "What was my first job?",
+   "lang": "en",
+   "category": "personal-absent",
+   "expect": "unanswerable"
+  },
+  {
+   "id": "h039",
+   "workspace": "a",
+   "q": "What is my favorite restaurant?",
+   "lang": "en",
+   "category": "personal-absent",
+   "expect": "unanswerable"
+  },
+  {
+   "id": "h040",
+   "workspace": "a",
+   "q": "What is my home wifi password?",
+   "lang": "en",
+   "category": "personal-absent",
+   "expect": "unanswerable"
+  },
+  {
+   "id": "h041",
+   "workspace": "a",
+   "q": "How old is my dog?",
+   "lang": "en",
+   "category": "near-miss",
+   "expect": "unanswerable"
+  },
+  {
+   "id": "h042",
+   "workspace": "a",
+   "q": "What is the Atlas launch budget?",
+   "lang": "en",
+   "category": "near-miss",
+   "expect": "unanswerable"
+  },
+  {
+   "id": "h043",
+   "workspace": "a",
+   "q": "Which hotel am I staying at in Tokyo?",
+   "lang": "en",
+   "category": "near-miss",
+   "expect": "unanswerable"
+  },
+  {
+   "id": "h044",
+   "workspace": "a",
+   "q": "What is Priya's email address?",
+   "lang": "en",
+   "category": "near-miss",
+   "expect": "unanswerable"
+  },
+  {
+   "id": "h045",
+   "workspace": "b",
+   "q": "Where do I teach?",
+   "lang": "en",
+   "category": "direct",
+   "expect": "answerable",
+   "answer": [
+    "Maple Ridge"
+   ]
+  },
+  {
+   "id": "h046",
+   "workspace": "b",
+   "q": "What is my cat's name?",
+   "lang": "en",
+   "category": "direct",
+   "expect": "answerable",
+   "answer": [
+    "Mochi"
+   ]
+  },
+  {
+   "id": "h047",
+   "workspace": "b",
+   "q": "What is my partner's name?",
+   "lang": "en",
+   "category": "direct",
+   "expect": "answerable",
+   "answer": [
+    "Jamal"
+   ]
+  },
+  {
+   "id": "h048",
+   "workspace": "b",
+   "q": "What tea do I like?",
+   "lang": "en",
+   "category": "paraphrase",
+   "expect": "answerable",
+   "answer": [
+    "Earl Grey"
+   ]
+  },
+  {
+   "id": "h049",
+   "workspace": "b",
+   "q": "When do I grade papers?",
+   "lang": "en",
+   "category": "paraphrase",
+   "expect": "answerable",
+   "answer": [
+    "Sunday"
+   ]
+  },
+  {
+   "id": "h050",
+   "workspace": "b",
+   "q": "How do I get to school?",
+   "lang": "en",
+   "category": "paraphrase",
+   "expect": "answerable",
+   "answer": [
+    "Streetcar"
+   ]
+  },
+  {
+   "id": "h051",
+   "workspace": "b",
+   "q": "Do I have any allergies?",
+   "lang": "en",
+   "category": "paraphrase",
+   "expect": "answerable",
+   "answer": [
+    "shellfish"
+   ]
+  },
+  {
+   "id": "h052",
+   "workspace": "b",
+   "q": "Which languages do I speak?",
+   "lang": "en",
+   "category": "paraphrase",
+   "expect": "answerable",
+   "answer": [
+    "French"
+   ]
+  },
+  {
+   "id": "h053",
+   "workspace": "b",
+   "q": "What phone do I carry?",
+   "lang": "en",
+   "category": "paraphrase",
+   "expect": "answerable",
+   "answer": [
+    "iPhone"
+   ]
+  },
+  {
+   "id": "h054",
+   "workspace": "b",
+   "q": "When does the school year end?",
+   "lang": "en",
+   "category": "paraphrase",
+   "expect": "answerable",
+   "answer": [
+    "June 26"
+   ]
+  },
+  {
+   "id": "h055",
+   "workspace": "b",
+   "q": "Who runs my department?",
+   "lang": "en",
+   "category": "paraphrase",
+   "expect": "answerable",
+   "answer": [
+    "Alvarez"
+   ]
+  },
+  {
+   "id": "h056",
+   "workspace": "b",
+   "q": "Which hockey team do I follow?",
+   "lang": "en",
+   "category": "paraphrase",
+   "expect": "answerable",
+   "answer": [
+    "Maple Leafs"
+   ]
+  },
+  {
+   "id": "h057",
+   "workspace": "b",
+   "q": "What do I do on Wednesday nights?",
+   "lang": "en",
+   "category": "paraphrase",
+   "expect": "answerable",
+   "answer": [
+    "Pottery"
+   ]
+  },
+  {
+   "id": "h058",
+   "workspace": "b",
+   "q": "cat",
+   "lang": "en",
+   "category": "short",
+   "expect": "answerable",
+   "answer": [
+    "Mochi"
+   ]
+  },
+  {
+   "id": "h059",
+   "workspace": "b",
+   "q": "rent",
+   "lang": "en",
+   "category": "short",
+   "expect": "answerable",
+   "answer": [
+    "1,850"
+   ]
+  },
+  {
+   "id": "h060",
+   "workspace": "b",
+   "q": "pharmacy",
+   "lang": "en",
+   "category": "short",
+   "expect": "answerable",
+   "answer": [
+    "Shoppers"
+   ]
+  },
+  {
+   "id": "h061",
+   "workspace": "b",
+   "q": "bank",
+   "lang": "en",
+   "category": "short",
+   "expect": "answerable",
+   "answer": [
+    "TD Canada"
+   ]
+  },
+  {
+   "id": "h062",
+   "workspace": "b",
+   "q": "Book a dinner table for Friday with Jamal, we have to avoid shellfish",
+   "lang": "en",
+   "category": "partial",
+   "expect": "answerable",
+   "answer": [
+    "shellfish"
+   ]
+  },
+  {
+   "id": "h063",
+   "workspace": "b",
+   "q": "Draft an email to parents about the upcoming field trip",
+   "lang": "en",
+   "category": "partial",
+   "expect": "answerable",
+   "answer": [
+    "November 14"
+   ]
+  },
+  {
+   "id": "h064",
+   "workspace": "b",
+   "q": "What should I pack for lunch tomorrow?",
+   "lang": "en",
+   "category": "partial",
+   "expect": "answerable",
+   "answer": [
+    "leftovers"
+   ]
+  },
+  {
+   "id": "h065",
+   "workspace": "b",
+   "q": "Help me prepare for parent-teacher night",
+   "lang": "en",
+   "category": "partial",
+   "expect": "answerable",
+   "answer": [
+    "October 22"
+   ]
+  },
+  {
+   "id": "h066",
+   "workspace": "b",
+   "q": "Où est-ce que j'habite ?",
+   "lang": "fr",
+   "category": "non-english",
+   "expect": "answerable",
+   "answer": [
+    "Toronto"
+   ]
+  },
+  {
+   "id": "h067",
+   "workspace": "b",
+   "q": "¿Cómo se llama mi gato?",
+   "lang": "es",
+   "category": "non-english",
+   "expect": "answerable",
+   "answer": [
+    "Mochi"
+   ]
+  },
+  {
+   "id": "h068",
+   "workspace": "b",
+   "q": "Qual é o meu banco?",
+   "lang": "pt",
+   "category": "non-english",
+   "expect": "answerable",
+   "answer": [
+    "TD Canada"
+   ]
+  },
+  {
+   "id": "h069",
+   "workspace": "b",
+   "q": "What happened with the acid spill in the lab?",
+   "lang": "en",
+   "category": "note",
+   "expect": "answerable",
+   "answer": [
+    "bicarbonate"
+   ]
+  },
+  {
+   "id": "h070",
+   "workspace": "b",
+   "q": "What is changing in Grade 11 physics?",
+   "lang": "en",
+   "category": "note",
+   "expect": "answerable",
+   "answer": [
+    "project based"
+   ]
+  },
+  {
+   "id": "h071",
+   "workspace": "b",
+   "q": "When is mom's surgery?",
+   "lang": "en",
+   "category": "note",
+   "expect": "answerable",
+   "answer": [
+    "November"
+   ]
+  },
+  {
+   "id": "h072",
+   "workspace": "b",
+   "q": "What is the molar mass of sodium chloride?",
+   "lang": "en",
+   "category": "off-topic",
+   "expect": "unanswerable"
+  },
+  {
+   "id": "h073",
+   "workspace": "b",
+   "q": "Who won the Stanley Cup in 1994?",
+   "lang": "en",
+   "category": "off-topic",
+   "expect": "unanswerable"
+  },
+  {
+   "id": "h074",
+   "workspace": "b",
+   "q": "How do I reverse a string in JavaScript?",
+   "lang": "en",
+   "category": "off-topic",
+   "expect": "unanswerable"
+  },
+  {
+   "id": "h075",
+   "workspace": "b",
+   "q": "What is the tallest mountain in South America?",
+   "lang": "en",
+   "category": "off-topic",
+   "expect": "unanswerable"
+  },
+  {
+   "id": "h076",
+   "workspace": "b",
+   "q": "Translate 'thank you' into Italian",
+   "lang": "en",
+   "category": "off-topic",
+   "expect": "unanswerable"
+  },
+  {
+   "id": "h077",
+   "workspace": "b",
+   "q": "Recommend a good science fiction movie for tonight",
+   "lang": "en",
+   "category": "off-topic",
+   "expect": "unanswerable"
+  },
+  {
+   "id": "h078",
+   "workspace": "b",
+   "q": "What is my student loan balance?",
+   "lang": "en",
+   "category": "personal-absent",
+   "expect": "unanswerable"
+  },
+  {
+   "id": "h079",
+   "workspace": "b",
+   "q": "What is my family doctor's name?",
+   "lang": "en",
+   "category": "personal-absent",
+   "expect": "unanswerable"
+  },
+  {
+   "id": "h080",
+   "workspace": "b",
+   "q": "What is my favorite color?",
+   "lang": "en",
+   "category": "personal-absent",
+   "expect": "unanswerable"
+  },
+  {
+   "id": "h081",
+   "workspace": "b",
+   "q": "What is my health card number?",
+   "lang": "en",
+   "category": "personal-absent",
+   "expect": "unanswerable"
+  },
+  {
+   "id": "h082",
+   "workspace": "b",
+   "q": "What is my mother's first name?",
+   "lang": "en",
+   "category": "personal-absent",
+   "expect": "unanswerable"
+  },
+  {
+   "id": "h083",
+   "workspace": "b",
+   "q": "How old is my cat?",
+   "lang": "en",
+   "category": "near-miss",
+   "expect": "unanswerable"
+  },
+  {
+   "id": "h084",
+   "workspace": "b",
+   "q": "What does Jamal do for work?",
+   "lang": "en",
+   "category": "near-miss",
+   "expect": "unanswerable"
+  },
+  {
+   "id": "h085",
+   "workspace": "b",
+   "q": "How many students are in Physics 12?",
+   "lang": "en",
+   "category": "near-miss",
+   "expect": "unanswerable"
+  },
+  {
+   "id": "h086",
+   "workspace": "b",
+   "q": "Which school did I attend as a kid?",
+   "lang": "en",
+   "category": "near-miss",
+   "expect": "unanswerable"
+  },
+  {
+   "id": "h087",
+   "workspace": "c",
+   "q": "What is the retry schedule for billing webhooks?",
+   "lang": "en",
+   "category": "direct",
+   "expect": "answerable",
+   "answer": [
+    "exponential backoff"
+   ]
+  },
+  {
+   "id": "h088",
+   "workspace": "c",
+   "q": "Who owns the customer export task?",
+   "lang": "en",
+   "category": "direct",
+   "expect": "answerable",
+   "answer": [
+    "Dana Whitfield"
+   ]
+  },
+  {
+   "id": "h089",
+   "workspace": "c",
+   "q": "When does the code freeze start before a release?",
+   "lang": "en",
+   "category": "direct",
+   "expect": "answerable",
+   "answer": [
+    "Wednesday 12:00"
+   ]
+  },
+  {
+   "id": "h090",
+   "workspace": "c",
+   "q": "What are the default API rate limits?",
+   "lang": "en",
+   "category": "direct",
+   "expect": "answerable",
+   "answer": [
+    "60 requests per minute"
+   ]
+  },
+  {
+   "id": "h091",
+   "workspace": "c",
+   "q": "Why did the nightly search rebuild get so slow?",
+   "lang": "en",
+   "category": "paraphrase",
+   "expect": "answerable",
+   "answer": [
+    "re-embedded"
+   ]
+  },
+  {
+   "id": "h092",
+   "workspace": "c",
+   "q": "For how long do we keep application logs before moving them to cold storage?",
+   "lang": "en",
+   "category": "paraphrase",
+   "expect": "answerable",
+   "answer": [
+    "30 days"
+   ]
+  },
+  {
+   "id": "h093",
+   "workspace": "c",
+   "q": "What happened to checkout during the early September outage?",
+   "lang": "en",
+   "category": "paraphrase",
+   "expect": "answerable",
+   "answer": [
+    "502"
+   ]
+  },
+  {
+   "id": "h094",
+   "workspace": "c",
+   "q": "Who do we page if the primary on-call does not respond?",
+   "lang": "en",
+   "category": "paraphrase",
+   "expect": "answerable",
+   "answer": [
+    "secondary"
+   ]
+  },
+  {
+   "id": "h095",
+   "workspace": "c",
+   "q": "How should I name a new feature flag?",
+   "lang": "en",
+   "category": "paraphrase",
+   "expect": "answerable",
+   "answer": [
+    "snake_case"
+   ]
+  },
+  {
+   "id": "h096",
+   "workspace": "c",
+   "q": "Can I rename a database column directly?",
+   "lang": "en",
+   "category": "paraphrase",
+   "expect": "answerable",
+   "answer": [
+    "Never rename a column"
+   ]
+  },
+  {
+   "id": "h097",
+   "workspace": "c",
+   "q": "Why did we skip the SaaS PDF service?",
+   "lang": "en",
+   "category": "paraphrase",
+   "expect": "answerable",
+   "answer": [
+    "self-hosted"
+   ]
+  },
+  {
+   "id": "h098",
+   "workspace": "c",
+   "q": "When is the payments cutover?",
+   "lang": "en",
+   "category": "paraphrase",
+   "expect": "answerable",
+   "answer": [
+    "2026-11-04"
+   ]
+  },
+  {
+   "id": "h099",
+   "workspace": "c",
+   "q": "What did the shorter onboarding do to activation?",
+   "lang": "en",
+   "category": "paraphrase",
+   "expect": "answerable",
+   "answer": [
+    "47 percent"
+   ]
+  },
+  {
+   "id": "h100",
+   "workspace": "c",
+   "q": "webhooks",
+   "lang": "en",
+   "category": "short",
+   "expect": "answerable",
+   "answer": [
+    "backoff"
+   ]
+  },
+  {
+   "id": "h101",
+   "workspace": "c",
+   "q": "retro",
+   "lang": "en",
+   "category": "short",
+   "expect": "answerable",
+   "answer": [
+    "second Friday"
+   ]
+  },
+  {
+   "id": "h102",
+   "workspace": "c",
+   "q": "deletion",
+   "lang": "en",
+   "category": "short",
+   "expect": "answerable",
+   "answer": [
+    "30 days"
+   ]
+  },
+  {
+   "id": "h103",
+   "workspace": "c",
+   "q": "rate limits",
+   "lang": "en",
+   "category": "short",
+   "expect": "answerable",
+   "answer": [
+    "600 requests"
+   ]
+  },
+  {
+   "id": "h104",
+   "workspace": "c",
+   "q": "Help me write a runbook for when a customer endpoint keeps failing",
+   "lang": "en",
+   "category": "partial",
+   "expect": "answerable",
+   "answer": [
+    "410"
+   ]
+  },
+  {
+   "id": "h105",
+   "workspace": "c",
+   "q": "I'm setting up my laptop for the team's repo, where do I start?",
+   "lang": "en",
+   "category": "partial",
+   "expect": "answerable",
+   "answer": [
+    "make bootstrap"
+   ]
+  },
+  {
+   "id": "h106",
+   "workspace": "c",
+   "q": "Draft the agenda for next week's team retrospective",
+   "lang": "en",
+   "category": "partial",
+   "expect": "answerable",
+   "answer": [
+    "15:00"
+   ]
+  },
+  {
+   "id": "h107",
+   "workspace": "c",
+   "q": "Qual é a política de retenção de logs?",
+   "lang": "pt",
+   "category": "non-english",
+   "expect": "answerable",
+   "answer": [
+    "30 days"
+   ]
+  },
+  {
+   "id": "h108",
+   "workspace": "c",
+   "q": "¿Cuántas rondas tiene el proceso de entrevistas?",
+   "lang": "es",
+   "category": "non-english",
+   "expect": "answerable",
+   "answer": [
+    "Four rounds"
+   ]
+  },
+  {
+   "id": "h109",
+   "workspace": "c",
+   "q": "Quand commence le gel du code avant une release ?",
+   "lang": "fr",
+   "category": "non-english",
+   "expect": "answerable",
+   "answer": [
+    "Wednesday 12:00"
+   ]
+  },
+  {
+   "id": "h110",
+   "workspace": "c",
+   "q": "What caused the flaky checkout end-to-end test?",
+   "lang": "en",
+   "category": "note",
+   "expect": "answerable",
+   "answer": [
+    "race"
+   ]
+  },
+  {
+   "id": "h111",
+   "workspace": "c",
+   "q": "What are the three bets for Q4?",
+   "lang": "en",
+   "category": "note",
+   "expect": "answerable",
+   "answer": [
+    "payments migration"
+   ]
+  },
+  {
+   "id": "h112",
+   "workspace": "c",
+   "q": "How much higher was the monitoring vendor's renewal quote?",
+   "lang": "en",
+   "category": "note",
+   "expect": "answerable",
+   "answer": [
+    "18 percent"
+   ]
+  },
+  {
+   "id": "h113",
+   "workspace": "c",
+   "q": "What is the difference between a mutex and a semaphore?",
+   "lang": "en",
+   "category": "off-topic",
+   "expect": "unanswerable"
+  },
+  {
+   "id": "h114",
+   "workspace": "c",
+   "q": "How do I undo my last git commit?",
+   "lang": "en",
+   "category": "off-topic",
+   "expect": "unanswerable"
+  },
+  {
+   "id": "h115",
+   "workspace": "c",
+   "q": "What's the weather like in Berlin today?",
+   "lang": "en",
+   "category": "off-topic",
+   "expect": "unanswerable"
+  },
+  {
+   "id": "h116",
+   "workspace": "c",
+   "q": "Who wrote the novel Dune?",
+   "lang": "en",
+   "category": "off-topic",
+   "expect": "unanswerable"
+  },
+  {
+   "id": "h117",
+   "workspace": "c",
+   "q": "What is the SLA for enterprise customers?",
+   "lang": "en",
+   "category": "personal-absent",
+   "expect": "unanswerable"
+  },
+  {
+   "id": "h118",
+   "workspace": "c",
+   "q": "Who is our CTO?",
+   "lang": "en",
+   "category": "personal-absent",
+   "expect": "unanswerable"
+  },
+  {
+   "id": "h119",
+   "workspace": "c",
+   "q": "Which cloud provider do we host on?",
+   "lang": "en",
+   "category": "personal-absent",
+   "expect": "unanswerable"
+  },
+  {
+   "id": "h120",
+   "workspace": "c",
+   "q": "What is the refund policy?",
+   "lang": "en",
+   "category": "personal-absent",
+   "expect": "unanswerable"
+  },
+  {
+   "id": "h121",
+   "workspace": "c",
+   "q": "What is the rate limit for enterprise customers?",
+   "lang": "en",
+   "category": "near-miss",
+   "expect": "unanswerable"
+  },
+  {
+   "id": "h122",
+   "workspace": "c",
+   "q": "Who owns the offline sync task?",
+   "lang": "en",
+   "category": "near-miss",
+   "expect": "unanswerable"
+  },
+  {
+   "id": "h123",
+   "workspace": "c",
+   "q": "What is the retry limit for failed push notifications?",
+   "lang": "en",
+   "category": "near-miss",
+   "expect": "unanswerable"
+  },
+  {
+   "id": "h124",
+   "workspace": "c",
+   "q": "Which payments provider are we migrating to?",
+   "lang": "en",
+   "category": "near-miss",
+   "expect": "unanswerable"
+  },
+  {
+   "id": "h125",
+   "workspace": "a",
+   "q": "I'm putting together a plan for next weekend: I want to take the dog out for a long walk in the morning, then find somewhere for lunch with my wife, and I'd like to be back in time to work on some code in the evening. Can you suggest an outline?",
+   "lang": "en",
+   "category": "long",
+   "expect": "answerable",
+   "answer": [
+    "Biscuit",
+    "Marta",
+    "Vegetarian"
+   ]
+  },
+  {
+   "id": "h126",
+   "workspace": "a",
+   "q": "We're about to start the next sprint and I need to write the kickoff message for the team. It should mention the standup time, the sprint length and who the engineering manager is, in a friendly tone.",
+   "lang": "en",
+   "category": "long",
+   "expect": "answerable",
+   "answer": [
+    "09:45",
+    "Two weeks",
+    "Priya Raman"
+   ]
+  },
+  {
+   "id": "h127",
+   "workspace": "a",
+   "q": "Please review this deployment checklist for the Atlas project and tell me whether the steps match how we usually ship to staging, and which cloud region and CI system are involved.",
+   "lang": "en",
+   "category": "long",
+   "expect": "answerable",
+   "answer": [
+    "make deploy-staging",
+    "eu-west-1",
+    "GitHub Actions"
+   ]
+  },
+  {
+   "id": "h128",
+   "workspace": "a",
+   "q": "Write a cover letter for a barista job at a small independent coffee roaster, emphasizing customer service and attention to detail, and keep it under three hundred words.",
+   "lang": "en",
+   "category": "long",
+   "expect": "unanswerable"
+  },
+  {
+   "id": "h129",
+   "workspace": "b",
+   "q": "I have a long day tomorrow: school starts early, I need to mark papers in the evening, and I still have to pick up something for dinner that Jamal and I can both eat. Could you help me plan the day hour by hour?",
+   "lang": "en",
+   "category": "long",
+   "expect": "answerable",
+   "answer": [
+    "08:15",
+    "Jamal",
+    "shellfish"
+   ]
+  },
+  {
+   "id": "h130",
+   "workspace": "b",
+   "q": "Can you draft a note to the parents about the upcoming class trip? Mention the date, the permission slip deadline and that the bus is booked, and keep it short and warm.",
+   "lang": "en",
+   "category": "long",
+   "expect": "answerable",
+   "answer": [
+    "November 14",
+    "Permission slips",
+    "bus"
+   ]
+  },
+  {
+   "id": "h131",
+   "workspace": "b",
+   "q": "Thinking about my commute: I take public transport and then walk the last bit, and I wonder whether it would make sense to switch to cycling once I get the new bike I'm saving for.",
+   "lang": "en",
+   "category": "long",
+   "expect": "answerable",
+   "answer": [
+    "Streetcar",
+    "900"
+   ]
+  },
+  {
+   "id": "h132",
+   "workspace": "b",
+   "q": "Write me a short poem about autumn leaves in the style of a haiku sequence, with a title for each verse and a closing line that ties them all together.",
+   "lang": "en",
+   "category": "long",
+   "expect": "unanswerable"
+  },
+  {
+   "id": "h133",
+   "workspace": "c",
+   "q": "I'm reviewing our incident readiness before the release: what's the escalation order if the primary on-call doesn't answer, when does the code freeze begin, and how long do we keep application logs for debugging?",
+   "lang": "en",
+   "category": "long",
+   "expect": "answerable",
+   "answer": [
+    "secondary",
+    "Wednesday 12:00",
+    "30 days"
+   ]
+  },
+  {
+   "id": "h134",
+   "workspace": "c",
+   "q": "Can you write a short design note explaining why we retry webhook deliveries with backoff, how long we keep retrying, and what happens when a customer endpoint keeps returning errors?",
+   "lang": "en",
+   "category": "long",
+   "expect": "answerable",
+   "answer": [
+    "exponential backoff",
+    "24 hours",
+    "410"
+   ]
+  },
+  {
+   "id": "h135",
+   "workspace": "c",
+   "q": "Help me prepare the Q4 planning discussion: remind me of the main bets, how the payments cutover is scheduled, and what the main risk to the admin console is.",
+   "lang": "en",
+   "category": "long",
+   "expect": "answerable",
+   "answer": [
+    "payments migration",
+    "2026-11-04",
+    "Capacity"
+   ]
+  },
+  {
+   "id": "h136",
+   "workspace": "c",
+   "q": "Write a short toast for the team's year-end party that thanks everyone, jokes gently about the long meetings, and ends with a wish for a quiet holiday season.",
+   "lang": "en",
+   "category": "long",
+   "expect": "unanswerable"
+  }
+ ]
+}

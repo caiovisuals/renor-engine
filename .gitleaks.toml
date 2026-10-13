@@ -1,0 +1,26 @@
+# Secret-scan configuration for the public repository.
+#
+# The default gitleaks rules stay on. The only allowlisted paths are test and
+# eval files that hold deliberately fake credentials (planted so the secret
+# scanner and the secret-guard evals have something to catch). Anything outside
+# these exact files is scanned normally, so a real key committed anywhere else
+# still fails.
+title = "renor-engine"
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "synthetic secret-shaped fixtures used by tests and evals"
+paths = [
+  '''^scripts/eval/secret-guard/plantedSet\.ts$''',
+  '''^scripts/eval/secret-guard/investigationSets\.ts$''',
+  '''^scripts/eval/lanej/gen-secrets\.ts$''',
+  '''^tests/chatgpt_import/test_chatgpt_import\.py$''',
+  '''^tests/cli/lifecycle\.test\.ts$''',
+  '''^tests/review/gate1a-delta-repros\.test\.ts$''',
+  '''^tests/eval/secret-guard-measure\.test\.ts$''',
+  '''^tests/extraction/secretScanner\.test\.ts$''',
+  '''^tests/memory/hive-breaker\.test\.ts$''',
+  '''^tests/mvp/build-identity\.test\.ts$''',
+]

@@ -1,0 +1,95 @@
+import type { EvidenceChat, EvidenceChatRequest, EvidenceChatResponse } from './secondPass';
+
+/**
+ * Ollama-compatible chat client for the evidence extractor.
+ *
+ * Mirrors the eval extractor's call shape (temperature 0, JSON-by-instruction,
+ * 180s timeout, retry with exponential backoff). Keys rotate round-robin so a
+ * single throttled free-tier key cannot stall the call.
+ */
+export interface OllamaChatOptions {
+  baseUrl?: string;
+  keys: string[];
+  timeoutMs?: number;
+  maxRetries?: number;
+}
+
+/** The endpoint called when no base URL is given: Ollama Cloud. */
+export const DEFAULT_CHAT_BASE_URL = 'https://ollama.com/v1';
+
+export function createOllamaChat(opts: OllamaChatOptions): EvidenceChat {
+  const baseUrl = (opts.baseUrl ?? DEFAULT_CHAT_BASE_URL).replace(/\/+$/, '');
+  const keys = opts.keys.filter(k => k && k.trim());
+  if (keys.length === 0) throw new Error('createOllamaChat requires at least one API key');
+  const timeoutMs = opts.timeoutMs ?? 180_000;
+  const maxRetries = opts.maxRetries ?? 3;
+  let counter = 0;
+
+  return async (request: EvidenceChatRequest): Promise<EvidenceChatResponse> => {
+    const body = JSON.stringify({
+      model: request.model,
+      messages: request.messages,
+      temperature: request.temperature,
+      // Only when the caller asked for JSON mode. Evidence calls omit it.
+      ...(request.response_format ? { response_format: request.response_format } : {}),
+      // Only when the caller set a bound, so an unbounded request is the same bytes: the session router always sets
+      // a ceiling, the evidence pass only when the operator set one (RENOR_EVIDENCE_MAX_TOKENS /
+      // RENOR_EVIDENCE_REASONING_EFFORT), the extractors never.
+      ...(request.max_tokens !== undefined ? { max_tokens: request.max_tokens } : {}),
+      ...(request.reasoning_effort !== undefined ? { reasoning_effort: request.reasoning_effort } : {}),
+    });
+    let lastError: Error | undefined;
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
+      let retryable = true;
+      const key = keys[counter++ % keys.length];
+      const started = Date.now();
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), timeoutMs);
+      try {
+        const resp = await fetch(`${baseUrl}/chat/completions`, {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
+          body,
+          signal: controller.signal,
+        });
+        if (resp.status === 429 || resp.status >= 500) {
+          lastError = new Error(`extractor provider returned ${resp.status}`);
+          await resp.text().catch(() => '');
+          throw lastError;
+        }
+        if (!resp.ok) {
+          // 4xx other than 429 is the provider rejecting this request.
+          // Retrying it only spends the key pool and the backoff.
+          retryable = false;
+          lastError = new Error(`extractor provider returned ${resp.status}: ${(await resp.text().catch(() => '')).slice(0, 200)}`);
+          throw lastError;
+        }
+        const data = await resp.json() as {
+          choices?: Array<{ message?: { content?: string }; finish_reason?: string }>;
+          usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number };
+        };
+        const content = data.choices?.[0]?.message?.content;
+        const finishReason = data.choices?.[0]?.finish_reason;
+        if (typeof content !== 'string') {
+          // `length` here is a reasoning model that spent its whole budget thinking.
+          throw new Error(`extractor provider response missing choices[0].message.content${typeof finishReason === 'string' ? ` (finish_reason=${finishReason})` : ''}`);
+        }
+        return {
+          content,
+          promptTokens: data.usage?.prompt_tokens,
+          completionTokens: data.usage?.completion_tokens,
+          totalTokens: data.usage?.total_tokens,
+          latencyMs: Date.now() - started,
+          ...(typeof finishReason === 'string' ? { finishReason } : {}),
+        };
+      } catch (err) {
+        lastError = err instanceof Error ? err : new Error(String(err));
+        if (!retryable || attempt >= maxRetries) break;
+        await new Promise(resolve => setTimeout(resolve, 2 ** attempt * 1000));
+      } finally {
+        clearTimeout(timer);
+      }
+    }
+    throw lastError ?? new Error('extractor call failed');
+  };
+}

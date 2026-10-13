@@ -1,0 +1,674 @@
+{
+ "split": "dev",
+ "note": "Authored before any model was run; labels follow the fixture workspace, never model output.",
+ "questions": [
+  {
+   "id": "d001",
+   "q": "What is my dog's name?",
+   "lang": "en",
+   "category": "direct",
+   "expect": "answerable",
+   "answer": [
+    "Biscuit"
+   ]
+  },
+  {
+   "id": "d002",
+   "q": "What database does Atlas use in production?",
+   "lang": "en",
+   "category": "direct",
+   "expect": "answerable",
+   "answer": [
+    "Postgres 16"
+   ]
+  },
+  {
+   "id": "d003",
+   "q": "What time is the team standup?",
+   "lang": "en",
+   "category": "direct",
+   "expect": "answerable",
+   "answer": [
+    "09:45"
+   ]
+  },
+  {
+   "id": "d004",
+   "q": "Which package manager do I prefer for TypeScript?",
+   "lang": "en",
+   "category": "direct",
+   "expect": "answerable",
+   "answer": [
+    "Bun"
+   ]
+  },
+  {
+   "id": "d005",
+   "q": "What is my wife's name?",
+   "lang": "en",
+   "category": "direct",
+   "expect": "answerable",
+   "answer": [
+    "Marta"
+   ]
+  },
+  {
+   "id": "d006",
+   "q": "What is the launch date for Atlas?",
+   "lang": "en",
+   "category": "direct",
+   "expect": "answerable",
+   "answer": [
+    "November 12"
+   ]
+  },
+  {
+   "id": "d007",
+   "q": "Where am I based?",
+   "lang": "en",
+   "category": "paraphrase",
+   "expect": "answerable",
+   "answer": [
+    "Lisbon"
+   ]
+  },
+  {
+   "id": "d008",
+   "q": "Where do I work?",
+   "lang": "en",
+   "category": "paraphrase",
+   "expect": "answerable",
+   "answer": [
+    "Northwind"
+   ]
+  },
+  {
+   "id": "d009",
+   "q": "What do I do for a living?",
+   "lang": "en",
+   "category": "paraphrase",
+   "expect": "answerable",
+   "answer": [
+    "Staff engineer"
+   ]
+  },
+  {
+   "id": "d010",
+   "q": "Do I eat meat?",
+   "lang": "en",
+   "category": "paraphrase",
+   "expect": "answerable",
+   "answer": [
+    "Vegetarian"
+   ]
+  },
+  {
+   "id": "d011",
+   "q": "What computer do I use?",
+   "lang": "en",
+   "category": "paraphrase",
+   "expect": "answerable",
+   "answer": [
+    "ThinkPad"
+   ]
+  },
+  {
+   "id": "d012",
+   "q": "How do I get to work?",
+   "lang": "en",
+   "category": "paraphrase",
+   "expect": "answerable",
+   "answer": [
+    "Bicycle"
+   ]
+  },
+  {
+   "id": "d013",
+   "q": "Which editor do I code in?",
+   "lang": "en",
+   "category": "paraphrase",
+   "expect": "answerable",
+   "answer": [
+    "Neovim"
+   ]
+  },
+  {
+   "id": "d014",
+   "q": "What language do I like most for programming?",
+   "lang": "en",
+   "category": "paraphrase",
+   "expect": "answerable",
+   "answer": [
+    "Rust"
+   ]
+  },
+  {
+   "id": "d015",
+   "q": "When do I usually get up?",
+   "lang": "en",
+   "category": "paraphrase",
+   "expect": "answerable",
+   "answer": [
+    "06:30"
+   ]
+  },
+  {
+   "id": "d016",
+   "q": "How many reviewers must approve a pull request on Atlas?",
+   "lang": "en",
+   "category": "paraphrase",
+   "expect": "answerable",
+   "answer": [
+    "required_pr_approvals"
+   ]
+  },
+  {
+   "id": "d017",
+   "q": "Which cloud region does Atlas run in?",
+   "lang": "en",
+   "category": "paraphrase",
+   "expect": "answerable",
+   "answer": [
+    "eu-west-1"
+   ]
+  },
+  {
+   "id": "d018",
+   "q": "What command ships Atlas to staging?",
+   "lang": "en",
+   "category": "paraphrase",
+   "expect": "answerable",
+   "answer": [
+    "make deploy-staging"
+   ]
+  },
+  {
+   "id": "d019",
+   "q": "Who is my manager?",
+   "lang": "en",
+   "category": "paraphrase",
+   "expect": "answerable",
+   "answer": [
+    "Priya Raman"
+   ]
+  },
+  {
+   "id": "d020",
+   "q": "How long are our sprints?",
+   "lang": "en",
+   "category": "paraphrase",
+   "expect": "answerable",
+   "answer": [
+    "Two weeks"
+   ]
+  },
+  {
+   "id": "d021",
+   "q": "What's the oldest iOS version the app supports?",
+   "lang": "en",
+   "category": "paraphrase",
+   "expect": "answerable",
+   "answer": [
+    "iOS 16"
+   ]
+  },
+  {
+   "id": "d022",
+   "q": "Which days do I go to the gym?",
+   "lang": "en",
+   "category": "paraphrase",
+   "expect": "answerable",
+   "answer": [
+    "Tuesdays and Thursdays"
+   ]
+  },
+  {
+   "id": "d023",
+   "q": "pet",
+   "lang": "en",
+   "category": "short",
+   "expect": "answerable",
+   "answer": [
+    "Biscuit"
+   ]
+  },
+  {
+   "id": "d024",
+   "q": "employer",
+   "lang": "en",
+   "category": "short",
+   "expect": "answerable",
+   "answer": [
+    "Northwind"
+   ]
+  },
+  {
+   "id": "d025",
+   "q": "diet",
+   "lang": "en",
+   "category": "short",
+   "expect": "answerable",
+   "answer": [
+    "Vegetarian"
+   ]
+  },
+  {
+   "id": "d026",
+   "q": "timezone",
+   "lang": "en",
+   "category": "short",
+   "expect": "answerable",
+   "answer": [
+    "Europe/Lisbon"
+   ]
+  },
+  {
+   "id": "d027",
+   "q": "phone",
+   "lang": "en",
+   "category": "short",
+   "expect": "answerable",
+   "answer": [
+    "Pixel 9"
+   ]
+  },
+  {
+   "id": "d028",
+   "q": "birthday",
+   "lang": "en",
+   "category": "short",
+   "expect": "answerable",
+   "answer": [
+    "March 14"
+   ]
+  },
+  {
+   "id": "d029",
+   "q": "I'm planning a trip next month, which airline do I usually fly?",
+   "lang": "en",
+   "category": "partial",
+   "expect": "answerable",
+   "answer": [
+    "TAP"
+   ]
+  },
+  {
+   "id": "d030",
+   "q": "Help me set up a new TypeScript project",
+   "lang": "en",
+   "category": "partial",
+   "expect": "answerable",
+   "answer": [
+    "Bun"
+   ]
+  },
+  {
+   "id": "d031",
+   "q": "Draft the Atlas release announcement email",
+   "lang": "en",
+   "category": "partial",
+   "expect": "answerable",
+   "answer": [
+    "November 12"
+   ]
+  },
+  {
+   "id": "d032",
+   "q": "Book me a restaurant for dinner on Friday",
+   "lang": "en",
+   "category": "partial",
+   "expect": "answerable",
+   "answer": [
+    "Vegetarian",
+    "Peanuts"
+   ]
+  },
+  {
+   "id": "d033",
+   "q": "What should I order at the coffee place?",
+   "lang": "en",
+   "category": "partial",
+   "expect": "answerable",
+   "answer": [
+    "Flat white"
+   ]
+  },
+  {
+   "id": "d034",
+   "q": "Onde eu moro?",
+   "lang": "pt",
+   "category": "non-english",
+   "expect": "answerable",
+   "answer": [
+    "Lisbon"
+   ]
+  },
+  {
+   "id": "d035",
+   "q": "Como se chama o meu cão?",
+   "lang": "pt",
+   "category": "non-english",
+   "expect": "answerable",
+   "answer": [
+    "Biscuit"
+   ]
+  },
+  {
+   "id": "d036",
+   "q": "¿Cuál es mi editor favorito?",
+   "lang": "es",
+   "category": "non-english",
+   "expect": "answerable",
+   "answer": [
+    "Neovim"
+   ]
+  },
+  {
+   "id": "d037",
+   "q": "Quelle est ma restriction alimentaire ?",
+   "lang": "fr",
+   "category": "non-english",
+   "expect": "answerable",
+   "answer": [
+    "Vegetarian"
+   ]
+  },
+  {
+   "id": "d038",
+   "q": "Wie heißt meine Frau?",
+   "lang": "de",
+   "category": "non-english",
+   "expect": "answerable",
+   "answer": [
+    "Marta"
+   ]
+  },
+  {
+   "id": "d039",
+   "q": "Qual é a data de lançamento do Atlas?",
+   "lang": "pt",
+   "category": "non-english",
+   "expect": "answerable",
+   "answer": [
+    "November 12"
+   ]
+  },
+  {
+   "id": "d040",
+   "q": "When does my Japan trip start and where do I land?",
+   "lang": "en",
+   "category": "note",
+   "expect": "answerable",
+   "answer": [
+    "Tokyo"
+   ]
+  },
+  {
+   "id": "d041",
+   "q": "What are the quarterly OKRs about?",
+   "lang": "en",
+   "category": "note",
+   "expect": "answerable",
+   "answer": [
+    "p95"
+   ]
+  },
+  {
+   "id": "d042",
+   "q": "Where do my parents live?",
+   "lang": "en",
+   "category": "note",
+   "expect": "answerable",
+   "answer": [
+    "Porto"
+   ]
+  },
+  {
+   "id": "d043",
+   "q": "What caused the staging database incident?",
+   "lang": "en",
+   "category": "note",
+   "expect": "answerable",
+   "answer": [
+    "log rotation"
+   ]
+  },
+  {
+   "id": "d044",
+   "q": "How do I like code review comments?",
+   "lang": "en",
+   "category": "note",
+   "expect": "answerable",
+   "answer": [
+    "blunt"
+   ]
+  },
+  {
+   "id": "d045",
+   "q": "What am I training for in October?",
+   "lang": "en",
+   "category": "note",
+   "expect": "answerable",
+   "answer": [
+    "half marathon"
+   ]
+  },
+  {
+   "id": "d046",
+   "q": "Who won the 2018 FIFA World Cup?",
+   "lang": "en",
+   "category": "off-topic",
+   "expect": "unanswerable"
+  },
+  {
+   "id": "d047",
+   "q": "Explain quantum chromodynamics in simple terms",
+   "lang": "en",
+   "category": "off-topic",
+   "expect": "unanswerable"
+  },
+  {
+   "id": "d048",
+   "q": "What is the capital of Australia?",
+   "lang": "en",
+   "category": "off-topic",
+   "expect": "unanswerable"
+  },
+  {
+   "id": "d049",
+   "q": "Write a function that reverses a linked list in Python",
+   "lang": "en",
+   "category": "off-topic",
+   "expect": "unanswerable"
+  },
+  {
+   "id": "d050",
+   "q": "How do vaccines train the immune system?",
+   "lang": "en",
+   "category": "off-topic",
+   "expect": "unanswerable"
+  },
+  {
+   "id": "d051",
+   "q": "What's the difference between TCP and UDP?",
+   "lang": "en",
+   "category": "off-topic",
+   "expect": "unanswerable"
+  },
+  {
+   "id": "d052",
+   "q": "Translate 'good morning' into Japanese",
+   "lang": "en",
+   "category": "off-topic",
+   "expect": "unanswerable"
+  },
+  {
+   "id": "d053",
+   "q": "Summarize the plot of Hamlet",
+   "lang": "en",
+   "category": "off-topic",
+   "expect": "unanswerable"
+  },
+  {
+   "id": "d054",
+   "q": "How many ounces are in a pound?",
+   "lang": "en",
+   "category": "off-topic",
+   "expect": "unanswerable"
+  },
+  {
+   "id": "d055",
+   "q": "What is the derivative of x squared?",
+   "lang": "en",
+   "category": "off-topic",
+   "expect": "unanswerable"
+  },
+  {
+   "id": "d056",
+   "q": "Who is my dentist?",
+   "lang": "en",
+   "category": "personal-absent",
+   "expect": "unanswerable"
+  },
+  {
+   "id": "d057",
+   "q": "What is my shoe size?",
+   "lang": "en",
+   "category": "personal-absent",
+   "expect": "unanswerable"
+  },
+  {
+   "id": "d058",
+   "q": "What is my passport number?",
+   "lang": "en",
+   "category": "personal-absent",
+   "expect": "unanswerable"
+  },
+  {
+   "id": "d059",
+   "q": "What's my mother's maiden name?",
+   "lang": "en",
+   "category": "personal-absent",
+   "expect": "unanswerable"
+  },
+  {
+   "id": "d060",
+   "q": "What is my blood type?",
+   "lang": "en",
+   "category": "personal-absent",
+   "expect": "unanswerable"
+  },
+  {
+   "id": "d061",
+   "q": "Which bank do I use?",
+   "lang": "en",
+   "category": "personal-absent",
+   "expect": "unanswerable"
+  },
+  {
+   "id": "d062",
+   "q": "What did I have for lunch yesterday?",
+   "lang": "en",
+   "category": "personal-absent",
+   "expect": "unanswerable"
+  },
+  {
+   "id": "d063",
+   "q": "What is my favorite movie?",
+   "lang": "en",
+   "category": "personal-absent",
+   "expect": "unanswerable"
+  },
+  {
+   "id": "d064",
+   "q": "What is my favorite color?",
+   "lang": "en",
+   "category": "personal-absent",
+   "expect": "unanswerable"
+  },
+  {
+   "id": "d065",
+   "q": "What car do I drive?",
+   "lang": "en",
+   "category": "personal-absent",
+   "expect": "unanswerable"
+  },
+  {
+   "id": "d066",
+   "q": "What's my salary?",
+   "lang": "en",
+   "category": "personal-absent",
+   "expect": "unanswerable"
+  },
+  {
+   "id": "d067",
+   "q": "What are my children's names?",
+   "lang": "en",
+   "category": "personal-absent",
+   "expect": "unanswerable"
+  },
+  {
+   "id": "d068",
+   "q": "What breed is my dog?",
+   "lang": "en",
+   "category": "near-miss",
+   "expect": "unanswerable"
+  },
+  {
+   "id": "d069",
+   "q": "When is my wife's birthday?",
+   "lang": "en",
+   "category": "near-miss",
+   "expect": "unanswerable"
+  },
+  {
+   "id": "d070",
+   "q": "What is the production database password?",
+   "lang": "en",
+   "category": "near-miss",
+   "expect": "unanswerable"
+  },
+  {
+   "id": "d071",
+   "q": "How many engineers are on the Atlas team?",
+   "lang": "en",
+   "category": "near-miss",
+   "expect": "unanswerable"
+  },
+  {
+   "id": "d072",
+   "q": "What is my manager's phone number?",
+   "lang": "en",
+   "category": "near-miss",
+   "expect": "unanswerable"
+  },
+  {
+   "id": "d073",
+   "q": "What is the monthly cloud bill for Atlas?",
+   "lang": "en",
+   "category": "near-miss",
+   "expect": "unanswerable"
+  },
+  {
+   "id": "d074",
+   "q": "Quem ganhou o Mundial de 2018?",
+   "lang": "pt",
+   "category": "non-english-absent",
+   "expect": "unanswerable"
+  },
+  {
+   "id": "d075",
+   "q": "¿Cuál es mi talla de zapatos?",
+   "lang": "es",
+   "category": "non-english-absent",
+   "expect": "unanswerable"
+  },
+  {
+   "id": "d076",
+   "q": "Wie hoch ist mein Gehalt?",
+   "lang": "de",
+   "category": "non-english-absent",
+   "expect": "unanswerable"
+  }
+ ]
+}

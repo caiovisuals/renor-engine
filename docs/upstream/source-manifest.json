@@ -1,0 +1,358 @@
+{
+  "sourceCommit": "eee47652e59738807129672a59c07d910beb65f9",
+  "origin": "https://github.com/patrickpassosb/obsidian-semantic-memory",
+  "files": [
+    {
+      "path": ".env.example",
+      "sha256": "5860f9d2686d842e6d40fe6b57d8a61a8d43334a548b9563bb11be7e67e03419"
+    },
+    {
+      "path": ".gitignore",
+      "sha256": "ab9f5ccdf8fbd70dedf3c2e3a4900aea54f101cc68edc78f5171cd98ea2b5221"
+    },
+    {
+      "path": ".npmignore",
+      "sha256": "966f147f8c9fba1fa711e2f19706bc27769393f5dab1d48e49cc241552e790f0"
+    },
+    {
+      "path": ".semanticignore",
+      "sha256": "5f12f8216937c9d1b4d5a33280729d349c25f746535482914d003c6a650a5c44"
+    },
+    {
+      "path": "CONTEXT.md",
+      "sha256": "d387bf92c1b554c723d56e13c368de698483aaaf9fa01a2c3603afb3ad78d7c3"
+    },
+    {
+      "path": "CONTRIBUTING.md",
+      "sha256": "16e18e5f3ed986a55449bd4d3b7d216ebcdb7373b56150dbe902152d41a2829e"
+    },
+    {
+      "path": "LICENSE",
+      "sha256": "6e5fd0f6f5d917b18c42eb28e15f8672ac38306dcd5f4e4ec7e2110a26eb0ba2"
+    },
+    {
+      "path": "README.md",
+      "sha256": "4db59f3802d5c9d47731ca41606d6f8c33bbdb4dfa8b5104df345569a0b09d34"
+    },
+    {
+      "path": "README.ru.md",
+      "sha256": "407f325edbc069df0904dde46ab7a681605a72647224ec0ffb387b8705929922"
+    },
+    {
+      "path": "SECURITY.md",
+      "sha256": "2975b04c9eb3bcd05f606f1834b2ed8a643e2f84904beed2d772bf45a52b6ddd"
+    },
+    {
+      "path": "docs/adr/0001-ledger-first-memory.md",
+      "sha256": "215c5aa5b445427d0255f372c189b0d45aa28a712c77bf03210ea0444ba64341"
+    },
+    {
+      "path": "docs/build-1/ADR-0002-gate-0.md",
+      "sha256": "6053b11079a3dbe9e1b4175854ff02eb3b3e061f747dea8fab9dbcb06d69ef29"
+    },
+    {
+      "path": "docs/build-1/CAPTURE-AND-COST.md",
+      "sha256": "b721da5e857a5e756e43024abc23ed1894738311466a131fc173be4ca6171145"
+    },
+    {
+      "path": "docs/build-1/ERASURE-CONTROL.md",
+      "sha256": "3c4cdbc2f24565a5f2aebc6cb7d1bf9335bdaeb7d6bdf16f24da85cacb987a73"
+    },
+    {
+      "path": "docs/build-1/EVIDENCE.md",
+      "sha256": "32c1d9469e3f855ef397f720249c42483b266894f5d2aceef8d5aa7d38de8f24"
+    },
+    {
+      "path": "docs/build-1/REVIEW-DISPOSITION.md",
+      "sha256": "1faa6aa0cd5090cc5058312fe429a33ab47389a8a096e032f340ae8d77c01d6f"
+    },
+    {
+      "path": "docs/build-1/SOURCES.md",
+      "sha256": "2b3e6d3e1d23a73edaeec6f88a5d3ecd5ed0f6ee6b2c8ae2f93be4723b95128d"
+    },
+    {
+      "path": "docs/build-1/evidence/baseline-build.txt",
+      "sha256": "9cacd678112e11986b034e5f8826d4c6215f6a4ba47d6eff3f90e1a609f57f0a"
+    },
+    {
+      "path": "docs/build-1/evidence/baseline-tests-native.txt",
+      "sha256": "d1e1e7fce2ff8cc96ca910f68040df1874a4df257f6b3517f995e0f571bf264e"
+    },
+    {
+      "path": "docs/build-1/evidence/final-build.txt",
+      "sha256": "9cacd678112e11986b034e5f8826d4c6215f6a4ba47d6eff3f90e1a609f57f0a"
+    },
+    {
+      "path": "docs/build-1/evidence/ledger-probe.cjs",
+      "sha256": "94fc15874bcfd06864959fea7cedc0a2c1996ff0845ef83dc79d9fd31b75c0db"
+    },
+    {
+      "path": "docs/build-1/evidence/ledger-probe.txt",
+      "sha256": "937760e981d7fb1557dd8301d3e88a8a1b681a1c44046d610890ca929f6cad1f"
+    },
+    {
+      "path": "docs/build-1/evidence/lock-license-inventory.json",
+      "sha256": "e9d8fbdda9c2adb974d031cf1ef44d804c323f445397817aa0a30080770f5e78"
+    },
+    {
+      "path": "docs/build-1/evidence/native-rebuild.txt",
+      "sha256": "25df1bd5d35ecfd3fad980d599a33fd8eb97ce8dfca89e582f9d1d44d2f16a65"
+    },
+    {
+      "path": "docs/build-1/evidence/npm-audit.json",
+      "sha256": "a4b391b83c6a039ab24dc8efb68d1e8d61ef7be353ab39ccb77e4470c967a6d7"
+    },
+    {
+      "path": "docs/build-1/evidence/npm-ci.txt",
+      "sha256": "a10738dabdc9b62aa62e073184e6468f71966b8db283498d3ccfd3496e17c4c5"
+    },
+    {
+      "path": "fixtures/conversation/sample.jsonl",
+      "sha256": "e21b96affc5db4f256a0b8fa594e176e03a362dc0da07edbcf28275ae7f04fc4"
+    },
+    {
+      "path": "fixtures/vault/Daily/2026-03-30.md",
+      "sha256": "17352aa200f6a57b21d0197121f0434092b4866db089445187c257fe347d81be"
+    },
+    {
+      "path": "fixtures/vault/Daily/2026-03-31.md",
+      "sha256": "25233bf8223d6a8a6d783819ecd930d28d16fcb44b62b6a30b5ca1dbc8542c6c"
+    },
+    {
+      "path": "fixtures/vault/Memory/Daily/2026-03-31.md",
+      "sha256": "59866557b970e41f8fb60f759b859d9ca18fcf7998e6d2a096899c8f25f2b00a"
+    },
+    {
+      "path": "fixtures/vault/OpenClaw Memory/User.md",
+      "sha256": "9b6561bf8d4e07f1d0cf56791c4955ef5f0b30be15d2cfaf0e490d75cbe6b86d"
+    },
+    {
+      "path": "fixtures/vault/People/John.md",
+      "sha256": "8c94a5cf034ffcbb1de548d1362efc6709556655985ab1f03d8aa42bd81ae223"
+    },
+    {
+      "path": "fixtures/vault/Projects/Alpha.md",
+      "sha256": "dcc5b5dc16981f88783d471b91d53266f5a8e20473b6ac8d347a9d4ec3da5277"
+    },
+    {
+      "path": "mise.toml",
+      "sha256": "ce98956f06283b132562f74ba10fe88b2c9569b36439cbe7d3585c8a15a6d1fc"
+    },
+    {
+      "path": "package-lock.json",
+      "sha256": "9d561788600a8b180b636b158df42cf0bbbd2619b80dd334d057f0a515223016"
+    },
+    {
+      "path": "package.json",
+      "sha256": "a5471efd7e15ed0256070824bf1c7acc38507ec3c5cb7f5ab5839aac16007746"
+    },
+    {
+      "path": "src/api/server.ts",
+      "sha256": "7c57cf28fa620bd8f55826c3665242b04fbcbee9a6254e5c91d3de85114b7ab4"
+    },
+    {
+      "path": "src/cli.ts",
+      "sha256": "d40e808ac1f6b17f563075ef434e17d273e8dfcf3e1a3b967c49fb4b9e71f8a7"
+    },
+    {
+      "path": "src/config.ts",
+      "sha256": "68de118c144c68d4c0207e7c61f4a90266aa1155200a72a5b77b008ebc0c3d8b"
+    },
+    {
+      "path": "src/conversation/formatter.ts",
+      "sha256": "b1057a02b0581fcd164d3d9402cbc10a19561b4b2c9c065c3b5e77dfcde75a24"
+    },
+    {
+      "path": "src/conversation/parser.ts",
+      "sha256": "a368d809bd0e7382eecab2c48471e44f606760b7a12883c2fe788bd5ae999a5e"
+    },
+    {
+      "path": "src/conversation/types.ts",
+      "sha256": "93727831347b74a7543426f2c231d1edbd2125df6747a419e42592b864bd00ef"
+    },
+    {
+      "path": "src/conversation/writer.ts",
+      "sha256": "c6fd6d8ad3c84bdab0f78cb53b5fc98d582a5691a5bf3b8894bb37503f568fde"
+    },
+    {
+      "path": "src/db/client.ts",
+      "sha256": "e72a0ff0588aa2242ea7079d7058338b4064a50a960fd5cd5128c7a5c521ca39"
+    },
+    {
+      "path": "src/db/migrations.ts",
+      "sha256": "a6a34b02badd6947f38f92c9a6e4e8fa7d01a70a85e43a8360998bcf714234d6"
+    },
+    {
+      "path": "src/db/schema.ts",
+      "sha256": "738bdff90e4e6918bb7e7b60e73e98e741a9cbead3c90885e0fa7f5c1e9f2e7e"
+    },
+    {
+      "path": "src/embeddings/local.ts",
+      "sha256": "79091ea0434b1037ffacef2028c48a03721db8d610087cfd15abf9347dcef7bb"
+    },
+    {
+      "path": "src/embeddings/openai.ts",
+      "sha256": "6d74c8155f335cec0519e5ac9e805e0e7dc89038f53d33b84ee77bba46f22710"
+    },
+    {
+      "path": "src/embeddings/types.ts",
+      "sha256": "65ec745c49160d05d9ab94a811127d11b96d688395714470ae55934e8db8165c"
+    },
+    {
+      "path": "src/embeddings/vectorIndex.ts",
+      "sha256": "f5615cca5dd99b2c713a02eceb89657acb98aaea59aa21420fec2e25cd54b02a"
+    },
+    {
+      "path": "src/extraction/factExtractor.ts",
+      "sha256": "d8037e1bb6b194a911bfafcfffafc3c637f18ff6a9104ea13aab1ae137e98214"
+    },
+    {
+      "path": "src/indexer/chunker.ts",
+      "sha256": "c9702719bfc3a403110afda4b5e7c7c89d2e05f4599795f2e5a544e17fe203bd"
+    },
+    {
+      "path": "src/indexer/hasher.ts",
+      "sha256": "e598a455eb5980454f18fd3a3e0f80d6cfb178ca112042688b08b2dea9a3e137"
+    },
+    {
+      "path": "src/indexer/parser.ts",
+      "sha256": "3e323927c5f98c908f1334c10a52f6b81cb4b1390609ef11c1b1e22a370ac2b5"
+    },
+    {
+      "path": "src/indexer/pipeline.ts",
+      "sha256": "95f954b8c29ec8ef6764f0387ec7ec82b5f3d15b51814b313b0849618e85290f"
+    },
+    {
+      "path": "src/indexer/walker.ts",
+      "sha256": "50dd57491168bca1cb82e916de8e02705a53c6a5e6006336e3dbe88f72a30791"
+    },
+    {
+      "path": "src/mcp/server.ts",
+      "sha256": "42ed4773954e420fd64ff1ad670a6797b3185fa03600c508ec967582cde6b3e4"
+    },
+    {
+      "path": "src/memory/lifecycle.ts",
+      "sha256": "201be76be5a5c5f10888f31bf8b2f737b7a9ff36faf40d3b20457c0bf6fd3ab1"
+    },
+    {
+      "path": "src/memory/writer.ts",
+      "sha256": "5ac99780030876f0681faef52156aaa2845fe48efbbe3021ffc88b333d4f7c6b"
+    },
+    {
+      "path": "src/retrieval/entityLookup.ts",
+      "sha256": "c860a8d5650d378d87364bae6c512e0e5327cdf0f5821a870d6e803e40889584"
+    },
+    {
+      "path": "src/retrieval/orchestrator.ts",
+      "sha256": "5cfcce699c1c911a20e81e7bc51b6f1cffca31d3b46fd31359c8c0a6ab476f5e"
+    },
+    {
+      "path": "src/retrieval/semantic.ts",
+      "sha256": "cb7f5d0a5e67693e7ebbf9fd82c46b1afcbe7f4805bb0d51025b488a73411e54"
+    },
+    {
+      "path": "src/watcher/watcher.ts",
+      "sha256": "956e7f59ab388d1d9bbc2fe03916b749b108657feb97db7fbf2a1cd77d7cdddd"
+    },
+    {
+      "path": "tests/api/server.test.ts",
+      "sha256": "3f3144c714a7dd9c7b764778d0b8fbd67412d6ced265557f2e619c053428c969"
+    },
+    {
+      "path": "tests/config.test.ts",
+      "sha256": "cb04267dd64f15cab6fa4f2c1a5c7d0a5c18a431f806466ec5148b61d9800700"
+    },
+    {
+      "path": "tests/conversation/formatter.test.ts",
+      "sha256": "274e41d3bf10911e0165b70ebf508f14f054975d1bc2e6f038660f9d2c952a37"
+    },
+    {
+      "path": "tests/conversation/parser.test.ts",
+      "sha256": "2dac9a7a74b6440d8dfa625cb76b50871149b924934dd993f2d1bc8d692a04eb"
+    },
+    {
+      "path": "tests/conversation/writer.test.ts",
+      "sha256": "642ea39cd0f40abadeb7fcde8761419611df965b467675b01559c10fce66edb2"
+    },
+    {
+      "path": "tests/db/schema.test.ts",
+      "sha256": "072438c9505feff37033750e1da0d2846c64eafcd7ddaaf682349e190abf40d8"
+    },
+    {
+      "path": "tests/edge-cases.test.ts",
+      "sha256": "bf22993cc93949cc8620e0e88fcc4c9a54541e69e2683d197d4525d418ef869d"
+    },
+    {
+      "path": "tests/embeddings/local.test.ts",
+      "sha256": "23583f5a88c69b79c7d2da5ec6dac174d0f32f00539879e194cf032e948d013e"
+    },
+    {
+      "path": "tests/embeddings/openai.test.ts",
+      "sha256": "c476f0b9805002aaa61f57a95b729894967c1a3ca7b14b992ce4b702db69683c"
+    },
+    {
+      "path": "tests/embeddings/vectorIndex.test.ts",
+      "sha256": "fe1218d69ea49018b2e1103ca9d0e61f0a251a0e3aec244e18fc97ff1442348d"
+    },
+    {
+      "path": "tests/extraction/factExtractor.test.ts",
+      "sha256": "3faa65124cbe73f024e94c3172b2035a2e854b3e5f10d3036702c27970dcde83"
+    },
+    {
+      "path": "tests/indexer/chunker.test.ts",
+      "sha256": "ce47408568f1ede3f21911306bae6b14c48c1c496c198d53044c17f0a23cf308"
+    },
+    {
+      "path": "tests/indexer/hasher.test.ts",
+      "sha256": "5bee4c42b3293cd6567f21140021f968e5a8a4a5313b5305d1a354cb2cbd9454"
+    },
+    {
+      "path": "tests/indexer/parser.test.ts",
+      "sha256": "42173317fd507351f7c9311f4f52e526e20f87e8faad782fafdfe88af4c74914"
+    },
+    {
+      "path": "tests/indexer/pipeline-error.test.ts",
+      "sha256": "265c6563d07e6820ceba6633345f066d09e044cab24a6446af869574ae2d61fb"
+    },
+    {
+      "path": "tests/indexer/pipeline.test.ts",
+      "sha256": "e15bd2e50cca1e858bef48fb674b0e64f29cb162245a82b45844ca48c6dc750e"
+    },
+    {
+      "path": "tests/indexer/walker.test.ts",
+      "sha256": "77929be467916ce3e3cbde8b2589c1b12413cb000aa9935632790344d67bad39"
+    },
+    {
+      "path": "tests/mcp/server.test.ts",
+      "sha256": "4ba12da074af19132d9d7169ebf9d051cd64298fd6056d976e9d6dfff373b22b"
+    },
+    {
+      "path": "tests/memory/writer.test.ts",
+      "sha256": "377cfb183f82982edeeef0f0e36e69c91e21b9c8fb91613103acc2e07912a71e"
+    },
+    {
+      "path": "tests/retrieval/entityLookup.test.ts",
+      "sha256": "176ace86c355f671172513e237fbde2028b33a72a358e10ced534d1a06e4ac85"
+    },
+    {
+      "path": "tests/retrieval/orchestrator.test.ts",
+      "sha256": "918c3561b7270da5d268e290d11d7dcdc98752f6132246dc1a9a5c4fe9cd8588"
+    },
+    {
+      "path": "tests/retrieval/semantic.test.ts",
+      "sha256": "e8c3991df38d8b7a46ae725251dbc8ebfdbc86f2a3122b00105b7fe070a9f3f9"
+    },
+    {
+      "path": "tests/watcher/watcher.test.ts",
+      "sha256": "852a27bbfd728463002502c773993b1522e706d45af83611eff629d76ee4cdd7"
+    },
+    {
+      "path": "tsconfig.json",
+      "sha256": "da95806a4461f806f998e65ad9af51fc21caca9f9c2093c23a2f0e28e8e277f8"
+    },
+    {
+      "path": "vitest.config.ts",
+      "sha256": "ce13c701e702115110b45be5ea80733a8cbdf094c2d56cd03696bd71891829f4"
+    }
+  ]
+}

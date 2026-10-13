@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "description": "Synthetic RenorBench v0 fixture. All identities and facts are fictional.",
+  "relativeMtimeDays": {
+    "People/Ava-current.md": 0,
+    "History/Ava-previous.md": 365,
+    "Topics/Music-distractors.md": 7,
+    "Noise/Adjacent-memories.md": 14
+  }
+}

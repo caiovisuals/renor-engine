@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# Fixture Caddy for the on-demand admission tests: validate succeeds and every call is logged, so the
+# provisioner's lock -> validate -> install -> reload sequence runs for real against the fixture tree.
+printf '%s caddy %s\n' "$(( ${EPOCHREALTIME/./} / 1000 ))" "$*" >> "${ODA:?}/state/calls.log"
+exit 0

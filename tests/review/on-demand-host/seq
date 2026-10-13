@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+# Fixture `seq` for the on-demand admission tests (engine/tests/review/on-demand-admission.test.ts).
+#
+# The provisioner picks a newborn's port by walking ONE fixed range (`seq FIRST LAST` in allocate_port) and taking the first
+# port nothing listens on and no env file names. On the real host that range is the host's own. Here it is the machine's
+# loopback, which every other test run shares: two runs that walk it at the same moment hand the same port to two engines,
+# and one of them answers the other's probes.
+#
+# So a fixture host walks the range of ITS OWN port block instead, but only when it is asked for exactly the range the
+# provisioner walks (ODA_SEQ_ASKED, read from the provisioner by the test; ODA_SEQ_GIVEN is the block's). Every other `seq`
+# is the real one, found by skipping this directory, so nothing else a script counts with changes.
+if [[ -n "${ODA_SEQ_ASKED:-}" && "$*" == "$ODA_SEQ_ASKED" ]]; then
+  # shellcheck disable=SC2086
+  set -- ${ODA_SEQ_GIVEN:?ODA_SEQ_GIVEN must name the range this host walks}
+fi
+here="${BASH_SOURCE[0]%/*}"
+IFS=: read -ra dirs <<< "$PATH"
+for dir in "${dirs[@]}"; do
+  [[ "$dir" == "$here" ]] && continue
+  [[ -x "$dir/seq" ]] && exec "$dir/seq" "$@"
+done
+echo "seq: no seq on PATH outside the fixture" >&2
+exit 127

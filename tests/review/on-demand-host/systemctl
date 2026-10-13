@@ -1,0 +1,216 @@
+#!/usr/bin/env bash
+# Fixture systemd for the on-demand admission tests (engine/tests/review/on-demand-admission.test.ts).
+#
+# Every party on the host calls THIS binary: the provisioning worker and the provisioner it runs, and
+# the activation broker (RENOR_BROKER_SYSTEMCTL). It models what those three rely on, from files only:
+#   * a unit exists while $ODA/etc/systemd/system/<unit> exists; renor.slice is a slice file there;
+#   * a unit is RUNNING while the fake engine it started is alive ($ODA/state/<unit>.pid);
+#   * `start` launches $ODA/bin/fake-engine.mjs with the tenant's own env file, as ExecStart would, and
+#     appends "<ms> <unit> <running after>" to $ODA/state/starts, so a test reads the host's peak;
+#   * a unit is ENABLED while $ODA/state/<unit>.enabled exists (`enable`/`disable`);
+#   * a reboot is two fixture verbs: `fixture-power-cut` kills every engine without a goodbye, and
+#     `fixture-boot` starts exactly the enabled units, as systemd does at boot (multi-user.target);
+#   * `show` answers MemoryMax and LoadState from the unit and slice FILES (drop-ins included), in
+#     systemd's multi-unit block format.
+# Nothing here talks to the real systemd: the provisioner refuses a fixture whose systemctl resolves to a
+# system binary, and this one never execs one.
+set -u
+root="${ODA:?ODA must name the fixture root}"
+st="$root/state"
+units="$root/etc/systemd/system"
+mkdir -p "$st"
+# Pure bash, no subprocess per call: the broker makes three of these calls per request and serves one
+# request at a time, so a slow fixture would time a burst out where the real systemd does not.
+now_ms() { printf '%s' "$(( ${EPOCHREALTIME/./} / 1000 ))"; }
+printf '%s systemctl %s\n' "$(now_ms)" "$*" >> "$st/calls.log"
+
+alive() {
+  local f="$st/$1.pid"
+  [[ -f "$f" ]] && kill -0 "$(cat "$f")" 2>/dev/null
+}
+
+running_count() {
+  local n=0 f
+  for f in "$units"/renor-*.service; do
+    [[ -f "$f" ]] || continue
+    alive "$(basename "$f")" && n=$((n + 1))
+  done
+  printf '%s' "$n"
+}
+
+# Every live pid running an engine of THIS fixture: its argv carries this root's own engine path, so
+# the answer cannot include another run's engines. One ps for the whole sweep.
+fixture_engine_pids() {
+  ps -eo pid=,args= 2>/dev/null | while read -r pid args; do
+    case "$args" in
+      *"$root/bin/fake-engine.mjs"*) printf '%s\n' "$pid" ;;
+    esac
+  done
+}
+
+# The last value a unit file (and then its drop-ins, in order) assigns to KEY.
+unit_value() {
+  local file="$1" key="$2" v="" x line
+  for x in "$file" "$file".d/*.conf; do
+    [[ -f "$x" ]] || continue
+    while IFS= read -r line || [[ -n "$line" ]]; do
+      [[ "$line" == "$key="* ]] && v="${line#"$key="}"
+    done < "$x"
+  done
+  printf '%s' "$v"
+}
+
+to_bytes() {
+  case "$1" in
+    ''|infinity) printf 'infinity' ;;
+    *[Gg]) printf '%s' "$(( ${1%?} * 1024 * 1024 * 1024 ))" ;;
+    *[Mm]) printf '%s' "$(( ${1%?} * 1024 * 1024 ))" ;;
+    *[Kk]) printf '%s' "$(( ${1%?} * 1024 ))" ;;
+    *) printf '%s' "$1" ;;
+  esac
+}
+
+start_unit() {
+  local unit="$1" slug env
+  alive "$unit" && return 0
+  slug="${unit#renor-}"; slug="${slug%.service}"
+  env="$root/etc/renor/$slug.env"
+  if [[ ! -f "$units/$unit" || ! -f "$env" ]]; then
+    echo "Failed to start $unit: Unit $unit not found." >&2
+    return 5
+  fi
+  (
+    set -a
+    # shellcheck disable=SC1090
+    . "$env"
+    set +a
+    exec setsid node "$root/bin/fake-engine.mjs"
+  ) >> "$st/$unit.log" 2>&1 &
+  printf '%s' "$!" > "$st/$unit.pid"
+  printf '%s %s %s\n' "$(now_ms)" "$unit" "$(running_count)" >> "$st/starts"
+}
+
+stop_unit() {
+  local unit="$1" pid
+  [[ -f "$st/$unit.pid" ]] || return 0
+  pid="$(cat "$st/$unit.pid")"
+  # The engine is its own process group leader (setsid), so the group is "$pid": signal the group
+  # and fall back to the pid, so nothing the engine started keeps the port bound.
+  kill -TERM "-$pid" 2>/dev/null || kill -TERM "$pid" 2>/dev/null || true
+  for _ in $(seq 1 100); do
+    kill -0 "$pid" 2>/dev/null || break
+    sleep 0.05
+  done
+  kill -KILL "-$pid" 2>/dev/null || kill -KILL "$pid" 2>/dev/null || true
+  rm -f "$st/$unit.pid"
+}
+
+cmd="${1:-}"
+[[ $# -gt 0 ]] && shift
+args=()
+props=""
+value_only=0
+want=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --) ;;
+    --property=*) props="${1#--property=}" ;;
+    -p) shift; want="${1:-}" ;;
+    --value) value_only=1 ;;
+    --now|--all|--plain|--no-legend|--no-pager|--full|--type=*|--quiet) args+=("$1") ;;
+    *) args+=("$1") ;;
+  esac
+  shift
+done
+
+case "$cmd" in
+  start)
+    for u in "${args[@]}"; do start_unit "$u" || exit $?; done
+    ;;
+  stop)
+    for u in "${args[@]}"; do stop_unit "$u"; done
+    ;;
+  restart)
+    for u in "${args[@]}"; do stop_unit "$u"; start_unit "$u" || exit $?; done
+    ;;
+  enable)
+    now=0
+    for u in "${args[@]}"; do [[ "$u" == --now ]] && now=1; done
+    for u in "${args[@]}"; do
+      [[ "$u" == renor-*.service ]] || continue
+      : > "$st/$u.enabled"
+      if [[ "$now" == 1 ]]; then start_unit "$u" || exit $?; fi
+    done
+    ;;
+  disable)
+    for u in "${args[@]}"; do rm -f "$st/$u.enabled"; done
+    ;;
+  is-active)
+    u="${args[${#args[@]}-1]}"
+    if alive "$u"; then echo active; else echo inactive; exit 3; fi
+    ;;
+  list-units)
+    for f in "$units"/renor-*.service; do
+      [[ -f "$f" ]] || continue
+      u="$(basename "$f")"
+      if alive "$u"; then echo "$u loaded active running Renor fixture"; else echo "$u loaded inactive dead Renor fixture"; fi
+    done
+    ;;
+  show)
+    if [[ -n "$props" ]]; then
+      first=1
+      for u in "${args[@]}"; do
+        [[ "$first" == 1 ]] || printf '\n'
+        first=0
+        printf 'Id=%s\n' "$u"
+        if [[ -f "$units/$u" ]]; then
+          printf 'LoadState=loaded\nMemoryMax=%s\n' "$(to_bytes "$(unit_value "$units/$u" MemoryMax)")"
+        else
+          printf 'LoadState=not-found\nMemoryMax=infinity\n'
+        fi
+      done
+    else
+      u="${args[0]:-}"
+      case "$want" in
+        MainPID) if alive "$u"; then cat "$st/$u.pid"; echo; else echo 0; fi ;;
+        ActiveState) if alive "$u"; then echo active; else echo inactive; fi ;;
+        NRestarts) echo 0 ;;  # the provisioner's restart settle probe reads it; nothing here auto-restarts
+        *) echo ;;
+      esac
+    fi
+    ;;
+  daemon-reload)
+    # A one-shot test hook: what else happens on the host at the moment a provisioner reloads systemd
+    # (the step right before it asks the broker for a newborn's boot) — a wake taking the last slot.
+    if [[ -f "$st/hook-daemon-reload" ]]; then
+      mv "$st/hook-daemon-reload" "$st/hook-daemon-reload.ran"
+      bash "$st/hook-daemon-reload.ran"
+    fi
+    ;;
+  reset-failed|reload)
+    ;;
+  fixture-power-cut)
+    # Every engine THIS fixture started, found by the root baked into its own argv rather than by
+    # the pid files alone: a power cut has to reach an engine whose start was interrupted between
+    # backgrounding it and writing its pid file, or that engine outlives the whole run. Scoping the
+    # search to "$root/bin/fake-engine.mjs" cannot touch another run's engines.
+    for pid in $(fixture_engine_pids); do
+      kill -KILL "$pid" 2>/dev/null || true
+    done
+    for f in "$st"/*.service.pid; do
+      [[ -f "$f" ]] || continue
+      kill -KILL "$(cat "$f")" 2>/dev/null || true
+      rm -f "$f"
+    done
+    ;;
+  fixture-boot)
+    for f in "$st"/*.service.enabled; do
+      [[ -f "$f" ]] || continue
+      start_unit "$(basename "$f" .enabled)" || true
+    done
+    ;;
+  *)
+    printf '%s unhandled %s %s\n' "$(now_ms)" "$cmd" "${args[*]}" >> "$st/calls.log"
+    ;;
+esac
+exit 0

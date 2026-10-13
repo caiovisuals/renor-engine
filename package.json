@@ -1,0 +1,104 @@
+{
+  "name": "renor",
+  "version": "1.0.0",
+  "description": "Local-first semantic memory — indexing, multi-signal retrieval, MCP",
+  "main": "dist/cli.js",
+  "files": [
+    "dist",
+    "README.md",
+    "skill",
+    "LICENSE",
+    "NOTICE"
+  ],
+  "scripts": {
+    "build": "tsc && node -e \"require('node:fs').copyFileSync('src/memory/hiveNameHeader.cjs', 'dist/memory/hiveNameHeader.cjs')\"",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "dev": "tsx src/cli.ts",
+    "mvp": "node dist/mvp/cli.js",
+    "mvp:dev": "tsx src/mvp/cli.ts",
+    "import:memory": "tsx src/importing/cli.ts",
+    "test:mvp-artifact": "node scripts/ci/verify-mvp-artifact.mjs",
+    "eval:typecheck": "tsc -p tsconfig.public-eval.json",
+    "eval:retrieval": "tsx scripts/eval/score-retrieval.ts",
+    "eval:renor": "tsx scripts/eval/run-renorbench.ts",
+    "eval:renor:hash": "tsx scripts/eval/run-renorbench.ts --provider hash",
+    "eval:renor:product": "tsx scripts/eval/run-renorbench-product.ts",
+    "eval:renor:product:hash": "tsx scripts/eval/run-renorbench-product.ts --provider hash",
+    "eval:renor:product:v2:hash": "tsx scripts/eval/run-renorbench-product.ts --provider hash --suite v2",
+    "eval:renor:product:docs:hash": "tsx scripts/eval/run-renorbench-product.ts --provider hash --suite documents",
+    "eval:cache": "tsx scripts/eval/eval-cache.ts",
+    "eval:compare": "tsx scripts/eval/compare-runs.ts",
+    "eval:renorbench:baseline": "tsx scripts/eval/renorbench-baseline.ts",
+    "eval:renor:v2:generate": "tsx scripts/eval/generate-renorbench-v2.ts --write",
+    "eval:renor:docs:generate": "tsx scripts/eval/generate-renorbench-docs.ts --write",
+    "eval:analyze": "tsx scripts/eval/analyze-failures.ts",
+    "eval:longmem": "tsx scripts/eval/run-longmemeval.ts",
+    "eval:longmem:merge": "tsx scripts/eval/merge-longmemeval-shards.ts",
+    "eval:longmem:qa": "tsx scripts/eval/run-longmemeval-qa.ts",
+    "eval:longmem:qa:score": "tsx scripts/eval/score-longmemeval-qa.ts",
+    "eval:longmem:product": "tsx scripts/eval/run-longmemeval-product.ts",
+    "eval:longmem:sessions": "tsx scripts/eval/score-longmemeval-sessions.ts",
+    "eval:locomo": "tsx scripts/eval/locomo/run-retrieval.ts",
+    "eval:locomo:score": "python3 scripts/eval/locomo/score-locomo.py",
+    "eval:beam": "tsx scripts/eval/beam/run-retrieval.ts",
+    "eval:beam:score": "tsx scripts/eval/beam/score-nuggets.ts",
+    "eval:convomem:score": "python3 scripts/eval/locomo/score-locomo.py",
+    "eval:register": "tsx scripts/eval/register-run.ts",
+    "eval:progress": "tsx scripts/eval/progress.ts",
+    "prebuild": "node scripts/ci/stamp-build.mjs"
+  },
+  "bin": {
+    "renor": "dist/cli.js"
+  },
+  "keywords": [
+    "renor",
+    "semantic-memory",
+    "mcp",
+    "embeddings",
+    "knowledge-graph"
+  ],
+  "homepage": "https://renor.cloud",
+  "author": "Patrick Passos",
+  "license": "AGPL-3.0-only",
+  "type": "commonjs",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.31.0",
+    "@posthog/mcp": "0.21.0",
+    "@xenova/transformers": "^2.17.2",
+    "better-sqlite3": "^12.8.0",
+    "chokidar": "^3.6.0",
+    "commander": "^14.0.3",
+    "express": "^5.2.1",
+    "gpt-tokenizer": "^3.4.0",
+    "gray-matter": "^4.0.3",
+    "openai": "^6.33.0",
+    "posthog-node": "5.54.1",
+    "sqlite-vec": "^0.1.8",
+    "zod": "^4.6.5"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/express": "^5.0.6",
+    "@types/node": "^25.9.8",
+    "@types/supertest": "^7.2.0",
+    "supertest": "^7.3.0",
+    "tsx": "^4.23.15",
+    "typescript": "^6.0.2",
+    "vitest": "^4.1.2"
+  },
+  "private": true,
+  "overrides": {
+    "@xenova/transformers": {
+      "sharp": "0.35.5",
+      "onnxruntime-web": {
+        "onnx-proto": {
+          "protobufjs": "7.6.6"
+        }
+      }
+    }
+  },
+  "engines": {
+    "node": ">=22 <23"
+  }
+}

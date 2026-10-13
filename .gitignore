@@ -1,0 +1,34 @@
+# Runtime/tenant data never belongs in the product repository
+.eval-runs/
+.eval-indexes/
+.eval-holdout/
+# .gate/ holds gate run artifacts (agent-gate JSON report, breaker report).
+# The monorepo root .gitignore covers it there; the exported engine tree ships
+# this file, and the public suite writes the breaker report into it, so the
+# standalone tree needs the rule itself to stay clean after `npm test`.
+.gate/
+# .smoke/ holds local smoke-run state, including client auth files.
+.smoke/
+
+.pi-glla/
+.semantic-memory/
+data/
+*.db-wal
+*.db-shm
+*.sqlite-wal
+*.sqlite-shm
+*.pem
+*.key
+node_modules
+dist
+coverage/
+*.db
+*.sqlite
+*.log
+.env
+.env.*
+!.env.example
+REVIEW-CORA-2026-03-31.md
+__pycache__/
+*.pyc
+supabase/.temp/

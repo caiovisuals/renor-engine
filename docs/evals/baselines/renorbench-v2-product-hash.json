@@ -1,0 +1,114 @@
+{
+  "schema": 1,
+  "benchmark": "renorbench-v2-product",
+  "reason": "Refresh the shared evaluator identity after partial-index filename diagnostics changed run-longmemeval-product.ts; clean commit 95f36468 measures identical stored summary values, with no score or floor changes.",
+  "recordedAt": "2026-10-11T14:26:04.146Z",
+  "gitSha": "95f36468b9b4fa81b7fc211e987926ce54c2b18a",
+  "manifest": {
+    "benchmark": "renorbench-v2-product",
+    "casesSha256": "104079aba16672ec96b866572ce5f2578281cc2b68c5890f929dfceb5e9247c6",
+    "fixtureSha256": "b66df09e3262bba5144992ea218c1ceb316dc78db0e324e7ec6e4f0403b92c60",
+    "provider": {
+      "kind": "hash",
+      "model": "eval-hash-v1",
+      "dimensions": 256,
+      "qualityEligible": false
+    },
+    "qualityEligible": false,
+    "evaluatorSha256": "49cd959e53e8b95349f7d40e7f5a49b9e922aa1699be41a1526c75cf07a7f28c",
+    "chunking": {
+      "maxTokens": 400,
+      "overlapTokens": 0
+    },
+    "gitDirty": false,
+    "entryPoint": {
+      "kind": "mcp-in-process",
+      "server": "createMvpApp (the tool handlers the hosted service serves)",
+      "transport": "MCP SDK Client over InMemoryTransport",
+      "indexTool": "index_memory",
+      "searchTool": "search_memory",
+      "searchArguments": "query only: top_k, scope and include_history left at the tool defaults"
+    },
+    "productMode": {
+      "overrides": [],
+      "relevanceBar": {
+        "source": "harness bar for the hash embedder, which has no calibrated one",
+        "value": 0.375
+      },
+      "evidence": "no model configured: no evidence pass",
+      "embeddedBy": "injected eval-hash provider (no network)"
+    }
+  },
+  "summary": {
+    "overall": {
+      "cases": 87,
+      "answerableCases": 67,
+      "abstentionCases": 20,
+      "replyHit": 1,
+      "replyRecall": 1,
+      "replyRecallAll": 1,
+      "contradictionFirstRate": 0,
+      "supersessionSensitiveCases": 27,
+      "forbiddenInReplyRate": null,
+      "forbiddenSensitiveCases": 0,
+      "verdictRelevantRate": 1,
+      "verdictAbstainRate": 1,
+      "verdictMissingCases": 0,
+      "meanReplyTokens": 6026.9195,
+      "p95ReplyTokens": 9157
+    },
+    "byCategory": {
+      "session_detail": {
+        "cases": 40,
+        "answerableCases": 40,
+        "abstentionCases": 0,
+        "replyHit": 1,
+        "replyRecall": 1,
+        "replyRecallAll": 1,
+        "contradictionFirstRate": null,
+        "supersessionSensitiveCases": 0,
+        "forbiddenInReplyRate": null,
+        "forbiddenSensitiveCases": 0,
+        "verdictRelevantRate": 1,
+        "verdictAbstainRate": null,
+        "verdictMissingCases": 0,
+        "meanReplyTokens": 7699.05,
+        "p95ReplyTokens": 9157
+      },
+      "knowledge_update": {
+        "cases": 27,
+        "answerableCases": 27,
+        "abstentionCases": 0,
+        "replyHit": 1,
+        "replyRecall": 1,
+        "replyRecallAll": 1,
+        "contradictionFirstRate": 0,
+        "supersessionSensitiveCases": 27,
+        "forbiddenInReplyRate": null,
+        "forbiddenSensitiveCases": 0,
+        "verdictRelevantRate": 1,
+        "verdictAbstainRate": null,
+        "verdictMissingCases": 0,
+        "meanReplyTokens": 3647.4074,
+        "p95ReplyTokens": 6269
+      },
+      "abstention": {
+        "cases": 20,
+        "answerableCases": 0,
+        "abstentionCases": 20,
+        "replyHit": 0,
+        "replyRecall": 0,
+        "replyRecallAll": 0,
+        "contradictionFirstRate": null,
+        "supersessionSensitiveCases": 0,
+        "forbiddenInReplyRate": null,
+        "forbiddenSensitiveCases": 0,
+        "verdictRelevantRate": null,
+        "verdictAbstainRate": 1,
+        "verdictMissingCases": 0,
+        "meanReplyTokens": 5895,
+        "p95ReplyTokens": 9216
+      }
+    }
+  }
+}

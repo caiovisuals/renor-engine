@@ -1,0 +1,81 @@
+name: engine-public-ci
+
+# CI for the public engine repository. This file is what the exporter copies
+# to the public tree. The repository root is the engine: there is no engine/
+# subdirectory, no gateway app, and no platform schema.
+#
+# The private monorepo proves the same steps from .github/workflows/engine-public-ci.yml
+# with a `working-directory` of engine. The exclude list is the same in both files.
+# No secrets, no second install, no paid model, no LongMemEval, no agent gate.
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+concurrency:
+  group: engine-public-ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  NODE_VERSION: '22'
+
+jobs:
+  public-engine:
+    name: public-engine
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      # RenorBench baseline tests compare the committed baseline with origin/main.
+      # A shallow checkout does not have that ref.
+      # Actions are pinned to the commit SHA of the tag, not the mutable tag:
+      # this workflow runs on pull_request from forks, so a moved tag would run
+      # attacker-chosen code. Keep the SHA and the version comment together.
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+
+      - name: Fetch main
+        run: git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Install
+        run: npm ci
+
+      - name: Typecheck
+        run: npx tsc --noEmit
+
+      - name: Typecheck eval
+        run: npx tsc -p tsconfig.public-eval.json --noEmit
+
+      - name: Build
+        run: npm run build
+
+      # Gateway-bound tests and the platform-schema test are not in the public
+      # tree. The excludes stay so this command matches the monorepo proof and
+      # does not start passing because a private file was copied back in.
+      # Quote every glob.
+      - name: Unit tests
+        run: |
+          npm test -- --maxWorkers=2 \
+            --exclude 'tests/**/gateway-*.test.ts' \
+            --exclude 'tests/review/on-demand-admission.test.ts' \
+            --exclude 'tests/review/activation-broker.test.ts' \
+            --exclude 'tests/review/dashboard-import-gateway.test.ts' \
+            --exclude 'tests/mvp/loud-connection.test.ts' \
+            --exclude 'tests/mvp/browser-login.test.ts' \
+            --exclude 'tests/review/connect-token-membership.test.ts'
+
+      # Offline hash embedder. Does not read a dataset and does not call a model.
+      - name: Eval hash smoke
+        run: npm run eval:renor:hash -- --output .eval-runs/ci-hash-smoke

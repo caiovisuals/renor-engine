@@ -1,0 +1,207 @@
+{
+ "description": "Second synthetic workspace (a different fictional person, verb-style and noun-style predicates) used only for the held-out split, so the bar is tested on memories it was not tuned on.",
+ "facts": [
+  {
+   "subject": "user",
+   "predicate": "lives_in",
+   "object": "Toronto"
+  },
+  {
+   "subject": "user",
+   "predicate": "works_at",
+   "object": "Maple Ridge Secondary School"
+  },
+  {
+   "subject": "user",
+   "predicate": "job_title",
+   "object": "High school chemistry and physics teacher"
+  },
+  {
+   "subject": "user",
+   "predicate": "partner_name",
+   "object": "Jamal"
+  },
+  {
+   "subject": "user",
+   "predicate": "has_cat",
+   "object": "Mochi"
+  },
+  {
+   "subject": "user",
+   "predicate": "favorite_tea",
+   "object": "Earl Grey with oat milk"
+  },
+  {
+   "subject": "user",
+   "predicate": "marking_day",
+   "object": "Sunday afternoon"
+  },
+  {
+   "subject": "user",
+   "predicate": "commute",
+   "object": "Streetcar and a ten minute walk"
+  },
+  {
+   "subject": "user",
+   "predicate": "shellfish_allergy",
+   "object": "Severe, carries an EpiPen"
+  },
+  {
+   "subject": "user",
+   "predicate": "languages_spoken",
+   "object": "English and French"
+  },
+  {
+   "subject": "user",
+   "predicate": "phone",
+   "object": "iPhone 15"
+  },
+  {
+   "subject": "user",
+   "predicate": "laptop",
+   "object": "MacBook Air M2"
+  },
+  {
+   "subject": "user",
+   "predicate": "favorite_sport",
+   "object": "Hockey"
+  },
+  {
+   "subject": "user",
+   "predicate": "favorite_team",
+   "object": "Toronto Maple Leafs"
+  },
+  {
+   "subject": "user",
+   "predicate": "hobby",
+   "object": "Pottery on Wednesday evenings"
+  },
+  {
+   "subject": "user",
+   "predicate": "wake_up_time",
+   "object": "05:45"
+  },
+  {
+   "subject": "user",
+   "predicate": "lunch_habit",
+   "object": "Packed lunch, usually leftovers"
+  },
+  {
+   "subject": "user",
+   "predicate": "school_start_time",
+   "object": "08:15"
+  },
+  {
+   "subject": "user",
+   "predicate": "class_size",
+   "object": "28 students in Chemistry 11"
+  },
+  {
+   "subject": "user",
+   "predicate": "department_head",
+   "object": "Ms. Alvarez"
+  },
+  {
+   "subject": "user",
+   "predicate": "term_end_date",
+   "object": "June 26"
+  },
+  {
+   "subject": "user",
+   "predicate": "rent",
+   "object": "1,850 Canadian dollars per month"
+  },
+  {
+   "subject": "user",
+   "predicate": "pharmacy",
+   "object": "Shoppers Drug Mart on Bloor"
+  },
+  {
+   "subject": "user",
+   "predicate": "bank",
+   "object": "TD Canada Trust"
+  },
+  {
+   "subject": "user",
+   "predicate": "gym",
+   "object": "Goodlife, Monday and Friday mornings"
+  },
+  {
+   "subject": "user",
+   "predicate": "parents_live_in",
+   "object": "Ottawa"
+  },
+  {
+   "subject": "user",
+   "predicate": "sister_name",
+   "object": "Amara"
+  },
+  {
+   "subject": "user",
+   "predicate": "birthday",
+   "object": "October 9"
+  },
+  {
+   "subject": "user",
+   "predicate": "preferred_pen",
+   "object": "Pilot G2 blue"
+  },
+  {
+   "subject": "user",
+   "predicate": "grading_software",
+   "object": "Google Classroom with rubrics"
+  },
+  {
+   "subject": "user",
+   "predicate": "lab_safety_rule",
+   "object": "Goggles on before entering the lab"
+  },
+  {
+   "subject": "user",
+   "predicate": "favorite_novel",
+   "object": "Station Eleven"
+  }
+ ],
+ "notes": [
+  {
+   "slug": "ptnight",
+   "date": "2026-09-03",
+   "text": "Parent-teacher night is October 22. Prepare progress summaries for the Chemistry 11 class, and book the gym for the reception."
+  },
+  {
+   "slug": "trip",
+   "date": "2026-09-10",
+   "text": "Field trip to the Ontario Science Centre approved for November 14. Permission slips are due two weeks earlier and the bus is booked from nine to three."
+  },
+  {
+   "slug": "acid",
+   "date": "2026-09-17",
+   "text": "Lab incident follow up: a student spilled hydrochloric acid on a bench. No injuries. We now keep neutralizing sodium bicarbonate at every station."
+  },
+  {
+   "slug": "pottery",
+   "date": "2026-09-24",
+   "text": "Pottery class: the first glazed bowls came out of the kiln with small cracks. The teacher says to dry them slower next time."
+  },
+  {
+   "slug": "canoe",
+   "date": "2026-08-28",
+   "text": "Planning a canoe trip in Algonquin Park for the August long weekend next year, with Jamal and two friends."
+  },
+  {
+   "slug": "physics",
+   "date": "2026-09-29",
+   "text": "Curriculum meeting: Grade 11 physics will switch to a project based unit on electricity, replacing two of the written tests."
+  },
+  {
+   "slug": "surgery",
+   "date": "2026-07-15",
+   "text": "Mom's knee surgery in Ottawa is booked for November. I will take a week of leave and stay with my parents."
+  },
+  {
+   "slug": "bike",
+   "date": "2026-08-05",
+   "text": "Started a savings jar for a new bike. The target is 900 dollars and it is at 310 so far."
+  }
+ ]
+}

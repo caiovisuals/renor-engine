@@ -1,0 +1,40 @@
+Copyright 2026 Patrick Passos
+
+Renor's own work in this tree is licensed under the GNU Affero General
+Public License, Version 3 (AGPL-3.0-only). See the LICENSE file.
+
+Files imported from the public project obsidian-semantic-memory
+(https://github.com/sterben-enec/obsidian-semantic-memory) stay under
+that project's ISC license. The upstream notice is reproduced below
+unchanged. It is not an AGPL-3.0 grant, and the upstream copyright
+line is not Renor's.
+
+-----
+
+ISC License
+
+Copyright (c) 2026 sterben_enec
+
+Permission to use, copy, modify, and/or distribute this software for any
+purpose with or without fee is hereby granted, provided that the above
+copyright notice and this permission notice appear in all copies.
+
+THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES WITH
+REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY
+AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY SPECIAL, DIRECT,
+INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES WHATSOEVER RESULTING FROM
+LOSS OF USE, DATA OR PROFITS, WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE OR
+OTHER TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR
+PERFORMANCE OF THIS SOFTWARE.
+
+-----
+
+Third-party components
+
+@img/sharp-libvips-linux-x64 and the musl build (@img/sharp-libvips-linuxmusl-x64)
+are LGPL-3.0-or-later. @img/sharp-wasm32 is Apache-2.0 AND LGPL-3.0-or-later
+AND MIT. The sharp override in package.json pulls them in so
+@xenova/transformers can run a local embedding model. They ship as separate
+shared objects, not as AGPL-3.0 source. LGPL-3.0 stays compatible with
+this AGPL-3.0-only program while those libraries remain separate and this
+notice is kept. They are not AGPL-3.0.

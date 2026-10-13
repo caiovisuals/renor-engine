@@ -1,0 +1,19 @@
+{
+  "extends": "./tsconfig.eval.json",
+  // Public CI only. `npm run eval:typecheck` stays on tsconfig.eval.json, which the private
+  // gate requires to cover every test, including tests that import apps/gateway. This project
+  // is what the public job runs instead: those tests stay on disk in this private monorepo,
+  // and tsc follows their imports into gateway code whose dependencies are not installed.
+  // exclude replaces the inherited one, so node_modules and dist are repeated. Excluding the
+  // apps directory does not stop that follow, so the gateway-bound tests themselves are listed.
+  "exclude": [
+    "node_modules",
+    "dist",
+    "apps",
+    "tests/**/gateway-*.test.ts",
+    "tests/review/on-demand-admission.test.ts",
+    "tests/review/activation-broker.test.ts",
+    "tests/review/dashboard-import-gateway.test.ts",
+    "tests/mvp/loud-connection.test.ts"
+  ]
+}

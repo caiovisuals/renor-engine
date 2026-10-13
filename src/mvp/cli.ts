@@ -1,0 +1,73 @@
+// FIRST, and for its side effect: enabling this workspace's Node compile cache
+// before anything heavy is resolved. With every workspace asleep after its idle
+// period, the gateway's wake pays the whole module-load phase again, and the
+// compile cache is what keeps that phase off the critical path. It must come
+// before ./server, which transitively pulls the o200k_base table (~300 ms of a
+// ~930 ms module-load phase, measured on Node 22 against an empty workspace).
+import { enableWorkspaceCompileCache } from './compileCache';
+enableWorkspaceCompileCache();
+
+import { loadMvpConfig } from './config';
+import { startMvpService, MVP_MCP_PATH } from './server';
+import { flushTelemetry } from './telemetry';
+import { shutdownPosthogMcp } from './posthogMcp';
+
+/**
+ * CLI entry for the single-user ChatGPT MVP service.
+ *
+ * Required environment:
+ *   MVP_MEMORY_DIR   dedicated owner memory directory (create a NEW folder)
+ *   MVP_BASE_URL     externally reachable base URL (http://localhost:<port> for
+ *                    local protocol tests; your public https URL for ChatGPT)
+ *   MVP_OWNER_EMAIL  the single owner login email
+ *   MVP_OWNER_PASSWORD  owner login secret (env-only, never in Git)
+ * Optional:
+ *   MVP_PORT (default 3471), MVP_LEDGER_REL, MVP_ACCESS_TOKEN_TTL_SECONDS
+ */
+
+async function main() {
+  const config = loadMvpConfig();
+  const mvp = await startMvpService(config);
+  console.log(`[mvp] Renor single-owner memory service`);
+  console.log(`[mvp] Memory directory : ${config.memoryDir}`);
+  console.log(`[mvp] Ledger (source)  : ${config.ledgerRelPath}`);
+  console.log(`[mvp] Derived index     : ${config.dbPath} (rebuildable from the ledger)`);
+  console.log(`[mvp] Listening         : http://127.0.0.1:${config.port}`);
+  console.log(`[mvp] MCP endpoint      : ${new URL(MVP_MCP_PATH, config.baseUrl).href}`);
+  console.log(`[mvp] OAuth discovery   : ${new URL('/.well-known/oauth-authorization-server', config.baseUrl).href}`);
+  console.log(`[mvp] Owner             : ${config.ownerEmail} (the only identity that can authorize)`);
+  if (config.historyDir) {
+    console.log(`[mvp] History directory : ${config.historyDir} (search_history: promoted ChatGPT history, manifest-verified)`);
+  } else {
+    console.log(`[mvp] History directory : not configured (search_history returns a bounded unconfigured result; set MVP_HISTORY_DIR to enable)`);
+  }
+  console.log(`[mvp] Local proof       : run the MCP client tests in tests/mvp/`);
+  console.log(`[mvp] DCR allowlist     : ${config.allowedCallbackUris.length} exact callback URI(s)${config.allowedCallbackUris.length ? '' : ' — DENY BY DEFAULT: no client may register until MVP_ALLOWED_CALLBACK_URIS names exact callbacks'}`);
+  console.log(`[mvp] Exposure boundary : loopback-bound; any public use REQUIRES TLS termination in front (no public mode is shipped).`);
+  console.log(`[mvp] Embeddings         : ${config.embeddingProvider}${config.embeddingDims ? ` (${config.embeddingDims}-d)` : ''}`);
+  const shutdown = async () => {
+    try {
+      await mvp.close();
+    } finally {
+      await Promise.allSettled([flushTelemetry(), shutdownPosthogMcp()]);
+    }
+    process.exit(0);
+  };
+  process.on('SIGINT', shutdown);
+  process.on('SIGTERM', shutdown);
+  if (mvp.idleExit) {
+    console.log(`[mvp] On-demand         : exits after ${config.idleExitMs! / 1000}s with no work in flight (RENOR_ON_DEMAND); the gateway starts it again`);
+    void mvp.idleExit.then(() => {
+      console.log('[mvp] idle: no work in flight for the idle period; exiting cleanly');
+      // Exit 0 is what leaves the unit stopped (Restart=on-failure). Nothing is in
+      // flight, so a telemetry flush that hangs must not keep the engine resident.
+      setTimeout(() => process.exit(0), 15_000).unref();
+      return shutdown();
+    });
+  }
+}
+
+main().catch((err) => {
+  console.error('[mvp] startup failed:', err instanceof Error ? err.message : err);
+  process.exit(1);
+});

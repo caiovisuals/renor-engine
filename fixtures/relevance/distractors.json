@@ -1,0 +1,769 @@
+{
+ "description": "Deterministic distractor memories for workspace-size sensitivity; topics are disjoint from every calibration question.",
+ "facts": [
+  {
+   "subject": "user",
+   "predicate": "tomato_variety",
+   "object": "San Marzano"
+  },
+  {
+   "subject": "user",
+   "predicate": "watering_schedule",
+   "object": "Every second evening"
+  },
+  {
+   "subject": "user",
+   "predicate": "compost_ratio",
+   "object": "Three parts brown to one part green"
+  },
+  {
+   "subject": "user",
+   "predicate": "raised_bed_count",
+   "object": "Four"
+  },
+  {
+   "subject": "user",
+   "predicate": "frost_date",
+   "object": "Mid November"
+  },
+  {
+   "subject": "user",
+   "predicate": "favorite_herb",
+   "object": "Basil"
+  },
+  {
+   "subject": "user",
+   "predicate": "mulch_type",
+   "object": "Pine bark"
+  },
+  {
+   "subject": "user",
+   "predicate": "pest_remedy",
+   "object": "Neem oil spray"
+  },
+  {
+   "subject": "user",
+   "predicate": "seed_supplier",
+   "object": "Hortus Seeds"
+  },
+  {
+   "subject": "user",
+   "predicate": "lemon_tree_location",
+   "object": "South-facing balcony"
+  },
+  {
+   "subject": "user",
+   "predicate": "rain_barrel_size",
+   "object": "200 liters"
+  },
+  {
+   "subject": "user",
+   "predicate": "pruning_month",
+   "object": "February"
+  },
+  {
+   "subject": "user",
+   "predicate": "sourdough_hydration",
+   "object": "75 percent"
+  },
+  {
+   "subject": "user",
+   "predicate": "chef_knife",
+   "object": "Japanese gyuto, 210 mm"
+  },
+  {
+   "subject": "user",
+   "predicate": "cast_iron_pan",
+   "object": "Lodge 12 inch"
+  },
+  {
+   "subject": "user",
+   "predicate": "weeknight_dinner",
+   "object": "Lentil stew"
+  },
+  {
+   "subject": "user",
+   "predicate": "spice_rack_order",
+   "object": "Alphabetical"
+  },
+  {
+   "subject": "user",
+   "predicate": "rice_cooker",
+   "object": "Zojirushi 5.5 cup"
+  },
+  {
+   "subject": "user",
+   "predicate": "olive_oil",
+   "object": "Cold pressed from Alentejo"
+  },
+  {
+   "subject": "user",
+   "predicate": "breakfast",
+   "object": "Oats with banana"
+  },
+  {
+   "subject": "user",
+   "predicate": "pasta_brand",
+   "object": "De Cecco"
+  },
+  {
+   "subject": "user",
+   "predicate": "fermentation_jar",
+   "object": "Fido 1 liter"
+  },
+  {
+   "subject": "user",
+   "predicate": "oven_temperature_for_pizza",
+   "object": "250 degrees Celsius"
+  },
+  {
+   "subject": "user",
+   "predicate": "kitchen_scale",
+   "object": "Escali, grams only"
+  },
+  {
+   "subject": "user",
+   "predicate": "current_book",
+   "object": "The Dispossessed by Ursula Le Guin"
+  },
+  {
+   "subject": "user",
+   "predicate": "reading_goal_2026",
+   "object": "Thirty books"
+  },
+  {
+   "subject": "user",
+   "predicate": "ebook_reader",
+   "object": "Kobo Libra"
+  },
+  {
+   "subject": "user",
+   "predicate": "favorite_genre",
+   "object": "Science fiction"
+  },
+  {
+   "subject": "user",
+   "predicate": "library_card",
+   "object": "Biblioteca Municipal de Lisboa"
+  },
+  {
+   "subject": "user",
+   "predicate": "book_club_day",
+   "object": "First Sunday of the month"
+  },
+  {
+   "subject": "user",
+   "predicate": "last_finished_book",
+   "object": "Piranesi"
+  },
+  {
+   "subject": "user",
+   "predicate": "audiobook_speed",
+   "object": "1.4x"
+  },
+  {
+   "subject": "user",
+   "predicate": "bookmark_style",
+   "object": "Leather tab"
+  },
+  {
+   "subject": "user",
+   "predicate": "poetry_collection",
+   "object": "Fernando Pessoa"
+  },
+  {
+   "subject": "user",
+   "predicate": "nonfiction_pick",
+   "object": "The Soul of a New Machine"
+  },
+  {
+   "subject": "user",
+   "predicate": "reading_spot",
+   "object": "Armchair by the window"
+  },
+  {
+   "subject": "user",
+   "predicate": "chess_rating_rapid",
+   "object": "1710"
+  },
+  {
+   "subject": "user",
+   "predicate": "opening_with_white",
+   "object": "London system"
+  },
+  {
+   "subject": "user",
+   "predicate": "opening_with_black",
+   "object": "Caro-Kann"
+  },
+  {
+   "subject": "user",
+   "predicate": "chess_club_night",
+   "object": "Thursday"
+  },
+  {
+   "subject": "user",
+   "predicate": "favorite_player",
+   "object": "Magnus Carlsen"
+  },
+  {
+   "subject": "user",
+   "predicate": "puzzle_streak",
+   "object": "43 days"
+  },
+  {
+   "subject": "user",
+   "predicate": "chess_site",
+   "object": "Lichess"
+  },
+  {
+   "subject": "user",
+   "predicate": "time_control",
+   "object": "10 plus 5"
+  },
+  {
+   "subject": "user",
+   "predicate": "endgame_book",
+   "object": "Silman complete endgame course"
+  },
+  {
+   "subject": "user",
+   "predicate": "blunder_check_habit",
+   "object": "Look at checks and captures first"
+  },
+  {
+   "subject": "user",
+   "predicate": "tournament_goal",
+   "object": "Play one rated weekend event"
+  },
+  {
+   "subject": "user",
+   "predicate": "chess_board",
+   "object": "Wooden Staunton set"
+  },
+  {
+   "subject": "user",
+   "predicate": "camera_body",
+   "object": "Fujifilm X-T5"
+  },
+  {
+   "subject": "user",
+   "predicate": "favorite_lens",
+   "object": "23 mm f/2"
+  },
+  {
+   "subject": "user",
+   "predicate": "photo_editing_app",
+   "object": "Darktable"
+  },
+  {
+   "subject": "user",
+   "predicate": "film_stock",
+   "object": "Portra 400"
+  },
+  {
+   "subject": "user",
+   "predicate": "tripod",
+   "object": "Peak Design travel tripod"
+  },
+  {
+   "subject": "user",
+   "predicate": "photo_backup",
+   "object": "Two external SSDs and cloud archive"
+  },
+  {
+   "subject": "user",
+   "predicate": "shooting_mode",
+   "object": "Aperture priority"
+  },
+  {
+   "subject": "user",
+   "predicate": "flash",
+   "object": "None"
+  },
+  {
+   "subject": "user",
+   "predicate": "print_size",
+   "object": "A3"
+  },
+  {
+   "subject": "user",
+   "predicate": "instagram_handle_policy",
+   "object": "No personal account"
+  },
+  {
+   "subject": "user",
+   "predicate": "photo_walk_day",
+   "object": "Saturday morning"
+  },
+  {
+   "subject": "user",
+   "predicate": "white_balance_habit",
+   "object": "Shoot raw, fix later"
+  },
+  {
+   "subject": "user",
+   "predicate": "workbench",
+   "object": "Roubo style, beech"
+  },
+  {
+   "subject": "user",
+   "predicate": "hand_plane",
+   "object": "Lie-Nielsen no. 4"
+  },
+  {
+   "subject": "user",
+   "predicate": "current_build",
+   "object": "Walnut bookshelf"
+  },
+  {
+   "subject": "user",
+   "predicate": "wood_finish",
+   "object": "Hardwax oil"
+  },
+  {
+   "subject": "user",
+   "predicate": "saw",
+   "object": "Japanese ryoba"
+  },
+  {
+   "subject": "user",
+   "predicate": "sharpening_stones",
+   "object": "1000 and 6000 grit waterstones"
+  },
+  {
+   "subject": "user",
+   "predicate": "shop_location",
+   "object": "Garage"
+  },
+  {
+   "subject": "user",
+   "predicate": "dust_collection",
+   "object": "Shop vac with cyclone separator"
+  },
+  {
+   "subject": "user",
+   "predicate": "clamps",
+   "object": "Bessey parallel clamps"
+  },
+  {
+   "subject": "user",
+   "predicate": "joinery_preference",
+   "object": "Mortise and tenon"
+  },
+  {
+   "subject": "user",
+   "predicate": "lumber_yard",
+   "object": "Madeiras do Tejo"
+  },
+  {
+   "subject": "user",
+   "predicate": "safety_gear",
+   "object": "Hearing protection and goggles"
+  },
+  {
+   "subject": "user",
+   "predicate": "trail_shoes",
+   "object": "Salomon Speedcross"
+  },
+  {
+   "subject": "user",
+   "predicate": "backpack",
+   "object": "Osprey Talon 22"
+  },
+  {
+   "subject": "user",
+   "predicate": "favorite_trail",
+   "object": "Serra da Estrela loop"
+  },
+  {
+   "subject": "user",
+   "predicate": "hiking_group_day",
+   "object": "Second Saturday"
+  },
+  {
+   "subject": "user",
+   "predicate": "water_filter",
+   "object": "Sawyer Squeeze"
+  },
+  {
+   "subject": "user",
+   "predicate": "trekking_poles",
+   "object": "Black Diamond carbon"
+  },
+  {
+   "subject": "user",
+   "predicate": "tent",
+   "object": "Nemo Hornet 2P"
+  },
+  {
+   "subject": "user",
+   "predicate": "gps_app",
+   "object": "Komoot"
+  },
+  {
+   "subject": "user",
+   "predicate": "summer_hike_goal",
+   "object": "Camino section from Porto"
+  },
+  {
+   "subject": "user",
+   "predicate": "trail_snack",
+   "object": "Dried figs and almonds"
+  },
+  {
+   "subject": "user",
+   "predicate": "first_aid_kit",
+   "object": "Compact, restocked each spring"
+  },
+  {
+   "subject": "user",
+   "predicate": "longest_hike",
+   "object": "31 kilometers"
+  },
+  {
+   "subject": "user",
+   "predicate": "index_fund_allocation",
+   "object": "80 percent global equities, 20 percent bonds"
+  },
+  {
+   "subject": "user",
+   "predicate": "broker",
+   "object": "Interactive Brokers"
+  },
+  {
+   "subject": "user",
+   "predicate": "emergency_fund",
+   "object": "Six months of expenses"
+  },
+  {
+   "subject": "user",
+   "predicate": "budget_app",
+   "object": "Actual Budget"
+  },
+  {
+   "subject": "user",
+   "predicate": "tax_advisor_meeting",
+   "object": "Every March"
+  },
+  {
+   "subject": "user",
+   "predicate": "savings_rate",
+   "object": "25 percent"
+  },
+  {
+   "subject": "user",
+   "predicate": "crypto_holdings",
+   "object": "None"
+  },
+  {
+   "subject": "user",
+   "predicate": "retirement_account",
+   "object": "PPR with a Portuguese bank"
+  },
+  {
+   "subject": "user",
+   "predicate": "rebalance_schedule",
+   "object": "Twice a year"
+  },
+  {
+   "subject": "user",
+   "predicate": "donation_policy",
+   "object": "One percent to open source projects"
+  },
+  {
+   "subject": "user",
+   "predicate": "insurance_review_month",
+   "object": "January"
+  },
+  {
+   "subject": "user",
+   "predicate": "receipt_scanning",
+   "object": "Paperless-ngx"
+  },
+  {
+   "subject": "user",
+   "predicate": "podcast_player",
+   "object": "Pocket Casts"
+  },
+  {
+   "subject": "user",
+   "predicate": "favorite_podcast",
+   "object": "Hardcore History"
+  },
+  {
+   "subject": "user",
+   "predicate": "listening_speed",
+   "object": "1.5x"
+  },
+  {
+   "subject": "user",
+   "predicate": "commute_listening",
+   "object": "Technology interviews"
+  },
+  {
+   "subject": "user",
+   "predicate": "podcast_guest_wishlist",
+   "object": "Not applicable"
+  },
+  {
+   "subject": "user",
+   "predicate": "newsletter_reader",
+   "object": "Feedbin"
+  },
+  {
+   "subject": "user",
+   "predicate": "news_source",
+   "object": "Reuters"
+  },
+  {
+   "subject": "user",
+   "predicate": "youtube_channel_pick",
+   "object": "Practical Engineering"
+  },
+  {
+   "subject": "user",
+   "predicate": "music_service",
+   "object": "Bandcamp and local files"
+  },
+  {
+   "subject": "user",
+   "predicate": "workout_playlist",
+   "object": "Drum and bass mix"
+  },
+  {
+   "subject": "user",
+   "predicate": "focus_music",
+   "object": "Brown noise"
+  },
+  {
+   "subject": "user",
+   "predicate": "radio_station",
+   "object": "Antena 3"
+  },
+  {
+   "subject": "Zephyr",
+   "predicate": "zephyr_purpose",
+   "object": "Open source CLI for log redaction",
+   "scope": "project:zephyr"
+  },
+  {
+   "subject": "Zephyr",
+   "predicate": "zephyr_language",
+   "object": "Zig",
+   "scope": "project:zephyr"
+  },
+  {
+   "subject": "Zephyr",
+   "predicate": "zephyr_license",
+   "object": "Apache 2.0",
+   "scope": "project:zephyr"
+  },
+  {
+   "subject": "Zephyr",
+   "predicate": "zephyr_repo_host",
+   "object": "Codeberg",
+   "scope": "project:zephyr"
+  },
+  {
+   "subject": "Zephyr",
+   "predicate": "zephyr_release_version",
+   "object": "0.4.2",
+   "scope": "project:zephyr"
+  },
+  {
+   "subject": "Zephyr",
+   "predicate": "zephyr_docs_tool",
+   "object": "mdBook",
+   "scope": "project:zephyr"
+  },
+  {
+   "subject": "Zephyr",
+   "predicate": "zephyr_benchmark",
+   "object": "Redacts 1.2 GB per second",
+   "scope": "project:zephyr"
+  },
+  {
+   "subject": "Zephyr",
+   "predicate": "zephyr_contributors",
+   "object": "Three regulars",
+   "scope": "project:zephyr"
+  },
+  {
+   "subject": "Zephyr",
+   "predicate": "zephyr_issue_triage_day",
+   "object": "Sunday evening",
+   "scope": "project:zephyr"
+  },
+  {
+   "subject": "Zephyr",
+   "predicate": "zephyr_roadmap_item",
+   "object": "Streaming mode",
+   "scope": "project:zephyr"
+  },
+  {
+   "subject": "Zephyr",
+   "predicate": "zephyr_package_name",
+   "object": "zephyr-redact",
+   "scope": "project:zephyr"
+  },
+  {
+   "subject": "Zephyr",
+   "predicate": "zephyr_ci",
+   "object": "Woodpecker",
+   "scope": "project:zephyr"
+  }
+ ],
+ "notes": [
+  {
+   "slug": "d0",
+   "date": "2026-06-02",
+   "text": "The tomato seedlings went into the raised bed on the twelfth. They need staking by the end of the month."
+  },
+  {
+   "slug": "d1",
+   "date": "2026-06-09",
+   "text": "Sourdough starter was neglected for a week. Fed it twice a day and it recovered with a rye boost."
+  },
+  {
+   "slug": "d2",
+   "date": "2026-06-15",
+   "text": "Finished Piranesi in two sittings. The ending changed how I read the first half; worth a reread."
+  },
+  {
+   "slug": "d3",
+   "date": "2026-06-21",
+   "text": "Chess club: lost a rook endgame I should have drawn. Review the Lucena and Philidor positions again."
+  },
+  {
+   "slug": "d4",
+   "date": "2026-06-28",
+   "text": "Photo walk along the river at dawn. Underexposed the harbor shots by a stop; the raws recovered fine."
+  },
+  {
+   "slug": "d5",
+   "date": "2026-07-03",
+   "text": "Started the walnut bookshelf. Cut the sides to length and dry fit the shelves with floating tenons."
+  },
+  {
+   "slug": "d6",
+   "date": "2026-07-08",
+   "text": "Hike in Serra da Estrela: nine hours, weather turned at the ridge. Next time start before seven."
+  },
+  {
+   "slug": "d7",
+   "date": "2026-07-14",
+   "text": "Rebalanced the portfolio. Bonds had drifted below target after the equity rally; moved a small amount back."
+  },
+  {
+   "slug": "d8",
+   "date": "2026-07-20",
+   "text": "Podcast notes: an episode on the Apollo guidance computer, memory rope and the people who wove it."
+  },
+  {
+   "slug": "d9",
+   "date": "2026-07-26",
+   "text": "Zephyr 0.4.0 shipped. The redaction rules now compile once at startup, which halved the cold-start time."
+  },
+  {
+   "slug": "d10",
+   "date": "2026-08-01",
+   "text": "Lemon tree dropped leaves after the heatwave. Moved it to a shadier corner and increased watering."
+  },
+  {
+   "slug": "d11",
+   "date": "2026-08-05",
+   "text": "Pizza night: 72 hour dough at 70 percent hydration baked far better than the same day dough."
+  },
+  {
+   "slug": "d12",
+   "date": "2026-08-09",
+   "text": "Book club picked The Left Hand of Darkness for next month. Everyone agreed to read it before the meeting."
+  },
+  {
+   "slug": "d13",
+   "date": "2026-08-13",
+   "text": "Puzzle streak reached forty days. Tactics are improving but time management in the middlegame is poor."
+  },
+  {
+   "slug": "d14",
+   "date": "2026-08-17",
+   "text": "Bought a used 23 mm lens in excellent condition. The autofocus is quicker than expected on the T5."
+  },
+  {
+   "slug": "d15",
+   "date": "2026-08-22",
+   "text": "Sharpened the plane iron and the chisels. Hollow grinding first, then the 1000 and 6000 stones."
+  },
+  {
+   "slug": "d16",
+   "date": "2026-08-27",
+   "text": "Weekend plan: Camino section from Porto in the autumn. Need to book hostels two weeks ahead."
+  },
+  {
+   "slug": "d17",
+   "date": "2026-09-02",
+   "text": "Reviewed the savings rate. Twenty five percent is achievable even after the apartment repairs."
+  },
+  {
+   "slug": "d18",
+   "date": "2026-09-06",
+   "text": "Switched the commute playlist from interviews to long history episodes. Easier to follow on a bike."
+  },
+  {
+   "slug": "d19",
+   "date": "2026-09-10",
+   "text": "Zephyr issue triage: the streaming mode request has eight thumbs up, so it moves up the roadmap."
+  },
+  {
+   "slug": "d20",
+   "date": "2026-09-12",
+   "text": "Composted the last of the spent tomato plants and added a layer of pine bark mulch."
+  },
+  {
+   "slug": "d21",
+   "date": "2026-09-15",
+   "text": "Made a lentil stew with smoked paprika. Keep the recipe: onions, carrots, a bay leaf, and a splash of vinegar."
+  },
+  {
+   "slug": "d22",
+   "date": "2026-09-18",
+   "text": "Started The Dispossessed. The structure alternating between two timelines is clever and easy to follow."
+  },
+  {
+   "slug": "d23",
+   "date": "2026-09-20",
+   "text": "Chess rapid rating hit 1710 after a good Thursday. Playing the London system more patiently seems to help."
+  },
+  {
+   "slug": "d24",
+   "date": "2026-09-22",
+   "text": "Printed three A3 photographs for the hallway. The matte paper handles shadows better than the glossy one."
+  },
+  {
+   "slug": "d25",
+   "date": "2026-09-24",
+   "text": "Glued up the walnut bookshelf sides. Clamps stayed on overnight and the joints closed up cleanly."
+  },
+  {
+   "slug": "d26",
+   "date": "2026-09-26",
+   "text": "Trail shoes are worn through at the heel. Look for a wider toe box next time."
+  },
+  {
+   "slug": "d27",
+   "date": "2026-09-27",
+   "text": "Quarterly receipts scanned and tagged in Paperless. Tax advisor meeting is booked for March."
+  },
+  {
+   "slug": "d28",
+   "date": "2026-09-28",
+   "text": "Zephyr docs moved to mdBook. Examples for the redaction rules are now runnable in the book."
+  },
+  {
+   "slug": "d29",
+   "date": "2026-09-29",
+   "text": "Sunday triage done. Closed twelve stale issues and labelled the rest by area."
+  }
+ ]
+}
