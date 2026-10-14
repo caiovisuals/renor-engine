@@ -601,6 +601,23 @@ const migrations: Migration[] = [
     },
   },
 
+  {
+    version: 25,
+    name: '25_fact_statement_words',
+    up: (db: Database.Database) => {
+      // The words of the statement a lifecycle fact was saved with (memory/factTerms.ts `statementTerms`), so the facts
+      // lane can count them toward a question's words. Null on a fact with no statement (save_memory) and on rows saved
+      // before this column; the replay backfills those from the ledger (lifecycle.ts `backfillStatementWords`).
+      // A table this database does not have (a partial legacy schema) is left alone.
+      const add = (table: string, column: string) => {
+        const cols = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
+        if (cols.length > 0 && !cols.some(c => c.name === column)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} TEXT`);
+      };
+      add('facts', 'statement_words');
+      add('retired_facts', 'statement_words');
+    },
+  },
+
 ];
 
 export function runMigrations(db: Database.Database): void {

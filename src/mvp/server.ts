@@ -1,5 +1,6 @@
 import express from 'express';
 import crypto from 'crypto';
+import path from 'path';
 import Database from 'better-sqlite3';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
@@ -50,7 +51,7 @@ import { normalizeScope } from './scope';
 import { identityKey } from '../retrieval/queryHelpers';
 import { ledgerNoteMatcher, withoutLedgerMetadata } from '../retrieval/ledgerPresentation';
 import type { EmbeddingProvider } from '../embeddings/types';
-import { emitTelemetry, isRecallTool } from './telemetry';
+import { emitTelemetry, isPlatformInitialize, isRecallTool } from './telemetry';
 import { ReadUsefulness, contextItems, searchItems, retrieveItems } from './readUsefulness';
 import { instrumentMcpServer } from './posthogMcp';
 import { countSchemaRejections } from './schemaRejections';
@@ -68,7 +69,7 @@ import { LOCAL_API_HOSTNAMES } from '../api/apiAuth';
 import { ensureOwnerOnlyFile, ensureOwnerOnlyMemoryDir } from './memoryDir';
 import { previewImport, applyHostedImport, undoHostedImport, importPreviewSchema, importBatchSchema } from '../importing/hosted';
 import { exportEverything, EXPORT_SECTIONS } from './exportAll';
-import { DEFAULT_MAP_LIMIT, buildMemoryMap, findMemories, readMemory, retireMemory, restoreMemory } from '../memorymap/memoryMap';
+import { DEFAULT_MAP_LIMIT, buildMemoryMap, findMemories, purgeRetired, readMemory, retireMemory, restoreMemory } from '../memorymap/memoryMap';
 import { IdleMonitor } from './idle';
 import { StoredSizeGauge } from './storedSize';
 import { escapeInvisibleControls, sanitizeErrorMessage } from './sanitize';
@@ -217,6 +218,7 @@ function isLocalDirectCall(req: express.Request): boolean {
  * adds two, so they are described only where they can occur.
  */
 const EVIDENCE_WAIT_STATES = ' This deployment waits for the evidence model only a bounded time, so two more states mean that this response alone has no table: "pending" (the extraction did not finish in time; it continues, and once its table is cached the same request over the same notes returns it) and "busy" (as many extractions were already waiting as the deployment allows, so none was started).';
+const EVIDENCE_DAILY_CAP_STATE = ' This workspace has a daily allowance of evidence-model calls, so one more state means that this response alone has no table: "capped" (the allowance is used up until 00:00 UTC; retrieval is unaffected and the hits are the whole result).';
 
 /**
  * Every tool answers in the same shape: its JSON on one line. Indentation is whitespace an agent pays for in tokens on
@@ -341,11 +343,22 @@ function hiveAgentOf(extra: CallExtra | undefined, tool: string, config: MvpConf
   return agent;
 }
 
+/**
+ * The gateway's mark on a call the platform made for the signed-in owner (the dashboard's internal connection key),
+ * never an agent's. The gateway deletes a client-sent copy and sets it only for an internal key, so it is trusted only
+ * behind the gateway (gatewaySecret); an engine reached without one never treats a call as the dashboard's.
+ */
+export const DASHBOARD_HEADER = 'x-renor-internal';
+
+function isDashboardCall(headers: Record<string, unknown> | undefined, config: MvpConfig): boolean {
+  return Boolean(config.gatewaySecret) && headerText(headers, DASHBOARD_HEADER) === '1';
+}
+
 /** Builds a fresh McpServer with all MVP tools registered. The SDK
  * binds one transport per Protocol instance, so SSE sessions each get
  * their own server (bounded, in-process); JSON mode shares one.
  */
-function buildMcpServer(db: Database.Database, config: MvpConfig, engine: Engine, idle: IdleMonitor | null, digests: EngineDigests | null, usefulness: ReadUsefulness, connection: ConnectionStatus | null, announceFirst: boolean, telemetrySession: string | null = null): McpServer {
+function buildMcpServer(db: Database.Database, config: MvpConfig, engine: Engine, idle: IdleMonitor | null, digests: EngineDigests | null, usefulness: ReadUsefulness, connection: ConnectionStatus | null, announceFirst: boolean, telemetrySession: string | null = null, dashboard = false): McpServer {
   // Which Renor this is, on the first reply of a session and on every error (connectionStatus.ts); nothing in a workspace
   // that is not hosted. A server that serves no session of its own (the stateless one, or one built for a session this
   // process forgot) has no first reply to announce on.
@@ -484,12 +497,16 @@ function buildMcpServer(db: Database.Database, config: MvpConfig, engine: Engine
         // their phrasing (semantic or keyword) then reaches the fact. The fact
         // is already durable, so a failed refresh must not fail the receipt; the
         // receipt says it failed, and why.
-        // Only what changed is indexed (the ledger's new event), as a note save does,
-        // so a save costs the same however many events and notes the workspace holds.
+        // Only the ledger, which this save appended to, is checked: its new event is what changed, so a save costs the
+        // same however many events and notes the workspace holds. The vault is walked only once every
+        // FULL_VAULT_CHECK_MS (see engineIndexChanged).
         let refresh: Record<string, unknown> = {};
         if (receipt.action !== 'nochange') {
           try {
-            const pass = await engineIndexChanged(db, config, engine, undefined, { interactive: true });
+            const pass = await engineIndexChanged(db, config, engine, undefined, {
+              interactive: true,
+              touched: [resolveLedgerPath(config.memoryDir, config.ledgerRelPath)],
+            });
             if (pass.errors > 0) refresh = unfinishedPass(pass);
           } catch {
             refresh = { warning: 'memory-saved-but-index-refresh-failed' };
@@ -540,7 +557,7 @@ function buildMcpServer(db: Database.Database, config: MvpConfig, engine: Engine
         scope: note.scope,
         ...(note.id ? { id: note.id } : {}),
         ...replaced,
-        ...(await indexSavedNote(db, config, engine, digests)),
+        ...(await indexSavedNote(db, config, engine, digests, note.file)),
       });
     } catch (err) {
       return toolError(oneLineHint(err));
@@ -770,7 +787,7 @@ function buildMcpServer(db: Database.Database, config: MvpConfig, engine: Engine
   server.registerTool('search_memory', {
     title: 'Search memory by meaning (where enabled)',
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-    description: 'Searches indexed notes by meaning, on a workspace that has semantic search (memory_status reports semantic: true). When it cannot search by meaning it returns no hits and says why: semantic-unavailable with a note where the workspace has no semantic search, semantic-rebuilding with a notice while its embeddings are being built, semantic-unavailable with a notice when the embedding provider failed this request. Then use search_text (exact words) or get_context instead. Embeds only the query, not the vault. Returns the top_k best-matching chunks in the order named by rankedBy: "session_date" (the default) is newest first, so hits[0] is the most recent match and NOT necessarily the best one, while "score" (used for questions about the past, such as "what was it before") is best match first. Judge how well a hit matches by its score (higher is closer), never by its position. Each hit may include session_date, when that excerpt happened (the moment a daily-log entry or a remembered fact was saved, otherwise its note\'s date; in session_date order a hit without one comes last) — stamp excerpts as "[Session date: <session_date>]" before the chunk text. A hit of a remembered fact names no note (empty notePath and headingPath). A successful response also carries an `evidence` object describing the H10-v4 evidence second pass: when it extracts items they are prepended as the first hit with reason "evidence", outside the rankedBy order (`state: "ok"`), and otherwise `state` says why and nothing is missing — "off" (kill switch or gate disabled), "not-applied" (the gate skipped this query, or the hits carried no dated source session), "failed" (the evidence model call failed; retrieval is unaffected). There is no `evidence` object when this deployment has no evidence model configured and the pass is not switched off: no second pass runs, and the hits are the whole result. Current facts saved with remember come right after any evidence hit and before the ranked hits, outside the rankedBy order, found at once by keyword match and before the next index_memory (reason "fact", session_date the moment the fact was saved); they take only the places the ranked hits leave, so the hits are at most top_k in all, the evidence hit aside. The response carries index.stale while the semantic index is behind the saved facts, and while saved notes in the scope the search names are still waiting for their embedding: index.unembeddedNotes gives their count, and search_text or a retry finds them meanwhile. A hit with `replaced` ({by, at, source, note?}) was corrected by a later save: the correction (memory id `by`, saved by `source`; a `note` when that differs from the replaced memory\'s source) is listed before it, reason "replacement" when the search had not found it, and the replaced hit stays listed for the record. An added correction takes the place of the last hit, so the page is never longer than top_k; a top_k too small for the pair lists the correction alone.' + (evidence?.options.background ? EVIDENCE_WAIT_STATES : '') + (digests ? DIGEST_HITS : '') + (relevanceGuidance ? SEARCH_RELEVANCE_GUIDANCE : ''),
+    description: 'Searches indexed notes by meaning, on a workspace that has semantic search (memory_status reports semantic: true). When it cannot search by meaning it returns no hits and says why: semantic-unavailable with a note where the workspace has no semantic search, semantic-rebuilding with a notice while its embeddings are being built, semantic-unavailable with a notice when the embedding provider failed this request. Then use search_text (exact words) or get_context instead. Embeds only the query, not the vault. Returns the top_k best-matching chunks in the order named by rankedBy: "session_date" (the default) is newest first, so hits[0] is the most recent match and NOT necessarily the best one, while "score" (used for questions about the past, such as "what was it before") is best match first. Judge how well a hit matches by its score (higher is closer), never by its position. Each hit may include session_date, when that excerpt happened (the moment a daily-log entry or a remembered fact was saved, otherwise its note\'s date; in session_date order a hit without one comes last) — stamp excerpts as "[Session date: <session_date>]" before the chunk text. A hit of a remembered fact names no note (empty notePath and headingPath). A successful response also carries an `evidence` object describing the H10-v4 evidence second pass: when it extracts items they are prepended as the first hit with reason "evidence", outside the rankedBy order (`state: "ok"`), and otherwise `state` says why and nothing is missing — "off" (kill switch or gate disabled), "not-applied" (the gate skipped this query, or the hits carried no dated source session), "failed" (the evidence model call failed; retrieval is unaffected). There is no `evidence` object when this deployment has no evidence model configured and the pass is not switched off: no second pass runs, and the hits are the whole result. Current facts saved with remember come right after any evidence hit and before the ranked hits, outside the rankedBy order, found at once by keyword match and before the next index_memory (reason "fact", session_date the moment the fact was saved); they take only the places the ranked hits leave, so the hits are at most top_k in all, the evidence hit aside. The response carries index.stale while the semantic index is behind the saved facts, and while saved notes in the scope the search names are still waiting for their embedding: index.unembeddedNotes gives their count, and search_text or a retry finds them meanwhile. A hit with `replaced` ({by, at, source, note?}) was corrected by a later save: the correction (memory id `by`, saved by `source`; a `note` when that differs from the replaced memory\'s source) is listed before it, reason "replacement" when the search had not found it, and the replaced hit stays listed for the record. An added correction takes the place of the last hit, so the page is never longer than top_k; a top_k too small for the pair lists the correction alone.' + (evidence?.options.background ? EVIDENCE_WAIT_STATES : '') + (evidence?.options.dailyCap !== undefined ? EVIDENCE_DAILY_CAP_STATE : '') + (digests ? DIGEST_HITS : '') + (relevanceGuidance ? SEARCH_RELEVANCE_GUIDANCE : ''),
     inputSchema: {
       query: z.string().min(1).max(500).describe('Natural language query'),
       top_k: z.number().int().min(1).max(50).optional().describe('Max matches (default 20), not counting the short statements the session expansion adds to them'),
@@ -909,7 +926,7 @@ function buildMcpServer(db: Database.Database, config: MvpConfig, engine: Engine
         // The source the entry was written with (engineRememberNote's default when none), so the link names the same one.
         ? await replacementReceipt(args.replaces, body.id, source ?? 'mcp')
         : {};
-      return jsonResult({ ...body, ...replaced, ...(await indexSavedNote(db, config, engine, digests)) });
+      return jsonResult({ ...body, ...replaced, ...(await indexSavedNote(db, config, engine, digests, body.file)) });
     } catch (err) {
       return toolError(err);
     }
@@ -944,6 +961,10 @@ function buildMcpServer(db: Database.Database, config: MvpConfig, engine: Engine
     indexOptions: engine.provider && engine.vectorIndex
       ? { embeddingProvider: engine.provider, vectorIndex: engine.vectorIndex }
       : {},
+    // Where the evidence pass caches (evidence/options.ts), also when it is switched off now: rows written while it was on
+    // still hold text a permanent deletion must take.
+    evidenceCachePath: evidence?.options.cachePath
+      ?? (process.env.RENOR_EVIDENCE_CACHE?.trim() || path.join(path.dirname(config.dbPath), 'evidence-cache.db')),
   });
   // The part of a save's receipt that says what `replaces` did: the link, or why none was made (a loop is never recorded).
   const replacementReceipt = async (old: string, by: string, source?: string): Promise<Record<string, unknown>> => {
@@ -984,7 +1005,7 @@ function buildMcpServer(db: Database.Database, config: MvpConfig, engine: Engine
   server.registerTool('undo_import', {
     title: 'Undo one vault import batch',
     annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
-    description: 'Retire only notes created by this batch from memory and retrieval. Preserves pre-existing files, conflicts and later edits; reports preserved paths. Uses existing retirement journal and trash. Batch receipts persist across restarts and are tenant-local.',
+    description: 'Undo this batch\'s claim on imported notes. A created note stays live while a later batch still asserts the same bytes; undoing the last such batch retires it. Preserves pre-existing files, conflicts and later edits; reports preserved paths and the re-assertion reason. Uses existing retirement journal and trash. Batch receipts persist across restarts and are tenant-local.',
     inputSchema: importBatchSchema,
   }, async ({ batchId }) => {
     try { return jsonResult(await undoHostedImport(mapContext(), batchId)); }
@@ -1063,6 +1084,29 @@ function buildMcpServer(db: Database.Database, config: MvpConfig, engine: Engine
       return toolError(err);
     }
   });
+
+  // Only for the owner, from the dashboard: hidden from every agent's tools/list, and refused on any call not marked as the
+  // dashboard's (the gateway refuses it for an agent's key before it gets here, too). Irreversible, so an agent never
+  // holds it: retire_memory is how an agent forgets, and the owner decides what is erased.
+  const deleteRetired = server.registerTool('delete_retired_memory', {
+    title: 'Permanently delete retired memories (owner only)',
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
+    description: 'Permanently deletes a retired note or daily-log entry (id: retired:<id> from memory_map.retired), or every retired note and entry (id: "all"; with ids, only those retirement ids). Cannot be undone. A live memory is retired first; a retired fact is kept in the fact ledger.',
+    inputSchema: {
+      id: z.string().min(1).max(64).describe('retired:<id> from memory_map.retired, or "all"'),
+      ids: z.array(z.string().min(1).max(64)).min(1).max(MAX_LOOKUP_LIMIT).optional().describe('With id "all": only these retired:<id> entries (what the owner saw listed)'),
+    },
+  }, async (args, extra) => {
+    try {
+      if (!isDashboardCall(extra?.requestInfo?.headers, config)) {
+        throw refusal('invalid_argument', 'delete_retired_memory is only available to the owner, from the Renor dashboard');
+      }
+      return jsonResult(await purgeRetired({ ...mapContext(), source: 'dashboard' }, args.id, args.ids));
+    } catch (err) {
+      return toolError(err);
+    }
+  });
+  if (!dashboard) deleteRetired.disable();
 
   server.registerTool('whats_new', {
     title: "What's new for me",
@@ -1514,7 +1558,7 @@ export function createMvpApp(config: MvpConfig, engineOverride?: EmbeddingProvid
       sessionIdGenerator: undefined, // stateless: this transport serves this one request
       enableJsonResponse: false,
     });
-    const sessionServer = buildMcpServer(db, config, engine, idle, digests, usefulness, connection, false);
+    const sessionServer = buildMcpServer(db, config, engine, idle, digests, usefulness, connection, false, null, isDashboardCall(req.headers, config));
     res.once('close', () => { void transport.close(); void sessionServer.close(); });
     await sessionServer.connect(transport);
     await transport.handleRequest(req, res, req.body);
@@ -1577,7 +1621,7 @@ export function createMvpApp(config: MvpConfig, engineOverride?: EmbeddingProvid
           sessionIdGenerator: undefined, // stateless: one transport per request
           enableJsonResponse: true,
         });
-        const requestServer = buildMcpServer(db, config, engine, idle, digests, usefulness, connection, false);
+        const requestServer = buildMcpServer(db, config, engine, idle, digests, usefulness, connection, false, null, isDashboardCall(req.headers, config));
         res.on('close', () => { void transport.close(); void requestServer.close(); });
         await requestServer.connect(transport);
         await transport.handleRequest(req, res, req.body);
@@ -1618,9 +1662,11 @@ export function createMvpApp(config: MvpConfig, engineOverride?: EmbeddingProvid
         enableJsonResponse: false,            // SSE responses on POST
       });
       // one McpServer per session (the SDK binds one transport per Protocol). Its telemetry id is random and unrelated to the
-      // session's bearer and transport id, so no log line can be matched to either.
-      const telemetrySession = crypto.randomBytes(8).toString('hex');
-      const sessionServer = buildMcpServer(db, config, engine, idle, digests, usefulness, connection, true, telemetrySession);
+      // session's bearer and transport id, so no log line can be matched to either. A platform session (the dashboard's own
+      // calls, isPlatformInitialize) gets no id: it still counts as a connection, but it writes no first call and its mcp_init
+      // carries no id for the recall share to join, so the share counts agents only.
+      const telemetrySession = isPlatformInitialize(req.body) ? null : crypto.randomBytes(8).toString('hex');
+      const sessionServer = buildMcpServer(db, config, engine, idle, digests, usefulness, connection, true, telemetrySession, isDashboardCall(req.headers, config));
       transport.onclose = () => {
         sseSessions.delete(sessionId);
         emitTelemetry({ event: 'session', kind: 'mcp_close' });
@@ -1629,7 +1675,7 @@ export function createMvpApp(config: MvpConfig, engineOverride?: EmbeddingProvid
       const minted: SseSession = { transport, lastActivity: now, open: 0 };
       sseSessions.set(sessionId, minted);
       holdOpen(minted, res);
-      emitTelemetry({ event: 'session', kind: 'mcp_init', session: telemetrySession });
+      emitTelemetry({ event: 'session', kind: 'mcp_init', ...(telemetrySession ? { session: telemetrySession } : {}) });
       await sessionServer.connect(transport);
       await transport.handleRequest(req, res, req.body);
     } catch (err) {
@@ -1785,13 +1831,14 @@ function unfinishedPass(pass: IndexPass) {
 }
 
 /**
- * What a note save's receipt says of the index pass run right after it (remember in note mode, remember_note): only
- * what changed is indexed, so search finds the line at once, and a pass that failed is said, and why. The note is saved
- * either way.
+ * What a note save's receipt says of the index pass run right after it (remember in note mode, remember_note): the
+ * day's note the save wrote and the ledger are checked, so search finds the line at once, and a pass that failed is
+ * said, and why. The note is saved either way.
  */
-async function indexSavedNote(db: Database.Database, config: MvpConfig, engine: Engine, digests: EngineDigests | null = null) {
+async function indexSavedNote(db: Database.Database, config: MvpConfig, engine: Engine, digests: EngineDigests | null = null, noteFile: string) {
   try {
-    const pass = await engineIndexChanged(db, config, engine, undefined, { interactive: true });
+    const touched = [path.join(config.memoryDir, noteFile), resolveLedgerPath(config.memoryDir, config.ledgerRelPath)];
+    const pass = await engineIndexChanged(db, config, engine, undefined, { interactive: true, touched });
     // The digest of what was just saved is written in the background (a timer; the save does not wait for it).
     digests?.worker.notify();
     return { indexed: pass.errors === 0, ...(pass.errors === 0 ? { index: pass } : unfinishedPass(pass)) };

@@ -103,7 +103,7 @@ function parse(res: Awaited<ReturnType<Client['callTool']>>) {
 
 function journalOf(memoryDir: string, batchId: string) {
   return JSON.parse(fs.readFileSync(path.join(memoryDir, '.renor-imports', `${batchId}.json`), 'utf8')) as
-    { state: string; created: Array<{ relPath: string; retired?: boolean }> };
+    { state: string; created: Array<{ relPath: string; retired?: boolean }>; reasserted?: Array<{ relPath: string; hash: string; retired?: boolean }> };
 }
 
 const fixtureRoot = path.join(__dirname, '../fixtures/hosted-import');
@@ -132,6 +132,83 @@ async function call(client: Client, name: string, args: Record<string, unknown>)
 }
 
 describe('hosted vault import over authenticated MCP', () => {
+  it('keeps notes re-asserted by a later batch until that batch is undone', async () => {
+    const t = await tenant();
+    try {
+      const previewA = await call(t.client, 'preview_import', { label: 'fixture', files: fixtureFiles });
+      expect(await call(t.client, 'apply_import', { batchId: previewA.batchId })).toMatchObject({ notesWritten: 2, notesUnchanged: 0 });
+      const previewB = await call(t.client, 'preview_import', { label: 'fixture', files: fixtureFiles });
+      expect(await call(t.client, 'apply_import', { batchId: previewB.batchId })).toMatchObject({ notesWritten: 0, notesUnchanged: 2 });
+
+      const undoneA = await call(t.client, 'undo_import', { batchId: previewA.batchId });
+      expect(undoneA).toMatchObject({ retired: 0, alreadyUndone: false });
+      expect(undoneA.preserved).toEqual(fixtureFiles.map(file => `Imported/fixture/${file.relativePath}`));
+      expect(undoneA.preservedReasons).toEqual(Object.fromEntries(fixtureFiles.map(file => [
+        `Imported/fixture/${file.relativePath}`, 'kept: re-asserted by a later import',
+      ])));
+      expect((await call(t.client, 'search_text', { query: 'Silverpine' })).results).toHaveLength(1);
+      expect(await call(t.client, 'undo_import', { batchId: previewA.batchId })).toMatchObject({ retired: 0, alreadyUndone: true });
+
+      // Simplest ownership rule: undoing the last live assertion retires the note when its creator was already undone.
+      expect(await call(t.client, 'undo_import', { batchId: previewB.batchId })).toMatchObject({ retired: 2, preserved: [] });
+      expect((await call(t.client, 'search_text', { query: 'Silverpine' })).results).toEqual([]);
+    } finally { await t.client.close(); }
+  });
+
+  it('continues undoing a creator batch when a re-asserted note is gone', async () => {
+    const t = await tenant();
+    try {
+      const previewA = await call(t.client, 'preview_import', { label: 'fixture', files: fixtureFiles });
+      await call(t.client, 'apply_import', { batchId: previewA.batchId });
+      const previewB = await call(t.client, 'preview_import', { label: 'fixture', files: [fixtureFiles[0]] });
+      await call(t.client, 'apply_import', { batchId: previewB.batchId });
+      fs.rmSync(path.join(t.memoryDir, 'Imported/fixture/People/Ada.md'));
+
+      expect(await call(t.client, 'undo_import', { batchId: previewA.batchId })).toMatchObject({
+        retired: 1, preserved: [], alreadyUndone: false,
+      });
+      expect(fs.existsSync(path.join(t.memoryDir, 'Imported/fixture/Projects/Launch.md'))).toBe(false);
+      expect(await call(t.client, 'undo_import', { batchId: previewA.batchId })).toMatchObject({ retired: 0, alreadyUndone: true });
+      expect(await call(t.client, 'undo_import', { batchId: previewB.batchId })).toMatchObject({ retired: 0, preserved: [] });
+    } finally { await t.client.close(); }
+  });
+
+  it('preserves a re-asserted note replaced by a directory and continues undoing both batches', async () => {
+    const t = await tenant();
+    try {
+      const previewA = await call(t.client, 'preview_import', { label: 'fixture', files: fixtureFiles });
+      await call(t.client, 'apply_import', { batchId: previewA.batchId });
+      const previewB = await call(t.client, 'preview_import', { label: 'fixture', files: [fixtureFiles[0]] });
+      await call(t.client, 'apply_import', { batchId: previewB.batchId });
+      const ada = path.join(t.memoryDir, 'Imported/fixture/People/Ada.md');
+      fs.rmSync(ada);
+      fs.mkdirSync(ada);
+      fs.writeFileSync(path.join(ada, 'owner.md'), 'Owner data');
+
+      expect(await call(t.client, 'undo_import', { batchId: previewA.batchId })).toMatchObject({
+        retired: 1, preserved: ['Imported/fixture/People/Ada.md'], alreadyUndone: false,
+      });
+      expect(fs.existsSync(path.join(t.memoryDir, 'Imported/fixture/Projects/Launch.md'))).toBe(false);
+      expect(await call(t.client, 'undo_import', { batchId: previewB.batchId })).toMatchObject({
+        retired: 0, preserved: ['Imported/fixture/People/Ada.md'], alreadyUndone: false,
+      });
+      expect(fs.readFileSync(path.join(ada, 'owner.md'), 'utf8')).toBe('Owner data');
+    } finally { await t.client.close(); }
+  });
+
+  it('reads an old receipt without reasserted notes with its original creator-only behavior', async () => {
+    const t = await tenant();
+    try {
+      const preview = await call(t.client, 'preview_import', { label: 'fixture', files: fixtureFiles });
+      await call(t.client, 'apply_import', { batchId: preview.batchId });
+      const journalPath = path.join(t.memoryDir, '.renor-imports', `${preview.batchId}.json`);
+      const oldManifest = journalOf(t.memoryDir, preview.batchId);
+      delete oldManifest.reasserted;
+      fs.writeFileSync(journalPath, JSON.stringify(oldManifest));
+      expect(await call(t.client, 'undo_import', { batchId: preview.batchId })).toMatchObject({ retired: 2, preserved: [] });
+    } finally { await t.client.close(); }
+  });
+
   it('previews a local fixture, applies, recalls a fact, restarts, undoes and confirms recall is gone', async () => {
     const t = await tenant();
     try {

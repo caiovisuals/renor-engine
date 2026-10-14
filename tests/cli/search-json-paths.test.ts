@@ -166,9 +166,10 @@ describe('search --json prints a note by its path inside the vault', () => {
     for (const host of hostNames()) expect(stdout).not.toContain(host);
   }, CLI_BUDGET_MS);
 
-  it('still tells a person at their own terminal where the file is (the plain output is not the JSON transport)', async () => {
+  it('also names the file relative to the vault in plain output without exposing the host path', async () => {
     const plain = await runCli(['search', QUERY], cliEnv({ RENOR_SEARCH_EVIDENCE: '0' }));
     expect(plain.code, plain.stderr).toBe(0);
-    expect(plain.stdout).toContain(path.join(vault, TRIP));
+    expect(plain.stdout).toContain(`] ${TRIP} (`);
+    for (const host of hostNames()) expect(plain.stdout).not.toContain(host);
   }, CLI_BUDGET_MS);
 });

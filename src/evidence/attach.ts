@@ -10,6 +10,7 @@ import {
 } from './secondPass';
 import type { EvidenceToolOptions } from './options';
 import { waitAtMost } from './background';
+import { EvidenceCapError } from './optin';
 
 /**
  * Attach H10-v4 second-pass evidence onto the default product search path.
@@ -46,11 +47,11 @@ export type ProductEvidenceStatus = 'ok' | 'skipped';
  * dropped from the payload), so "off" and "unavailable" were indistinguishable.
  * `state` is that distinction; `note` is the same thing in a sentence.
  */
-export type ProductEvidenceState = 'ok' | 'off' | 'unavailable' | 'not-applied' | 'failed' | 'pending' | 'busy';
+export type ProductEvidenceState = 'ok' | 'off' | 'unavailable' | 'not-applied' | 'failed' | 'pending' | 'busy' | 'capped';
 
 export interface ProductEvidenceAttachment {
   status: ProductEvidenceStatus;
-  reason?: 'flag-off' | 'mode-off' | 'intent' | 'forced' | 'mode-always' | 'run' | 'no-sessions' | 'extractor-unavailable' | 'extractor-parse-error' | 'extractor-error' | 'pending' | 'queue-full';
+  reason?: 'flag-off' | 'mode-off' | 'intent' | 'forced' | 'mode-always' | 'run' | 'no-sessions' | 'extractor-unavailable' | 'extractor-parse-error' | 'extractor-error' | 'pending' | 'queue-full' | 'daily-cap';
   fromCache?: boolean;
   model?: string;
   items?: EvidenceItem[];
@@ -86,6 +87,9 @@ const EVIDENCE_NOTES: Record<string, string> = {
     'The evidence model did not finish within the time this deployment waits for it, so this response has no dated item table. Retrieval is unaffected. The extraction continues in the background; when it succeeds its table is cached, and the same request over the same notes returns it.',
   'queue-full':
     'The evidence model already has as many extractions waiting as this deployment allows, so none was started for this request and this response has no dated item table. Retrieval is unaffected. The same request starts one once the queue drains.',
+  // Only a workspace that opted in to the Ollama extractor has a daily allowance of model calls.
+  'daily-cap':
+    'This workspace has used its daily allowance of evidence-model calls, so this response has no dated item table. Retrieval is unaffected: the hits below are the whole result. The allowance starts again at 00:00 UTC.',
 };
 
 const EVIDENCE_NOTE_DEFAULT =
@@ -101,6 +105,7 @@ function evidenceState(evidence: ProductEvidenceAttachment): ProductEvidenceStat
   if (evidence.reason === 'extractor-parse-error' || evidence.reason === 'extractor-error') return 'failed';
   if (evidence.reason === 'pending') return 'pending';
   if (evidence.reason === 'queue-full') return 'busy';
+  if (evidence.reason === 'daily-cap') return 'capped';
   return 'not-applied';
 }
 
@@ -204,6 +209,8 @@ async function extractEvidence(
     try {
       return evidenceOk(reason, await extractor.extract(query, sessions));
     } catch (err) {
+      // The workspace's daily allowance is spent: no call was made, and the search goes on without the table.
+      if (err instanceof EvidenceCapError) return { status: 'skipped', reason: 'daily-cap', model: extractor.model };
       lastError = err instanceof Error ? err : new Error(String(err));
       const parseFailure = /JSON|items list|non-empty item|must be an object/i.test(lastError.message);
       if (!parseFailure || attempt === maxAttempts) break;

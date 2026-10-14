@@ -135,16 +135,53 @@ export async function walkVaultStats(vaultPath: string, options: WalkOptions = {
   const stats: VaultFileStat[] = [];
   for (let i = 0; i < files.length; i += STAT_CHUNK) {
     for (const file of files.slice(i, i + STAT_CHUNK)) {
-      try {
-        const s = fsSync.statSync(file, { throwIfNoEntry: false });
-        if (s) stats.push({ file, mtimeMs: s.mtimeMs, ctimeMs: s.ctimeMs, size: s.size, ino: s.ino });
-      } catch {
-        stats.push({ file, mtimeMs: NaN, ctimeMs: NaN, size: -1, ino: -1 });
-      }
+      const s = statVaultFile(file);
+      if (s) stats.push(s);
     }
     if (i + STAT_CHUNK < files.length) await new Promise<void>(resolve => setImmediate(resolve));
   }
   return stats;
+}
+
+/** One file's stat (see walkVaultStats): undefined when it is gone, a stamp that never matches when its stat fails. */
+function statVaultFile(file: string): VaultFileStat | undefined {
+  try {
+    const s = fsSync.statSync(file, { throwIfNoEntry: false });
+    return s ? { file, mtimeMs: s.mtimeMs, ctimeMs: s.ctimeMs, size: s.size, ino: s.ino } : undefined;
+  } catch {
+    return { file, mtimeMs: NaN, ctimeMs: NaN, size: -1, ino: -1 };
+  }
+}
+
+/**
+ * The stat of each of the listed files that is there, for a caller that names the files it wants to check (a save's)
+ * instead of walking the vault. A file that is gone is left out, as walkVaultStats leaves it out.
+ */
+export function statVaultFiles(files: string[]): VaultFileStat[] {
+  const stats: VaultFileStat[] = [];
+  for (const file of files) {
+    const s = statVaultFile(file);
+    if (s) stats.push(s);
+  }
+  return stats;
+}
+
+/**
+ * The vault's ignore rules as walkVault applies them, for a caller that names files instead of listing them: true when the
+ * walk would never reach the file, which it prunes at an ignored folder as well as skipping an ignored file. Reads
+ * .semanticignore once, when asked.
+ */
+export async function vaultIgnores(vaultPath: string): Promise<(file: string) => boolean> {
+  let patterns = [...DEFAULT_IGNORE];
+  try {
+    const raw = await fs.readFile(path.join(vaultPath, '.semanticignore'), 'utf8');
+    patterns = [...patterns, ...raw.split('\n').map(l => l.trim()).filter(l => l && !l.startsWith('#'))];
+  } catch { /* no .semanticignore */ }
+  const ignored = compileIgnore(patterns);
+  return (file) => {
+    const parts = path.relative(vaultPath, file).split(path.sep);
+    return parts.some((_, i) => ignored(parts.slice(0, i + 1).join(path.sep)));
+  };
 }
 
 /**

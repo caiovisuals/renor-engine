@@ -2,6 +2,7 @@ import Database from 'better-sqlite3';
 import { factsFor } from '../memory/lifecycle';
 import { identityNames, ownerNames } from './queryHelpers';
 import type { ChunkFilter } from './semantic';
+import { atoms, findCurrentFacts } from '../memory/factTerms';
 
 const PREDICATE_CUES: Record<string, string[]> = {
   current_project: [
@@ -140,4 +141,55 @@ export function factsFirstHits(db: Database.Database, query: string, limit = 3, 
     }
   }
   return (keep ? hits.filter(keep) : hits).slice(0, limit);
+}
+
+/**
+ * Query words that carry no subject or object, so a fact is never found by them alone: `what`, `is` and `the` are in
+ * nearly every fact's predicate or object, and a fact that shares only one of them is not an answer to the question.
+ * Deliberately small and English; a word is a stopword here only when no fact is about it.
+ */
+const FACT_STOPWORDS = new Set([
+  'a', 'about', 'all', 'an', 'and', 'any', 'are', 'as', 'at', 'be', 'been', 'but', 'by', 'can', 'could', 'did', 'do',
+  'does', 'for', 'from', 'had', 'has', 'have', 'how', 'i', 'if', 'in', 'into', 'is', 'it', 'its', 'me', 'my', 'no', 'not',
+  'of', 'on', 'or', 'our', 'out', 'so', 'some', 'tell', 'that', 'the', 'their', 'them', 'then', 'there', 'they', 'this',
+  'to', 'was', 'we', 'were', 'what', 'when', 'where', 'which', 'who', 'why', 'will', 'with', 'would', 'you', 'your',
+]);
+
+/** The fact-finding words of a query: its atoms without the stopwords. */
+function contentAtoms(query: string): string[] {
+  return atoms(query).filter(word => !FACT_STOPWORDS.has(word));
+}
+
+/**
+ * Current facts matched by the query's content words, best first. A fact is admitted only when a content word is one of
+ * its subject's or object's words: a predicate word alone (`dog` in `pet: dog`'s predicate) is not enough. Its score is
+ * the share of the query's content words it has, from 0.5 to 1, so a fact ranks among the note hits by how well it
+ * answers the query, and the caller merges the two lists by score.
+ */
+export function matchingCurrentFactHits(db: Database.Database, query: string, limit = 3): Array<{
+  notePath: string; chunkId: number; headingPath: string; text: string; score: number; reason: string; author: string | null;
+}> {
+  const terms = contentAtoms(query);
+  if (terms.length === 0 || limit < 1) return [];
+  // Predicate words are in the index with the subject and object, so the index can rank a fact by a predicate word
+  // alone and crowd out a real match: read more candidates than the cap, then keep the admitted ones.
+  const matched = findCurrentFacts(db, { terms, match: 'any', limit: Math.max(limit * 20, 60) });
+  const hits: Array<{
+    notePath: string; chunkId: number; headingPath: string; text: string; score: number; reason: string; author: string | null;
+  }> = [];
+  for (const f of matched) {
+    const subjectObject = new Set(atoms(`${f.subject} ${f.object ?? ''}`));
+    if (!terms.some(term => subjectObject.has(term))) continue;
+    hits.push({
+      notePath: '_mcp_',
+      chunkId: -f.id,
+      headingPath: `${f.subject} > ${f.predicate}`,
+      text: factText(f.subject, f.predicate, f.object ?? ''),
+      score: 0.5 + 0.5 * (f.shared / terms.length),
+      reason: 'fact',
+      author: f.author ?? null,
+    });
+    if (hits.length === limit) break;
+  }
+  return hits;
 }

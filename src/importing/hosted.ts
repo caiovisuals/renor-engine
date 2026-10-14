@@ -13,6 +13,7 @@ import { isBlankOrInvisible } from '../memory/invisibleText';
 import { assertNoUnstorableControls } from '../memory/controls';
 import { SecretRefusedError } from '../extraction/secretGuard';
 import { refusal } from '../toolRefusal';
+import { IMPORT_JOURNAL_DIR } from './forgetImported';
 
 // Fits the existing 1 MiB HTTP ceiling even with JSON escaping. Count UTF-8
 // bytes, including paths, before parsing/selection. Refuse rather than slice.
@@ -40,6 +41,8 @@ interface Manifest {
   batchId: string;
   state: 'applying' | 'applied' | 'failed' | 'undone';
   created: Array<{ relPath: string; hash: string; retired?: boolean }>;
+  /** Identical live notes this batch asserted. Absent in old receipts, which retain creator-only undo behavior. */
+  reasserted?: Array<{ relPath: string; hash: string; retired?: boolean }>;
   result?: ApplyResult;
 }
 interface TenantState { previews: Map<string, Preview>; chain: Promise<unknown> }
@@ -117,7 +120,7 @@ function inspect(ctx: MemoryMapContext, plan: ImportPlan) {
 }
 function journalPath(ctx: MemoryMapContext, batchId: string): string {
   batchIdSchema.parse(batchId);
-  const target = safeTarget(ctx.memoryDir, `.renor-imports/${batchId}.json`);
+  const target = safeTarget(ctx.memoryDir, `${IMPORT_JOURNAL_DIR}/${batchId}.json`);
   const dir = path.dirname(target);
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { mode: 0o700 });
   try {
@@ -142,6 +145,15 @@ function writeJournal(ctx: MemoryMapContext, manifest: Manifest) {
 function readJournal(ctx: MemoryMapContext, batchId: string): Manifest | undefined {
   try { return JSON.parse(fs.readFileSync(journalPath(ctx, batchId), 'utf8')) as Manifest; }
   catch (err) { if ((err as NodeJS.ErrnoException).code === 'ENOENT') return undefined; throw err; }
+}
+function manifests(ctx: MemoryMapContext): Manifest[] {
+  const dir = safeTarget(ctx.memoryDir, '.renor-imports');
+  try {
+    return fs.readdirSync(dir).flatMap(name => {
+      if (!/^[0-9a-f-]{36}\.json$/i.test(name)) return [];
+      return [JSON.parse(fs.readFileSync(path.join(dir, name), 'utf8')) as Manifest];
+    });
+  } catch (err) { if ((err as NodeJS.ErrnoException).code === 'ENOENT') return []; throw err; }
 }
 /** Dry run: bounded, expiring staging in tenant-local memory; no memory writes. */
 export async function previewImport(ctx: MemoryMapContext, input: PreviewInput) {
@@ -213,7 +225,7 @@ export function applyHostedImport(ctx: MemoryMapContext, batchId: string) {
     const preview = state(ctx.db).previews.get(batchId);
     if (!preview || preview.expiresAt <= Date.now()) throw refusal('batch_not_found', 'Preview missing or expired; preview this batch again');
     inspect(ctx, preview.plan);
-    const manifest: Manifest = { batchId, state: 'applying', created: [] };
+    const manifest: Manifest = { batchId, state: 'applying', created: [], reasserted: [] };
     writeJournal(ctx, manifest);
     state(ctx.db).previews.delete(batchId);
     try {
@@ -221,6 +233,10 @@ export function applyHostedImport(ctx: MemoryMapContext, batchId: string) {
         memoryDir: ctx.memoryDir, dbPath: ctx.db.name, ledgerRelPath: ctx.ledgerRelPath,
         onNoteCreated(note) {
           manifest.created.push({ relPath: note.relPath, hash: note.contentHash });
+          writeJournal(ctx, manifest);
+        },
+        onNoteUnchanged(note) {
+          manifest.reasserted!.push({ relPath: note.relPath, hash: note.contentHash });
           writeJournal(ctx, manifest);
         },
       });
@@ -238,23 +254,58 @@ export function applyHostedImport(ctx: MemoryMapContext, batchId: string) {
 const UNDO_PRESERVES = new Set([
   'imported note changed; preserved', 'memory path goes through a symbolic link', 'Unsafe import destination ancestor',
 ]);
+type UndoTarget = { state: 'gone' } | { state: 'preserved' } | { state: 'file'; hash: string };
+/** Files can change independently of the journal. Inspect them without letting one bad path abort the batch. */
+function inspectUndoTarget(ctx: MemoryMapContext, relPath: string): UndoTarget {
+  try {
+    const target = safeTarget(ctx.memoryDir, relPath);
+    const stat = fs.lstatSync(target, { throwIfNoEntry: false });
+    if (!stat) return { state: 'gone' };
+    if (!stat.isFile() || stat.isSymbolicLink()) return { state: 'preserved' };
+    const bytes = fs.readFileSync(target, 'utf8');
+    return { state: 'file', hash: crypto.createHash('sha256').update(bytes, 'utf8').digest('hex') };
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return { state: 'gone' };
+    return { state: 'preserved' };
+  }
+}
 /** Uses the existing journalled retirement, including FTS/vector removal. */
 export function undoHostedImport(ctx: MemoryMapContext, batchId: string) {
   return serial(ctx.db, async () => {
     const manifest = readJournal(ctx, batchId);
     if (!manifest) throw refusal('batch_not_found', 'No applied batch has this batchId: it was only previewed (never applied), or it belongs to another workspace. undo_import only reverses an applied batch.');
     const preserved: string[] = [];
+    const preservedReasons: Record<string, string> = {};
     let retired = 0;
+    const all = manifests(ctx);
     for (const note of manifest.created) {
       if (note.retired) continue;
+      // A batch can find a created note unchanged only after its creator wrote it, so no wall-clock ordering field is
+      // needed (and clock rollback cannot reverse ownership).
+      const heldLater = all.some(other =>
+        other.batchId !== batchId && other.state === 'applied'
+        && other.reasserted?.some(item => !item.retired && item.relPath === note.relPath && item.hash === note.hash));
+      if (heldLater) {
+        const target = inspectUndoTarget(ctx, note.relPath);
+        if (target.state === 'preserved') { preserved.push(note.relPath); continue; }
+        if (target.state === 'file' && target.hash === note.hash) {
+          preserved.push(note.relPath);
+          preservedReasons[note.relPath] = 'kept: re-asserted by a later import';
+          note.retired = true; // This creator released its assertion; the later batch now owns final retirement.
+          writeJournal(ctx, manifest);
+          continue;
+        }
+        if (target.state === 'gone') {
+          note.retired = true;
+          writeJournal(ctx, manifest);
+          continue;
+        }
+      }
       let outcome: 'gone' | 'retired';
       try {
-        const target = safeTarget(ctx.memoryDir, note.relPath);
-        // lstat, not existsSync: a dangling symlink, a directory or any other non-file is something the owner
-        // put there, not a note that is already gone.
-        const stat = fs.lstatSync(target, { throwIfNoEntry: false });
-        if (!stat) outcome = 'gone';
-        else if (!stat.isFile()) { preserved.push(note.relPath); continue; }
+        const target = inspectUndoTarget(ctx, note.relPath);
+        if (target.state === 'gone') outcome = 'gone';
+        else if (target.state === 'preserved') { preserved.push(note.relPath); continue; }
         else { await retireMemory(ctx, `note:${note.relPath}`, note.hash); outcome = 'retired'; }
       } catch (err) {
         if (err instanceof SecretRefusedError || (err instanceof Error && UNDO_PRESERVES.has(err.message))) { preserved.push(note.relPath); continue; }
@@ -265,8 +316,33 @@ export function undoHostedImport(ctx: MemoryMapContext, batchId: string) {
       if (outcome === 'retired') retired++;
       writeJournal(ctx, manifest);
     }
+    for (const note of manifest.reasserted ?? []) {
+      if (note.retired) continue;
+      const creatorUndone = all.some(other => other.batchId !== batchId && other.state === 'undone'
+        && other.created.some(item => item.relPath === note.relPath && item.hash === note.hash));
+      const heldElsewhere = all.some(other => other.batchId !== batchId && other.state === 'applied'
+        && other.reasserted?.some(item => !item.retired && item.relPath === note.relPath && item.hash === note.hash));
+      if (creatorUndone && !heldElsewhere) {
+        const target = inspectUndoTarget(ctx, note.relPath);
+        if (target.state === 'preserved') { preserved.push(note.relPath); continue; }
+        try {
+          if (target.state === 'file') {
+            await retireMemory(ctx, `note:${note.relPath}`, note.hash);
+            retired++;
+          }
+        } catch (err) {
+          if (err instanceof SecretRefusedError || (err instanceof Error && UNDO_PRESERVES.has(err.message))) {
+            preserved.push(note.relPath);
+            continue;
+          }
+          throw err;
+        }
+      }
+      note.retired = true;
+      writeJournal(ctx, manifest);
+    }
     manifest.state = 'undone';
     writeJournal(ctx, manifest);
-    return { ok: true, batchId, retired, preserved, alreadyUndone: retired === 0 && preserved.length === 0 };
+    return { ok: true, batchId, retired, preserved, ...(Object.keys(preservedReasons).length ? { preservedReasons } : {}), alreadyUndone: retired === 0 && preserved.length === 0 };
   });
 }

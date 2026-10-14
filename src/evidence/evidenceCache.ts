@@ -216,3 +216,25 @@ export class EvidenceCache {
     this.db.close();
   }
 }
+
+/**
+ * Drop every cached extraction that read one of `stems` (note paths): a permanent deletion takes the text these rows
+ * extracted from a deleted memory (memorymap/memoryMap.ts, purgeRetired). Nothing to do when the cache file or its table
+ * does not exist. The cache is keyed by the exact prompt, so a dropped row is only asked again when a later search reads
+ * the same files.
+ */
+export function dropEvidenceForStems(cachePath: string, stems: string[]): void {
+  if (stems.length === 0 || !fs.existsSync(cachePath)) return;
+  const db = new Database(cachePath);
+  try {
+    db.pragma('busy_timeout = 10000');
+    if (!db.prepare(`SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'evidence_cache'`).get()) return;
+    const drop = db.prepare(
+      `DELETE FROM evidence_cache WHERE json_valid(sessions_json) AND EXISTS (
+         SELECT 1 FROM json_each(sessions_json) s WHERE json_extract(s.value, '$.stem') = ?)`,
+    );
+    db.transaction(() => { for (const stem of stems) drop.run(stem); })();
+  } finally {
+    db.close();
+  }
+}

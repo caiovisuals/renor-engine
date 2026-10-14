@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach, vi } from 'vitest';
+import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
 import fs from 'fs';
 import fsp from 'fs/promises';
 import os from 'os';
@@ -21,11 +21,12 @@ import {
   engineRememberNote,
   engineSearchMemory,
   engineSearchText,
+  FULL_VAULT_CHECK_MS,
   TIMESTAMP_TICK_MS,
   type Engine,
 } from '../../src/mvp/engine';
 import { EvalHashEmbeddingProvider } from '../../src/eval/hashEmbedding';
-import { remember, replayLedger } from '../../src/memory/lifecycle';
+import { remember, replayLedger, resolveLedgerPath } from '../../src/memory/lifecycle';
 import { buildMemoryMap, restoreMemory, retireMemory, type MemoryMapContext } from '../../src/memorymap/memoryMap';
 import type { EmbeddingProvider } from '../../src/embeddings/types';
 import type { Express } from 'express';
@@ -139,9 +140,23 @@ async function workspace(notes: number, seedFiles?: (memoryDir: string) => void)
  */
 const aMinuteLater = () => Date.now() + 60_000;
 
-/** What `remember` does in note mode: append, then bring the index up to date. */
+/**
+ * What `remember` does in note mode (server.ts indexSavedNote): append, then check the day's note and the ledger, the
+ * two files a note save writes. The vault is not walked within FULL_VAULT_CHECK_MS of its last full check, so an edit
+ * made outside the engine is not seen then (index_memory is, and so is a save that comes after that window).
+ */
 async function saveNote(ws: Workspace, text: string, date?: string, scanStart = aMinuteLater()) {
-  await engineRememberNote(ws.config, text, date, 'test');
+  const note = await engineRememberNote(ws.config, text, date, 'test');
+  return engineIndexChanged(ws.db, ws.config, ws.engine, scanStart, {
+    touched: [path.join(ws.memoryDir, note.file), resolveLedgerPath(ws.memoryDir, DEFAULT_LEDGER_REL)],
+  });
+}
+
+/**
+ * A full scan: what a search or background job finishes with, and the first pass of a process. It walks the vault and
+ * checks every file's stamp, so it sees an edit, rename or delete made outside the engine; a save does not (see below).
+ */
+function fullScan(ws: Workspace, scanStart = aMinuteLater()) {
   return engineIndexChanged(ws.db, ws.config, ws.engine, scanStart);
 }
 
@@ -195,6 +210,21 @@ async function expectFullPassToFindNothing(ws: Workspace) {
 const notesDir = (ws: Workspace, name: string) => path.join(ws.memoryDir, 'Notes', name);
 
 describe('a note save sees what happened to the vault outside the engine, as a full pass does', () => {
+  // Each save here is made more than FULL_VAULT_CHECK_MS after the previous check, so it walks the vault: these tests pin what
+  // a save sees, as they did before the window. The clock is faked, so the window holds without waiting for it.
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+  async function saveNote(ws: Workspace, text: string, date?: string, scanStart = aMinuteLater()) {
+    vi.setSystemTime(Date.now() + FULL_VAULT_CHECK_MS + 1_000);
+    const note = await engineRememberNote(ws.config, text, date, 'test');
+    return engineIndexChanged(ws.db, ws.config, ws.engine, scanStart, {
+      touched: [path.join(ws.memoryDir, note.file), resolveLedgerPath(ws.memoryDir, DEFAULT_LEDGER_REL)],
+    });
+  }
   it('an edit to another note is searchable after the next save, and the old text is gone', async () => {
     const ws = await workspace(8);
     await saveNote(ws, 'First save: the engine now knows every file.');
@@ -360,6 +390,84 @@ describe('a note save sees what happened to the vault outside the engine, as a f
   });
 });
 
+describe('a note save checks the files it wrote, not the vault', () => {
+  // The clock is frozen, so every save is inside FULL_VAULT_CHECK_MS of the last full check unless a test moves it on.
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('within FULL_VAULT_CHECK_MS an edit made outside the engine is not seen by a save; index_memory (a full pass) sees it', async () => {
+    const ws = await workspace(8);
+    await saveNote(ws, 'First save.');
+    fs.writeFileSync(notesDir(ws, 'topic-002.md'), '# Topic 2\n\nA note about zebrafish migrations.\n');
+    await saveNote(ws, 'Second save, after an edit made outside the engine.');
+    expect(fts(ws, 'zebrafish')).toHaveLength(0);
+    expect(fts(ws, 'Seed note 2 ').map((h) => h.notePath)).toEqual([path.join('Notes', 'topic-002.md')]);
+
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    await engineIndex(ws.db, ws.config, ws.engine);
+    log.mockRestore();
+    expect(fts(ws, 'zebrafish').map((h) => h.notePath)).toEqual([path.join('Notes', 'topic-002.md')]);
+    expect(fts(ws, 'Seed note 2 ')).toHaveLength(0);
+    await expectFullPassToFindNothing(ws);
+  });
+
+  it('a save more than FULL_VAULT_CHECK_MS after the last full check walks the vault and sees the edit', async () => {
+    const ws = await workspace(40);
+    await saveNote(ws, 'First save, which walks the vault.');
+    fs.writeFileSync(notesDir(ws, 'topic-002.md'), '# Topic 2\n\nA note about zebrafish migrations.\n');
+    vi.setSystemTime(Date.now() + FULL_VAULT_CHECK_MS - 1_000);
+    await saveNote(ws, 'A save just inside the window.');
+    expect(fts(ws, 'zebrafish')).toHaveLength(0);
+
+    vi.setSystemTime(Date.now() + 2_000);
+    const stat = vi.spyOn(fs, 'statSync');
+    await saveNote(ws, 'A save just outside the window.');
+    const statCalls = stat.mock.calls.length;
+    stat.mockRestore();
+    expect(statCalls).toBeGreaterThanOrEqual(40); // the walk stats every note
+    expect(fts(ws, 'zebrafish').map((h) => h.notePath)).toEqual([path.join('Notes', 'topic-002.md')]);
+  });
+
+  it('a clock that steps back is not a recent check: the next save walks the vault and sees the edit', async () => {
+    const ws = await workspace(30);
+    await saveNote(ws, 'First save, which walks the vault.');
+    vi.setSystemTime(Date.now() + 5_000);
+    await saveNote(ws, 'A save five seconds later, inside the window.');
+    fs.writeFileSync(notesDir(ws, 'topic-003.md'), '# Topic 3\n\nA note about zebrafish migrations.\n');
+    vi.setSystemTime(Date.now() - 20_000); // before the last check: not an age the window can vouch for
+    await saveNote(ws, 'A save after the clock stepped back.');
+    expect(fts(ws, 'zebrafish').map((h) => h.notePath)).toEqual([path.join('Notes', 'topic-003.md')]);
+  });
+
+  it('on a 500-note vault a save stats two files and never loads the list of note paths', async () => {
+    const ws = await workspace(500);
+    await saveNote(ws, 'The first save in a process walks the vault (pinned above).');
+    // The row-count precondition: the query a save must not run returns every note, so its absence means something.
+    const indexed = ws.db.prepare("SELECT COUNT(*) AS c FROM notes WHERE note_hash != ''").pluck().get() as number;
+    expect(indexed).toBeGreaterThanOrEqual(500);
+
+    const note = await engineRememberNote(ws.config, 'A note saved in a 500-note vault.', undefined, 'test');
+    const stat = vi.spyOn(fs, 'statSync');
+    const prepare = vi.spyOn(ws.db, 'prepare');
+    const pass = await engineIndexChanged(ws.db, ws.config, ws.engine, aMinuteLater(), {
+      touched: [path.join(ws.memoryDir, note.file), resolveLedgerPath(ws.memoryDir, DEFAULT_LEDGER_REL)],
+    });
+    const statCalls = stat.mock.calls.length;
+    const pathListQueries = prepare.mock.calls.filter(([sql]) => String(sql).includes("SELECT path FROM notes WHERE note_hash != ''"));
+    stat.mockRestore();
+    prepare.mockRestore();
+
+    expect(pathListQueries).toHaveLength(0);
+    expect(statCalls).toBeLessThanOrEqual(2); // the day's note and the ledger, whatever the vault holds
+    expect(pass).toMatchObject({ errors: 0 });
+    expect(fts(ws, 'A note saved in a 500-note vault')).toHaveLength(1);
+  });
+});
+
 describe('what a file\'s stamp is made of, and when a scan may trust it', () => {
   type Stat = { mtimeMs: number; ctimeMs: number; size: number; ino: number };
   const T = Date.parse('2026-01-01T00:00:00Z');
@@ -379,10 +487,10 @@ describe('what a file\'s stamp is made of, and when a scan may trust it', () => 
     let shown = first;
     vi.spyOn(fs, 'statSync').mockImplementation(((p: unknown, ...rest: unknown[]) =>
       String(p) === file ? { ...shown } : (real as (...a: unknown[]) => unknown)(p, ...rest)) as typeof fs.statSync);
-    await saveNote(ws, 'First save.', undefined, scanStart);
+    await fullScan(ws, scanStart);
     fs.writeFileSync(file, '# Note\n\nbravo codeword.\n');
     shown = second;
-    await saveNote(ws, 'Second save.', undefined, scanStart);
+    await fullScan(ws, scanStart);
     return fts(ws, 'bravo').length === 1;
   }
 
@@ -412,7 +520,7 @@ describe('what a file\'s stamp is made of, and when a scan may trust it', () => 
     const justAfter = Math.max(real.mtimeMs, real.ctimeMs) + 500; // a scan that starts 0.5 s after the file was written
     const readsOf = async (scanStart: number) => {
       const spy = vi.spyOn(fsp, 'readFile');
-      await saveNote(ws, 'A save.', undefined, scanStart);
+      await fullScan(ws, scanStart);
       const reads = spy.mock.calls.filter((c) => String(c[0]) === file).length;
       spy.mockRestore();
       return reads;
@@ -592,9 +700,13 @@ describe('note-mode save indexes what changed, not the whole vault', () => {
 
   it('applies the vault ignore rules as a full pass does: an ignored ledger stays out of the index', async () => {
     const ws = await workspace(3, (dir) => writeNote(dir, '.semanticignore', 'System/\n'));
+    await saveNote(ws, 'The first save in a process walks the vault.');
     await remember(ws.db, ws.memoryDir, DEFAULT_LEDGER_REL, { subject: 'Gateway', predicate: 'codeword', object: 'zanzibar' });
+    // The second save checks the ledger it names, without the walk: the ignore rule still keeps the ledger out.
     await saveNote(ws, 'A note that is not about the ledger');
     expect(fts(ws, 'zanzibar')).toHaveLength(0);
+    // The ledger's text is in no chunk: the ignore rule kept it out of the index, as the walk does.
+    expect(ws.db.prepare("SELECT COUNT(*) FROM chunks WHERE text LIKE '%zanzibar%'").pluck().get()).toBe(0);
     const log = vi.spyOn(console, 'log').mockImplementation(() => {});
     await engineIndex(ws.db, ws.config, ws.engine);
     log.mockRestore();

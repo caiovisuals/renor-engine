@@ -329,7 +329,7 @@ program
         console.log("");
       }
       hits.forEach((h) => {
-        console.log(`\n[${h.score.toFixed(3)}] ${h.notePath} (${h.reason})`);
+        console.log(`\n[${h.score.toFixed(3)}] ${clientPath(config.vaultPath, h.notePath)} (${h.reason})`);
         console.log(h.text.substring(0, 200));
       });
     }

@@ -9,7 +9,7 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { loadMvpConfig, type MvpConfig } from '../../src/mvp/config';
 import { startMvpService, createMvpApp, MVP_MCP_PATH, type MvpApp } from '../../src/mvp/server';
-import { ClientRegistryError } from '../../src/mvp/client-store';
+import { ClientRegistry, ClientRegistryError } from '../../src/mvp/client-store';
 import type { Express } from 'express';
 
 /**
@@ -44,6 +44,7 @@ afterEach(() => {
   }
   while (apps.length) apps.pop()!.close();
   for (const d of tmpDirs.splice(0)) fs.rmSync(d, { recursive: true, force: true });
+  vi.useRealTimers();
   vi.restoreAllMocks();
 });
 
@@ -219,6 +220,49 @@ function syntheticClientRecord(id: string): Record<string, unknown> {
   };
 }
 
+describe('CLIENT-PERSISTENCE: pending registration expiry', () => {
+  it('keeps a pending registration at 9 minutes, removes it at 11 minutes, and never expires an approved registration', () => {
+    const authStatePath = path.join(tmpdir0700('mvp-cp-auth-'), 'clients.json');
+    const registry = new ClientRegistry(authStatePath);
+    const createdAt = new Date('2026-10-13T12:00:00.000Z');
+    vi.useFakeTimers();
+    vi.setSystemTime(createdAt);
+
+    registry.add({ ...syntheticClientRecord('pending'), client_id_issued_at: createdAt.getTime() / 1000 } as any);
+    registry.add({ ...syntheticClientRecord('approved'), client_id_issued_at: createdAt.getTime() / 1000 } as any);
+    registry.approve('approved');
+
+    vi.setSystemTime(new Date(createdAt.getTime() + 9 * 60_000));
+    expect(registry.get('pending')?.client_id).toBe('pending');
+    expect(registry.size).toBe(2);
+
+    vi.setSystemTime(new Date(createdAt.getTime() + 11 * 60_000));
+    expect(registry.get('pending')).toBeUndefined();
+    expect(registry.get('approved')?.client_id).toBe('approved');
+    expect(registry.size).toBe(1);
+    expect(JSON.parse(fs.readFileSync(authStatePath, 'utf-8')).clients.map((client: { client_id: string }) => client.client_id))
+      .toEqual(['approved']);
+  });
+});
+
+describe('CLIENT-PERSISTENCE: expiry never breaks reads', () => {
+  it('drops an expired pending registration in memory when the store cannot be written, and does not throw', () => {
+    const dir = tmpdir0700('mvp-cp-auth-');
+    const registry = new ClientRegistry(path.join(dir, 'clients.json'));
+    const createdAt = new Date('2026-10-13T12:00:00.000Z');
+    vi.useFakeTimers();
+    vi.setSystemTime(createdAt);
+    registry.add({ ...syntheticClientRecord('pending'), client_id_issued_at: createdAt.getTime() / 1000 } as any);
+    fs.chmodSync(dir, 0o500);
+    try {
+      vi.setSystemTime(new Date(createdAt.getTime() + 11 * 60_000));
+      expect(registry.get('pending')).toBeUndefined();
+    } finally {
+      fs.chmodSync(dir, 0o700);
+    }
+  });
+});
+
 describe('CLIENT-PERSISTENCE: restart contract (register once, restart, re-authorize)', () => {
   it('CRITICAL: register once -> use tools -> restart from same store (no re-registration) -> same clientId/secret authorizes again and memory/history still work; old ticket/code replay fails', async () => {
     const memoryDir = tmpdir0700('mvp-cp-memory-');
@@ -358,9 +402,19 @@ function expectStartupFails(authStatePath: string, memoryDir: string) {
   }
   expect(registryError).toBeInstanceOf(ClientRegistryError);
   expect((registryError as Error).message).toContain('not usable');
+  return registryError as ClientRegistryError;
 }
 
 describe('CLIENT-PERSISTENCE: store integrity fails closed (never silently reset)', () => {
+
+  it('refuses startup when the platform has no POSIX user id', () => {
+    vi.spyOn(process, 'getuid').mockImplementation(() => undefined as never);
+    const authRoot = tmpdir0700('mvp-cp-auth-');
+    const authStatePath = path.join(authRoot, 'clients.json');
+
+    const error = expectStartupFails(authStatePath, tmpdir0700('mvp-cp-memory-'));
+    expect(error.message).toContain('process uid is unavailable on this platform');
+  });
 
   it('corrupt JSON store fails closed at startup', () => {
     const authRoot = tmpdir0700('mvp-cp-auth-');

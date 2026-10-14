@@ -119,6 +119,22 @@ export function isRecallTool(tool: string): boolean {
   return (RECALL_TOOLS as readonly string[]).includes(tool);
 }
 
+/**
+ * The `clientInfo.name` the platform's own MCP calls present: the gateway's dashboard import (engine/apps/gateway/src/dashboard-import.ts)
+ * and the dashboard's memory inventory (supabase/functions/memory-inventory/renor-tenant.ts). A session that presents one is the
+ * platform acting for a person, not an agent reaching for memory, so the recall share leaves it out. The name is what the client
+ * declares about itself: a client that declares one only drops its own session from the share, and nothing else follows from it.
+ */
+const PLATFORM_CLIENT_NAMES: ReadonlySet<string> = new Set(['renor-dashboard', 'renor-dashboard-import']);
+
+/** True when an `initialize` request names a platform client (see PLATFORM_CLIENT_NAMES). Reads the body; keeps nothing from it. */
+export function isPlatformInitialize(body: unknown): boolean {
+  const params = typeof body === 'object' && body !== null ? (body as { params?: unknown }).params : undefined;
+  const clientInfo = typeof params === 'object' && params !== null ? (params as { clientInfo?: unknown }).clientInfo : undefined;
+  const name = typeof clientInfo === 'object' && clientInfo !== null ? (clientInfo as { name?: unknown }).name : undefined;
+  return typeof name === 'string' && PLATFORM_CLIENT_NAMES.has(name);
+}
+
 const READ_FIELDS = ['event', 'tool', 'read', 'relevant', 'judged', 'items', 'ids'];
 const READ_USED_FIELDS = ['event', 'tool', 'read', 'via', 'after_s'];
 const FIRST_CALL_FIELDS = ['event', 'tool', 'recall', 'session'];

@@ -6,7 +6,7 @@ import { lookupEntity, type EntityRowFilter } from '../retrieval/entityLookup';
 import { identityKey, identityNames } from '../retrieval/queryHelpers';
 import { normalizeScope, savedScopeMatches, savedScopeSqlPredicate, scopeSpellings, type NormalizedScope } from '../mvp/scope';
 import { readUntilWrite } from '../db/readCache';
-import { canonicalSubject, indexFactTerms, prepareOnce, unindexFactTerms } from './factTerms';
+import { canonicalSubject, indexFactTerms, prepareOnce, statementTerms, unindexFactTerms } from './factTerms';
 import { MAX_STATEMENT_LENGTH } from './limits';
 import { appendConfined, createConfined, withConfinedFile } from './confinedWrite';
 import { isBlankOrInvisible } from './invisibleText';
@@ -1123,9 +1123,9 @@ function applyEvent(db: Database.Database, ev: LedgerEvent, positions?: Map<stri
       db.prepare('UPDATE retired_facts SET valid_to = ?, updated_at = ? WHERE id = ?').run(ev.at, ev.at, hidden.id);
     }
     const row = db.prepare(
-      `INSERT INTO facts (subject_entity_id, predicate, object_text, source_path, confidence, valid_from, valid_to, updated_at, event_id, scope, author)
-       VALUES (?, ?, ?, '_mcp_', 1.0, ?, NULL, ?, ?, ?, ?) RETURNING id`
-    ).get(entityId, ev.predicate, ev.object, ev.at, ev.at, ev.id, scope, ev.source) as { id: number };
+      `INSERT INTO facts (subject_entity_id, predicate, object_text, source_path, confidence, valid_from, valid_to, updated_at, event_id, scope, author, statement_words)
+       VALUES (?, ?, ?, '_mcp_', 1.0, ?, NULL, ?, ?, ?, ?, ?) RETURNING id`
+    ).get(entityId, ev.predicate, ev.object, ev.at, ev.at, ev.id, scope, ev.source, statementTerms(ev.statement)) as { id: number };
     // Searchable by its words from the moment it exists: the index row is written by this transaction,
     // under the subject name a read shows (the entity's, which may be an earlier spelling of ev.subject).
     indexFactTerms(db, row.id, scope, { subject: canonicalSubject(db, entityId), predicate: ev.predicate, object: ev.object });
@@ -1161,11 +1161,11 @@ function streamOpenRetiredFacts(db: Database.Database, entityId: number, predica
     .sort((a, b) => (a.valid_from === b.valid_from ? b.id - a.id : a.valid_from < b.valid_from ? 1 : -1));
 }
 
-const FACT_COLUMNS = 'id, subject_entity_id, predicate, object_text, confidence, valid_from, valid_to, updated_at, event_id, scope, author';
+const FACT_COLUMNS = 'id, subject_entity_id, predicate, object_text, confidence, valid_from, valid_to, updated_at, event_id, scope, author, statement_words';
 interface FactRow {
   id: number; subject_entity_id: number; predicate: string; object_text: string; confidence: number;
   valid_from: string; valid_to: string | null; updated_at: string; event_id: string; scope: string;
-  author: string | null;
+  author: string | null; statement_words: string | null;
 }
 
 /**
@@ -1178,17 +1178,38 @@ function moveFactOut(db: Database.Database, eventId: string, retire: LedgerEvent
     .get(eventId, LIFECYCLE_NOTE_PATH) as FactRow | undefined;
   if (!row) return false;
   db.prepare(
-    `INSERT INTO retired_facts (${FACT_COLUMNS}, retire_event_id, retired_at, retired_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    `INSERT INTO retired_facts (${FACT_COLUMNS}, retire_event_id, retired_at, retired_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   ).run(row.id, row.subject_entity_id, row.predicate, row.object_text, row.confidence, row.valid_from, row.valid_to,
-    row.updated_at, row.event_id, row.scope, row.author, retire.id, retire.at, retire.source);
+    row.updated_at, row.event_id, row.scope, row.author, row.statement_words, retire.id, retire.at, retire.source);
   unindexFactTerms(db, row.id, row.scope, { subject: canonicalSubject(db, row.subject_entity_id), predicate: row.predicate, object: row.object_text });
   db.prepare('DELETE FROM facts WHERE id = ?').run(row.id);
   return true;
 }
 
+/**
+ * A restatement can supersede an identical value only because it kept different user words. When that current
+ * restatement is retired, reopen the exact value it directly replaced. Different values remain historical: retiring a
+ * correction is not itself another correction. This projection is derived from the save chain, so replay makes the
+ * same choice without adding a second value to the retire event.
+ */
+function reviveIdenticalPredecessor(db: Database.Database, eventId: string): void {
+  const retired = db.prepare(`SELECT ${FACT_COLUMNS} FROM retired_facts WHERE event_id = ?`).get(eventId) as FactRow | undefined;
+  if (!retired || retired.valid_to !== null) return; // Retiring history never changes the current value.
+  const inStream = savedScopeSqlPredicate(normalizeScope(retired.scope), 'scope');
+  const prior = db.prepare(
+    `SELECT ${FACT_COLUMNS} FROM facts
+      WHERE subject_entity_id = ? AND predicate = ? AND object_text = ? AND valid_to = ?
+        AND source_path = ? AND ${inStream.sql}
+      ORDER BY valid_from DESC, id DESC LIMIT 1`
+  ).get(retired.subject_entity_id, retired.predicate, retired.object_text, retired.valid_from,
+    LIFECYCLE_NOTE_PATH, ...inStream.params) as FactRow | undefined;
+  if (!prior) return;
+  db.prepare('UPDATE facts SET valid_to = NULL, updated_at = ? WHERE id = ?').run(retired.updated_at, prior.id);
+}
+
 /** Puts a retired fact's row back into `facts` as it was. False when it is not retired. */
 function moveFactBack(db: Database.Database, eventId: string): boolean {
-  const row = db.prepare(`SELECT ${FACT_COLUMNS} FROM retired_facts WHERE event_id = ?`).get(eventId) as FactRow | undefined;
+  const row = db.prepare(`SELECT ${FACT_COLUMNS}, retired_at FROM retired_facts WHERE event_id = ?`).get(eventId) as (FactRow & { retired_at: string }) | undefined;
   if (!row) return false;
   let validTo = row.valid_to;
   if (validTo === null) {
@@ -1198,16 +1219,20 @@ function moveFactBack(db: Database.Database, eventId: string): boolean {
     // retired under scope:alpha, so looking only at the row's own spelling left two current values in one stream.
     const open = streamCurrentFacts(db, row.subject_entity_id, row.predicate, normalizeScope(row.scope))[0];
     if (open) {
-      if (open.valid_from < row.valid_from) {
+      if (open.object_text === row.object_text && open.valid_from < row.valid_from) {
+        // The older identical value was revived when this restatement was retired. Restoring the restatement keeps it
+        // as history instead of manufacturing a second current value or replacing the explicitly revived one.
+        validTo = row.retired_at;
+      } else if (open.valid_from < row.valid_from) {
         throw new Error(`cannot restore fact event ${eventId}: the current value (event ${open.event_id}) is older than it; rebuild the index from the ledger`);
       }
-      validTo = open.valid_from;
+      else validTo = open.valid_from;
     }
   }
   db.prepare(
-    `INSERT INTO facts (${FACT_COLUMNS}, source_path) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    `INSERT INTO facts (${FACT_COLUMNS}, source_path) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   ).run(row.id, row.subject_entity_id, row.predicate, row.object_text, row.confidence, row.valid_from, validTo,
-    validTo === row.valid_to ? row.updated_at : validTo, row.event_id, row.scope, row.author, LIFECYCLE_NOTE_PATH);
+    validTo === row.valid_to ? row.updated_at : validTo, row.event_id, row.scope, row.author, row.statement_words, LIFECYCLE_NOTE_PATH);
   indexFactTerms(db, row.id, row.scope, { subject: canonicalSubject(db, row.subject_entity_id), predicate: row.predicate, object: row.object_text });
   db.prepare('DELETE FROM retired_facts WHERE id = ?').run(row.id);
   return true;
@@ -1227,6 +1252,7 @@ function applyRetirement(db: Database.Database, ev: LedgerEvent, digest: string,
       .run(ev.id, ev.kind, target, ev.at, ev.source);
     if (alreadyApplied) return;
     const moved = ev.kind === 'retire' ? moveFactOut(db, target, ev) : moveFactBack(db, target);
+    if (ev.kind === 'retire') reviveIdenticalPredecessor(db, target);
     const already = ev.kind === 'retire'
       ? db.prepare('SELECT 1 FROM retired_facts WHERE event_id = ?').get(target)
       : db.prepare('SELECT 1 FROM facts WHERE event_id = ?').get(target);
@@ -1250,7 +1276,10 @@ function settleRetirements(db: Database.Database, events: LedgerEvent[]): void {
   const retired = db.prepare('SELECT event_id FROM retired_facts').all() as Array<{ event_id: string }>;
   db.transaction(() => {
     for (const [target, ev] of last) {
-      if (ev.kind === 'retire') moveFactOut(db, target, ev);
+      if (ev.kind === 'retire') {
+        moveFactOut(db, target, ev);
+        reviveIdenticalPredecessor(db, target);
+      }
       else moveFactBack(db, target);
     }
     for (const { event_id } of retired) if (!last.has(event_id)) moveFactBack(db, event_id);
@@ -1350,7 +1379,28 @@ export async function replayLedger(
     if (applyEvent(db, ev, positions, index, closedBy).applied) applied++;
   }
   settleRetirements(db, events);
+  backfillStatementWords(db, events);
   return applied;
+}
+
+const STATEMENT_WORDS_BACKFILL = 'statement_words_backfilled';
+
+/**
+ * Facts saved before migration 25 have no `statement_words`, and replay skips their events (applied_ledger_events holds
+ * them), so the words are derived here once per database from the ledger event that saved each fact. This writes derived
+ * index rows only; the ledger is read, never written. Facts saved without a statement stay null.
+ */
+function backfillStatementWords(db: Database.Database, events: LedgerEvent[]): void {
+  if (db.prepare('SELECT 1 FROM index_state WHERE key = ?').get(STATEMENT_WORDS_BACKFILL) !== undefined) return;
+  const live = db.prepare('UPDATE facts SET statement_words = ? WHERE event_id = ? AND statement_words IS NULL');
+  const retired = db.prepare('UPDATE retired_facts SET statement_words = ? WHERE event_id = ? AND statement_words IS NULL');
+  for (const ev of events) {
+    const words = statementTerms(ev.statement);
+    if (words === null) continue;
+    live.run(words, ev.id);
+    retired.run(words, ev.id);
+  }
+  db.prepare('INSERT OR REPLACE INTO index_state (key, value) VALUES (?, ?)').run(STATEMENT_WORDS_BACKFILL, '1');
 }
 
 // In-process single-writer chain: serializes the full lifecycle decision +
@@ -1589,8 +1639,8 @@ function factTitle(subject: string, predicate: string, object: string): string {
 /**
  * Takes one saved fact out of recall, reversibly: a retire event goes into the ledger (who asked, when, and which fact),
  * then the fact's row leaves `facts` (moveFactOut). The ledger keeps the fact's own event, so its history is never lost
- * and restoreFact brings it back. Retiring the current value promotes nothing: the value it replaced stays replaced, so
- * the predicate has no current value until a new one is saved or this one is restored.
+ * and restoreFact brings it back. Retiring the current value revives only the directly replaced value when its object is
+ * identical (a differently worded restatement); a genuinely different replaced value stays historical.
  */
 export async function retireFact(db: Database.Database, vaultPath: string, ledgerRelPath: string, id: string, source?: string): Promise<FactRetirementReceipt> {
   return serializeLifecycleWrite(async () => {

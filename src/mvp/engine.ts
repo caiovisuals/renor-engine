@@ -20,7 +20,7 @@ import { entityScopeFilter, liveEntityFilter, lookupEntity } from '../retrieval/
 import { appendDailyEntry, entryClock } from '../memory/writer';
 import { appendedEntryId } from '../memorymap/memoryMap';
 import { indexFile, indexVault, NoteTooLargeError } from '../indexer/pipeline';
-import { walkVaultStats, type VaultFileStat } from '../indexer/walker';
+import { statVaultFiles, vaultIgnores, walkVaultStats, type VaultFileStat } from '../indexer/walker';
 import { quoteFtsQuery, shownPage } from '../retrieval/queryHelpers';
 import { keywordSearch } from '../retrieval/keyword';
 import { selectNoteIdentityHits, NOTE_IDENTITY_EXTRA } from '../retrieval/noteIdentity';
@@ -810,6 +810,23 @@ export interface IndexPass {
 const reconciledStamps = new WeakMap<Database.Database, Map<string, string>>();
 /** Per database: the stamp each note over the size cap had when it was last named, so it is said once per change and not on every save. */
 const tooLargeStamps = new WeakMap<Database.Database, Map<string, string>>();
+/**
+ * Per database: the files a pass left unsettled, whose stamp this process does not record as reconciled (a file changed
+ * within a clock tick of its scan, or whose pass failed or was not reached). A save checks them again, as a full scan
+ * would, because it cannot tell from the files it wrote that they are done.
+ */
+const unsettledFiles = new WeakMap<Database.Database, Set<string>>();
+/**
+ * Per database: when this process last checked every file of the vault (a full pass). Until one has run, a save walks the
+ * vault (the first pass in a process); after that a save walks it again once FULL_VAULT_CHECK_MS has passed.
+ */
+const walkedAt = new WeakMap<Database.Database, number>();
+/**
+ * How long note saves check only the files they wrote before every file of the vault is checked again. An edit made
+ * outside the engine (in Obsidian, say) is therefore seen by a save once this long has passed since the last full check;
+ * index_memory sees it at once.
+ */
+export const FULL_VAULT_CHECK_MS = 30_000;
 /** Every stat field a change shows in. The change time is what catches a rewrite that puts the modification time back. */
 const stampOf = (f: VaultFileStat) => `${f.mtimeMs}:${f.ctimeMs}:${f.size}:${f.ino}`;
 
@@ -833,18 +850,22 @@ async function inPool<T>(items: T[], limit: number, work: (item: T) => Promise<v
 }
 
 /**
- * Bring the index up to date with the vault as a full `indexVault` would, reading only what changed. The
- * vault is walked and every file stat'ed (none is read); a file goes through the same `indexFile` a full pass
- * runs when the index has no finished row for it, or its stamp (modification time, change time, size, inode)
- * differs from the one recorded when this process last reconciled it. So an edit, a new file or a rename made
- * outside the engine is picked up by the next save, a file whose last pass failed is retried, and an unchanged
- * file costs a stat, not a read and a hash. A file changed within a clock tick of its scan is not recorded
- * (see TIMESTAMP_TICK_MS), so the next scan reads it again. `indexFile` then skips an unchanged file by its
- * hash, and for a changed one replaces and embeds only the chunks that changed (a ledger appended to costs its
- * new event, however long it is). The first pass in a process has reconciled nothing and verifies every file
- * once, which is what each save used to cost. Like a full pass it leaves a deleted or renamed-away file's rows
- * in the index. The one change a stamp cannot show is a rewrite that leaves all four fields as they were,
- * which takes setting the system clock back; `index_memory`, and the first save after a restart, read every file.
+ * Bring the index up to date with the vault as a full `indexVault` would, reading only what changed. A file goes
+ * through the same `indexFile` a full pass runs when the index has no finished row for it, or its stamp
+ * (modification time, change time, size, inode) differs from the one recorded when this process last reconciled
+ * it; an unchanged file costs a stat, not a read and a hash, and `indexFile` skips an unchanged file by its hash.
+ *
+ * Which files a pass checks depends on who runs it. A save passes `touched`, the files it wrote (the day's note, the
+ * ledger): then only those, the files still owed (unsettled, see `unsettledFiles`) and the ones the index has no
+ * finished row for are stat'ed, so the vault is not walked and no other note's path is loaded, and a save costs the
+ * same however many notes and events the workspace holds. Without `touched` the vault is walked and every file
+ * stat'ed: that is what a search that finishes a save's unfinished files and a background job run, and what starts
+ * each process. A save walks it too when the last full check is FULL_VAULT_CHECK_MS or more old, so an edit, a new
+ * file, a rename or a delete made outside the engine is seen by a save within that long (and at once by
+ * `index_memory`, a full pass that reads every file). A file changed within a clock tick of its scan is not recorded
+ * as reconciled (see TIMESTAMP_TICK_MS), so the next check reads it again. Like a full pass it leaves a deleted or
+ * renamed-away file's rows in the index. The one change a stamp cannot show is a rewrite that leaves all four fields
+ * as they were, which takes setting the system clock back.
  */
 export async function engineIndexChanged(
   db: Database.Database,
@@ -856,8 +877,12 @@ export async function engineIndexChanged(
    * `interactive`: an agent waits on this pass (a save's, or a read that finishes what a save left), so a file whose
    * embedding the service will not give within the write budget is left unfinished and the pass returns; a background
    * job then embeds it (`engineFinishIndexInBackground`), however long the service takes.
+   *
+   * `touched`: the absolute paths of the files the calling save wrote. Given, the pass checks those and the files it
+   * still owes, and walks no vault, unless the last full check is FULL_VAULT_CHECK_MS old or there has been none in this
+   * process.
    */
-  pass: { interactive?: boolean } = {},
+  pass: { interactive?: boolean; touched?: string[] } = {},
 ): Promise<IndexPass> {
   const options = indexOptionsFor(engine, pass.interactive === true);
   let reconciled = reconciledStamps.get(db);
@@ -866,15 +891,46 @@ export async function engineIndexChanged(
     reconciledStamps.set(db, reconciled);
   }
   const known = reconciled;
-  const files = await walkVaultStats(config.memoryDir);
-  const finished = new Set(db.prepare("SELECT path FROM notes WHERE note_hash != ''").pluck().all() as string[]);
   let named = tooLargeStamps.get(db);
   if (!named) {
     named = new Map();
     tooLargeStamps.set(db, named);
   }
   const tooLarge = named;
-  const changed = files.filter(f => tooLarge.get(f.file) !== stampOf(f) && (!finished.has(f.file) || known.get(f.file) !== stampOf(f)));
+  let unsettled = unsettledFiles.get(db);
+  if (!unsettled) {
+    unsettled = new Set();
+    unsettledFiles.set(db, unsettled);
+  }
+  let candidates: VaultFileStat[];
+  let isFinished: (file: string) => boolean;
+  const now = Date.now();
+  const lastCheck = walkedAt.get(db);
+  const checkedRecently = lastCheck !== undefined && now >= lastCheck && now - lastCheck < FULL_VAULT_CHECK_MS;
+  if (pass.touched !== undefined && checkedRecently) {
+    // What the vault's rules leave out is never checked: the walk never reaches it, so neither does a save.
+    const ignored = await vaultIgnores(config.memoryDir);
+    const owed = [...pass.touched, ...unsettled];
+    if ((prepareOnce(db, UNFINISHED_FILES).pluck().get() as number) > 0) {
+      owed.push(...(prepareOnce(db, "SELECT path FROM notes WHERE note_hash = ''").pluck().all() as string[]));
+    }
+    candidates = statVaultFiles([...new Set(owed)].filter(file => !ignored(file)));
+    // A file that is gone or ignored has nothing left to settle: a later pass finds nothing there either.
+    const present = new Set(candidates.map(f => f.file));
+    for (const file of unsettled) if (!present.has(file)) unsettled.delete(file);
+    const hash = prepareOnce(db, "SELECT note_hash FROM notes WHERE path = ?").pluck();
+    isFinished = (file) => {
+      const h = hash.get(file);
+      return typeof h === 'string' && h !== '';
+    };
+  } else {
+    candidates = await walkVaultStats(config.memoryDir);
+    const finished = new Set(db.prepare("SELECT path FROM notes WHERE note_hash != ''").pluck().all() as string[]);
+    isFinished = (file) => finished.has(file);
+    walkedAt.set(db, now);
+    unsettled.clear(); // rebuilt below from every file's stamp
+  }
+  const changed = candidates.filter(f => tooLarge.get(f.file) !== stampOf(f) && (!isFinished(f.file) || known.get(f.file) !== stampOf(f)));
   let indexed = 0;
   let errors = 0;
   let failure: string | undefined;
@@ -902,6 +958,12 @@ export async function engineIndexChanged(
       console.error(`[index] error indexing ${f.file}:`, err);
     }
   });
+  // Settle what was checked: a file whose stamp is recorded (or that is named too large for its stamp) is done; any
+  // other is owed, and the next save checks it again.
+  for (const f of candidates) {
+    if (known.get(f.file) === stampOf(f) || tooLarge.get(f.file) === stampOf(f)) unsettled.delete(f.file);
+    else unsettled.add(f.file);
+  }
   // What the pass could not finish is not dropped: it is finished in the background, once the service answers.
   if (errors > 0 && pass.interactive) engineFinishIndexInBackground(db, config, engine);
   return { total: changed.length, indexed, errors, ...(failure === undefined ? {} : { failure }) };
@@ -926,7 +988,8 @@ const unfinishedRetryAfter = new WeakMap<Database.Database, number>();
  * an index with no vector yet, which a search does not ask, it is asked here). So what was saved during an outage is
  * found by meaning as soon as the provider is back, not only after the next save; and a search waits on a provider
  * that is down no longer than for its own query, which then fails, so the search says semantic search failed rather
- * than that nothing matched. It is the pass a save runs (engineIndexChanged). When it leaves a file unfinished although
+ * than that nothing matched. It is engineIndexChanged's full pass (no `touched`: every file is checked, as a save's first
+ * pass in a process does). When it leaves a file unfinished although
  * the provider answers (a chunk it refuses), searches leave the files for UNFINISHED_RETRY_MS, so that costs a search a
  * provider call at most that often; saves go on retrying them as before. Throws only what embedding the query throws.
  * True when a file was finished, so the search runs again and finds its chunks.

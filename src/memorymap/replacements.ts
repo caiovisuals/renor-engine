@@ -11,6 +11,7 @@ import {
   NOFOLLOW, RETIRED_DIR, activeRetired, ensureRealDir, openConfined, parseEntries, parseMemoryId, readJournal, readPrefix,
   readMemory, resolveVaultFile, type MemoryMapContext,
 } from './memoryMap';
+import { REPLACED_FILE_NAME } from './replacedJournal';
 
 // ---------------------------------------------------------------------------
 // Replacements: a correction that names the earlier memory it corrects.
@@ -29,7 +30,7 @@ import {
 // correction brings it back, with nothing else to undo. Corrections chain (A replaced by B, B by C): A reads as replaced by C.
 // ---------------------------------------------------------------------------
 
-const REPLACED_FILE = path.join(RETIRED_DIR, 'replaced.jsonl');
+const REPLACED_FILE = path.join(RETIRED_DIR, REPLACED_FILE_NAME);
 /** The corrected text of a note a replacement pulls into a reply, by characters (an entry is whole). */
 const NOTE_CORRECTION_CHARS = 1200;
 const MAX_CHAIN = 64;

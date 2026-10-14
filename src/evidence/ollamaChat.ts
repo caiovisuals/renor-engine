@@ -12,6 +12,14 @@ export interface OllamaChatOptions {
   keys: string[];
   timeoutMs?: number;
   maxRetries?: number;
+  /** Base of the exponential backoff between attempts, in ms (default 1000). */
+  backoffMs?: number;
+  /**
+   * Called before every HTTP attempt, the first and each retry. It may throw to stop the call: the error is
+   * thrown to the caller as it is, and no further attempt is made. The per-workspace daily allowance spends here,
+   * so a retried 429 or 5xx counts as the request it is.
+   */
+  beforeAttempt?: () => void;
 }
 
 /** The endpoint called when no base URL is given: Ollama Cloud. */
@@ -23,6 +31,7 @@ export function createOllamaChat(opts: OllamaChatOptions): EvidenceChat {
   if (keys.length === 0) throw new Error('createOllamaChat requires at least one API key');
   const timeoutMs = opts.timeoutMs ?? 180_000;
   const maxRetries = opts.maxRetries ?? 3;
+  const backoffMs = opts.backoffMs ?? 1000;
   let counter = 0;
 
   return async (request: EvidenceChatRequest): Promise<EvidenceChatResponse> => {
@@ -40,6 +49,7 @@ export function createOllamaChat(opts: OllamaChatOptions): EvidenceChat {
     });
     let lastError: Error | undefined;
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
+      opts.beforeAttempt?.();
       let retryable = true;
       const key = keys[counter++ % keys.length];
       const started = Date.now();
@@ -85,7 +95,7 @@ export function createOllamaChat(opts: OllamaChatOptions): EvidenceChat {
       } catch (err) {
         lastError = err instanceof Error ? err : new Error(String(err));
         if (!retryable || attempt >= maxRetries) break;
-        await new Promise(resolve => setTimeout(resolve, 2 ** attempt * 1000));
+        await new Promise(resolve => setTimeout(resolve, 2 ** attempt * backoffMs));
       } finally {
         clearTimeout(timer);
       }

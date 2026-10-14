@@ -287,16 +287,21 @@ export function rankCandidateFacts(facts: CurrentFact[], query: string, requestS
     const subjStems = new Set(wordStems(atoms(fact.subject)));
     const predStems = new Set(wordStems(atoms(fact.predicate)));
     const objStems = new Set(wordStems(atoms(fact.object ?? '')));
+    // The words of the statement the fact was saved with let a fact with a terse object reach the bar that the best fact
+    // sets from subject, predicate and object alone (bestDistinct below). A statement never raises that bar: it only
+    // admits its own fact. The order (scoreFactRelevance) does not change.
+    const stmtStems = new Set(wordStems(fact.statementWords ? fact.statementWords.split(' ') : []));
+    let ownMatched = 0;
     let distinctMatched = 0;
     for (const term of queryTerms) {
       const tStems = wordStems([term]);
-      if (tStems.some(s => subjStems.has(s) || predStems.has(s) || objStems.has(s))) {
-        distinctMatched++;
-      }
+      if (tStems.some(s => subjStems.has(s) || predStems.has(s) || objStems.has(s))) ownMatched++;
+      if (tStems.some(s => subjStems.has(s) || predStems.has(s) || objStems.has(s) || stmtStems.has(s))) distinctMatched++;
     }
     return {
       fact,
       score: scoreFactRelevance(fact, query, requestScope),
+      ownMatched,
       distinctMatched,
     };
   });
@@ -311,12 +316,12 @@ export function rankCandidateFacts(facts: CurrentFact[], query: string, requestS
     return (b.fact.eventId ?? '').localeCompare(a.fact.eventId ?? '');
   });
 
-  const bestDistinct = Math.max(...scored.map(s => s.distinctMatched), 0);
+  const bestDistinct = Math.max(...scored.map(s => s.ownMatched), 0);
   if (bestDistinct <= 0) return facts;
 
-  // A fact that shares fewer than half as many words as the best one is left out:
-  // when "Why did we consider moving Atlas to Fly.io?" finds the Fly.io fact by three words,
-  // a fact that only says "Atlas" is not what was asked.
+  // A fact that shares fewer than half as many words as the best one is left out, counting the best one by its subject,
+  // predicate and object words only: when "Why did we consider moving Atlas to Fly.io?" finds the Fly.io fact by three
+  // words, a fact that only says "Atlas" is not what was asked.
   return scored
     .filter(item => item.distinctMatched * 2 >= bestDistinct)
     .map(item => item.fact);
@@ -1307,7 +1312,7 @@ export async function buildAgentContext(
     }
     // Bounded-wait evidence (RENOR_EVIDENCE_ASYNC) can answer before the table exists. get_context then says so in the
     // words search_memory uses; with the flag off neither reason occurs and the response is what it was.
-    if (semantic.evidence?.reason === 'pending' || semantic.evidence?.reason === 'queue-full') {
+    if (semantic.evidence?.reason === 'pending' || semantic.evidence?.reason === 'queue-full' || semantic.evidence?.reason === 'daily-cap') {
       const { state, note } = productEvidenceReport(semantic.evidence);
       unfinishedEvidence = { state, note };
     }

@@ -45,6 +45,12 @@ type StoredClient = OAuthClientInformationFull & { pending_approval?: true };
 /** Client store bound (AUTH-H2); a store violating it is corrupt, not trimmed. */
 export const MAX_PERSISTED_CLIENTS = 100;
 
+/** Unapproved dynamic registrations are discarded after this owner-approval window. */
+export const PENDING_CLIENT_APPROVAL_TTL_MS = 10 * 60_000;
+
+/** Accesses trigger expiry cleanup, throttled to avoid rewriting the store more than once a minute. */
+const EXPIRED_CLIENT_SWEEP_INTERVAL_MS = 60_000;
+
 /** Operator-facing failure. Messages carry no secrets. */
 export class ClientRegistryError extends Error {
   constructor(message: string) {
@@ -158,6 +164,7 @@ function parseSnapshot(raw: string): Map<string, StoredClient> {
 
 export class ClientRegistry {
   private clients = new Map<string, StoredClient>();
+  private lastExpiredClientSweepAt = Number.NEGATIVE_INFINITY;
 
   constructor(private readonly filePath: string) {
     validateStoreRoot(path.dirname(filePath));
@@ -185,15 +192,18 @@ export class ClientRegistry {
   }
 
   get size(): number {
+    this.sweepExpiredPendingClients();
     return this.clients.size;
   }
 
   get(clientId: string): OAuthClientInformationFull | undefined {
+    this.sweepExpiredPendingClients();
     return this.clients.get(clientId);
   }
 
   /** Whether the client is registered but not yet approved by the owner. Stores from before approval existed have none. */
   isPending(clientId: string): boolean {
+    this.sweepExpiredPendingClients();
     return this.clients.get(clientId)?.pending_approval === true;
   }
 
@@ -202,8 +212,9 @@ export class ClientRegistry {
    * that has not been approved holds no name: anyone can register one, so only the owner's approval claims a name.
    */
   holdsApprovedHiveIdentity(identity: string, exceptClientId: string): boolean {
+    this.sweepExpiredPendingClients();
     for (const client of this.clients.values()) {
-      if (client.client_id !== exceptClientId && !this.isPending(client.client_id)
+      if (client.client_id !== exceptClientId && client.pending_approval !== true
         && hiveIdentity(client.client_name) === identity) return true;
     }
     return false;
@@ -215,11 +226,12 @@ export class ClientRegistry {
    * Unapproved registrations are not holders, so one cannot win the name by registering first.
    */
   hiveConnectionName(clientId: string): string | undefined {
+    this.sweepExpiredPendingClients();
     const client = this.clients.get(clientId);
     if (!client) return undefined;
     const identity = hiveIdentity(client.client_name);
     if (!identity) return typeof client.client_name === 'string' ? client.client_name.trim() : undefined;
-    const holders = [...this.clients.values()].filter(other => !this.isPending(other.client_id) && hiveIdentity(other.client_name) === identity);
+    const holders = [...this.clients.values()].filter(other => other.pending_approval !== true && hiveIdentity(other.client_name) === identity);
     holders.sort((a, b) => {
       const issued = (a.client_id_issued_at ?? 0) - (b.client_id_issued_at ?? 0);
       if (issued !== 0) return issued;
@@ -235,6 +247,7 @@ export class ClientRegistry {
    * The record is pending until approve(): it claims no hive name yet.
    */
   add(client: OAuthClientInformationFull): void {
+    this.sweepExpiredPendingClients();
     if (this.clients.size >= MAX_PERSISTED_CLIENTS) {
       throw new ClientRegistryError(`client store bound reached (${MAX_PERSISTED_CLIENTS} clients)`);
     }
@@ -252,14 +265,40 @@ export class ClientRegistry {
    * The owner approved this client: it becomes a holder of its hive name. Persisted before it takes effect, like add.
    */
   approve(clientId: string): void {
+    this.sweepExpiredPendingClients();
     const client = this.clients.get(clientId);
     if (!client) throw new ClientRegistryError('client is not registered');
-    if (!this.isPending(clientId)) return;
+    if (client.pending_approval !== true) return;
     validateStoreRoot(path.dirname(this.filePath));
     const next = new Map(this.clients);
     const { pending_approval: _pending, ...approved } = client;
     next.set(clientId, approved);
     this.writeSnapshot(next);
+    this.clients = next;
+  }
+
+  private sweepExpiredPendingClients(): void {
+    const now = Date.now();
+    if (now >= this.lastExpiredClientSweepAt
+      && now - this.lastExpiredClientSweepAt < EXPIRED_CLIENT_SWEEP_INTERVAL_MS) return;
+    this.lastExpiredClientSweepAt = now;
+
+    const next = new Map(this.clients);
+    for (const [clientId, client] of next) {
+      if (client.pending_approval === true
+        && (client.client_id_issued_at ?? 0) * 1000 <= now - PENDING_CLIENT_APPROVAL_TTL_MS) {
+        next.delete(clientId);
+      }
+    }
+    if (next.size === this.clients.size) return;
+    // Expiry only removes records nobody can use: a store that cannot be written right now must not break reads or
+    // sign-in, so the expired records are dropped in memory and the next write (or restart) persists the removal.
+    try {
+      validateStoreRoot(path.dirname(this.filePath));
+      this.writeSnapshot(next);
+    } catch (err) {
+      if (!(err instanceof ClientRegistryError)) throw err;
+    }
     this.clients = next;
   }
 

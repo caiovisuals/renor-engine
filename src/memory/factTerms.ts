@@ -144,6 +144,17 @@ export function ensureFactTerms(db: Database.Database): number {
   return unindexed.length;
 }
 
+/**
+ * The words of a fact's saved statement, kept with the fact (`facts.statement_words`) so the facts lane can count them
+ * toward a question's words (agentMemory.ts `rankCandidateFacts`). The atoms in the order they occur, space-joined: an
+ * atom never holds a space. Null when the fact was saved with no statement (save_memory) or has no word in it.
+ */
+export function statementTerms(statement: string | undefined): string | null {
+  if (statement === undefined) return null;
+  const terms = atoms(statement);
+  return terms.length > 0 ? terms.join(' ') : null;
+}
+
 export interface CurrentFact {
   eventId: string | null;
   subject: string;
@@ -153,15 +164,20 @@ export interface CurrentFact {
   scope: string;
   /** Who saved it. Absent on facts written before connection keys carried a name. */
   author?: string | null;
+  /** The words of its saved statement (`statementTerms`), null or absent when it has none. */
+  statementWords?: string | null;
 }
 
 /** A current fact and how many of the query's words it is found by. */
 export interface FactMatch extends CurrentFact {
+  id: number;
   shared: number;
 }
 
 const FACT_COLUMNS = `f.event_id AS eventId, e.canonical_name AS subject, f.predicate AS predicate,
-            f.object_text AS object, f.valid_from AS validFrom, f.scope AS scope, f.author AS author`;
+            f.object_text AS object, f.valid_from AS validFrom, f.scope AS scope, f.author AS author,
+            f.statement_words AS statementWords`;
+const FACT_MATCH_COLUMNS = `f.id AS id, ${FACT_COLUMNS}`;
 
 /** A word with at most this many rows (in the scope read) is selective: its rows are read completely. */
 export const COMPLETE_POSTINGS = 1_000;
@@ -272,7 +288,7 @@ export function findCurrentFacts(
          ORDER BY shared DESC, validFrom DESC, id DESC
          LIMIT ?
        )
-       SELECT ${FACT_COLUMNS}, b.shared AS shared
+       SELECT ${FACT_MATCH_COLUMNS}, b.shared AS shared
        FROM best b
        JOIN facts f ON f.id = b.id
        JOIN entities e ON e.id = f.subject_entity_id
@@ -288,7 +304,7 @@ export function findCurrentFacts(
   const probed = words.filter(word => word !== driver).map(word => word.term);
   return prepareOnce(
     db,
-    `SELECT ${FACT_COLUMNS}, ${terms.length} AS shared
+    `SELECT ${FACT_MATCH_COLUMNS}, ${terms.length} AS shared
      FROM json_each(?) c
      CROSS JOIN facts f ON f.id = c.value
      JOIN entities e ON e.id = f.subject_entity_id

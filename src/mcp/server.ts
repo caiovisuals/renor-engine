@@ -23,6 +23,7 @@ import { createStdioHiveTools, HIVE_TOOLS } from './hive';
 import { hiveIdentity } from '../memory/sourceName';
 import { isZodError, mapInvalidParams } from './requestErrors';
 import { escapeInvisibleControls } from '../mvp/sanitize';
+import { matchingCurrentFactHits } from '../retrieval/factsFirst';
 
 export function createMcpTools(
   db: Database.Database,
@@ -56,10 +57,20 @@ export function createMcpTools(
     async search(args: { query: string; topK?: number; top_k?: number }) {
       const topK = pickTopK(args, 20, 100);
       const result = await retrieveContext(db, vectorIndex, provider, args.query, topK, config.priorityPaths ?? [], {}, { isLedgerNote: isLedger });
+      // Unlike the owner-name shortcuts in the shared retrieval orchestrator, the self-hosted stdio read must surface
+      // a just-saved fact about any subject before its ledger prose is indexed. This is the same bounded current-fact
+      // term-index lane the hosted read uses; it excludes superseded facts.
+      // Merged by score with the note hits, not prepended: a fact that answers the query ranks by how well it does,
+      // and a strong note match still comes first.
+      const currentFacts = matchingCurrentFactHits(db, args.query, Math.min(3, topK));
+      const factTexts = new Set(currentFacts.map(hit => hit.text));
+      const hits = [...currentFacts, ...result.hits.filter(hit => !factTexts.has(hit.text))]
+        .sort((a, b) => b.score - a.score)
+        .slice(0, topK);
       const enabled = searchEvidenceEnabled();
       const attached = await attachSearchEvidence({
         query: args.query,
-        hits: result.hits,
+        hits,
         vaultPath: config.vaultPath,
         options: evidence,
         extractor: enabled ? getExtractor() : null,

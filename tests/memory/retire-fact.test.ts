@@ -67,7 +67,7 @@ function projection(d: Database.Database) {
 }
 
 describe('retiring a fact', () => {
-  it('takes the current value out of current reads and history, and promotes nothing', async () => {
+  it('takes a different current value out of current reads and history, and revives nothing', async () => {
     const tick = clock();
     const v = vault();
     const d = db(path.join(v, 'index.db'));
@@ -101,6 +101,41 @@ describe('retiring a fact', () => {
     const block = text.slice(text.indexOf(`## ${receipt.eventId}`));
     expect(block).not.toContain('- object:');
     expect(block).not.toContain('SQLite');
+  });
+
+  it('revives an identical replaced value, replays identically, and restore leaves one current value', async () => {
+    const tick = clock();
+    const v = vault();
+    const live = db(path.join(v, 'index.db'));
+    tick();
+    const first = await remember(live, v, LEDGER, {
+      statement: 'Kestrel staging runs on Postgres 14.', subject: 'Kestrel', predicate: 'staging_database', object: 'Postgres 14', source: 'test',
+    });
+    expect(first.action).toBe('store');
+    const replacedAt = tick();
+    const restatement = await remember(live, v, LEDGER, {
+      statement: 'Confirmed: Kestrel staging is on Postgres 14.', subject: 'Kestrel', predicate: 'staging_database', object: 'Postgres 14', source: 'test',
+    });
+    expect(restatement).toMatchObject({ action: 'supersede', closed: { object: 'Postgres 14' } });
+    expect(values(factsFor(live, 'Kestrel', { includeHistory: true }))).toEqual([
+      ['Postgres 14', null], ['Postgres 14', replacedAt],
+    ]);
+
+    const retiredAt = tick();
+    await retireFact(live, v, LEDGER, `fact:${restatement.eventId}`);
+    expect(values(factsFor(live, 'Kestrel'))).toEqual([['Postgres 14', null]]);
+    expect((factsFor(live, 'Kestrel') as any[])[0].event_id).toBe(first.eventId);
+
+    const rebuilt = db(path.join(v, 'rebuilt.db'));
+    await replayLedger(rebuilt, v, LEDGER);
+    expect(projection(rebuilt)).toEqual(projection(live));
+
+    tick();
+    expect(await restoreFact(live, v, LEDGER, `fact:${restatement.eventId}`)).toMatchObject({ current: false });
+    expect(factsFor(live, 'Kestrel')).toHaveLength(1);
+    expect(values(factsFor(live, 'Kestrel', { includeHistory: true }))).toEqual([
+      ['Postgres 14', retiredAt], ['Postgres 14', null],
+    ]);
   });
 
   it('a retired subject with no other fact is known to no subject list', async () => {

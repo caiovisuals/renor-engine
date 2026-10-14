@@ -31,7 +31,8 @@ describe('an import retried after a crash left an empty note at its path', () =>
     expect(fs.readFileSync(path.join(dir, 'two.md'), 'utf8')).toContain('zebra2');
   });
 
-  it('reports an empty leftover it cannot open for writing as a conflict, and writes the rest', async () => {
+  it('reports an empty leftover it cannot open for writing as a conflict, and writes the rest', async ({ skip }) => {
+    if (process.getuid?.() === 0) skip('requires a non-root process so file permissions deny writes');
     ws = await startWorkspace(() => null);
     const dir = path.join(ws.memoryDir, 'Imported/rt/c');
     fs.mkdirSync(dir, { recursive: true });

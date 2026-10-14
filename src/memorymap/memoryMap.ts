@@ -13,6 +13,9 @@ import { withDailyFileLock } from '../memory/writer';
 import { notePathMatchesScope, savedScopeMatches, type NormalizedScope } from '../mvp/scope';
 import { assertStorable, refuseUnchecked, secretGuardEnabled } from '../extraction/secretGuard';
 import { refusal } from '../toolRefusal';
+import { dropEvidenceForStems } from '../evidence/evidenceCache';
+import { forgetImportedNotes } from '../importing/forgetImported';
+import { forgetReplacementsOf } from './replacedJournal';
 import { clampSessionDate, createNoteTimeBound, resolveSessionDate } from '../retrieval/orchestrator';
 
 // ---------------------------------------------------------------------------
@@ -104,6 +107,8 @@ export interface MemoryMapContext {
   /** Who is asking, for the ledger's record of a fact's retire or restore. */
   source?: string;
   indexOptions: IndexOptions;
+  /** The evidence pass's cache, whose rows a permanent deletion drops when they read a deleted memory's file. */
+  evidenceCachePath?: string;
 }
 
 export type MemoryKind = 'note' | 'entry';
@@ -579,6 +584,12 @@ export interface RetiredRecord {
   restoredAt?: string;
   /** Set when a retirement was found not to have completed; the memory never left. */
   voided?: boolean;
+  /**
+   * Set on the one record a permanent deletion leaves in place of a retirement's records (purgeRetired): the rid, the
+   * kind and the time, never the id, path, title or text. It also says `voided`, so an engine from before this field
+   * reads it as an ended retirement and never lists it.
+   */
+  purgedAt?: string;
 }
 
 export async function readJournal(ctx: MemoryMapContext): Promise<RetiredRecord[]> {
@@ -616,7 +627,7 @@ export async function readJournal(ctx: MemoryMapContext): Promise<RetiredRecord[
 export function activeRetired(records: RetiredRecord[]): RetiredRecord[] {
   const latest = new Map<string, RetiredRecord>();
   for (const r of records) if (typeof r.rid === 'string') latest.set(r.rid, r);
-  return [...latest.values()].filter((r) => !r.restoredAt && !r.voided);
+  return [...latest.values()].filter((r) => !r.restoredAt && !r.voided && !r.purgedAt);
 }
 
 async function appendJournal(ctx: MemoryMapContext, record: RetiredRecord): Promise<void> {
@@ -1279,7 +1290,9 @@ function dropNoteFromIndex(ctx: MemoryMapContext, indexed: string): void {
  */
 async function reconcile(ctx: MemoryMapContext): Promise<void> {
   const rootReal = await fs.realpath(ctx.memoryDir);
-  for (const r of activeRetired(await readJournal(ctx))) {
+  const journal = await readJournal(ctx);
+  await removePurgedCopies(rootReal, journal);
+  for (const r of activeRetired(journal)) {
     let file: VaultFile;
     try {
       file = await resolveVaultFile(ctx, r.path, false);
@@ -1489,6 +1502,170 @@ export function restoreMemory(ctx: MemoryMapContext, id: string): Promise<Retire
     await appendJournal(ctx, { ...record, restoredAt: at });
     recordEvent(ctx.db, record.path, 'restore', record.id, record.title);
     return { ok: true, id: record.id, action: 'restored', title: record.title, at };
+  });
+}
+
+// ------------------------------- permanent deletion -------------------------
+
+export interface PurgeReceipt {
+  ok: true;
+  action: 'deleted';
+  /** The retirement ids deleted (what memory_map.retired listed as `id`). */
+  ids: string[];
+  /** Bytes of Markdown that no longer count toward storage: the retired notes' stored copies. */
+  freedBytes: number;
+  at: string;
+}
+
+/** The directory holding one retirement's stored copy: `.trash/renor-retired/files/<rid without its prefix>`. */
+function storedCopyDir(rootReal: string, rid: string): string | null {
+  const hex = rid.startsWith('retired:') ? rid.slice('retired:'.length) : '';
+  if (!/^[0-9a-f]{16}$/.test(hex)) return null;
+  return path.join(rootReal, RETIRED_FILES_DIR, hex);
+}
+
+/**
+ * Remove the stored copy of every retirement the journal says was deleted. The journal is rewritten before any copy is
+ * removed (purgeRetired), so a crash between the two leaves a copy no record points to: this finds it by the rid the
+ * deletion's record keeps, and removes it. Only a plain directory inside the retired area is removed, never through a
+ * link.
+ */
+async function removePurgedCopies(rootReal: string, journal: RetiredRecord[]): Promise<void> {
+  for (const r of journal) {
+    if (!r.purgedAt || r.kind !== 'note') continue;
+    const dir = storedCopyDir(rootReal, r.rid);
+    if (!dir) continue;
+    let st;
+    try {
+      st = await fs.lstat(dir);
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') continue;
+      throw err;
+    }
+    if (!st.isDirectory() || (await fs.realpath(path.dirname(dir))) !== path.dirname(dir)) continue;
+    // fs.rm removes a link inside the tree, never what it points to.
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+}
+
+/** Bytes of regular files below `dir`, never through a link (what the storage gauge counts of a stored copy). */
+async function bytesBelow(dir: string): Promise<number> {
+  let total = 0;
+  let entries;
+  try {
+    entries = await fs.readdir(dir, { withFileTypes: true });
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return 0;
+    throw err;
+  }
+  for (const entry of entries) {
+    const abs = path.join(dir, entry.name);
+    if (entry.isDirectory()) total += await bytesBelow(abs);
+    else if (entry.isFile() && entry.name.endsWith('.md')) total += (await fs.lstat(abs)).size;
+  }
+  return total;
+}
+
+/**
+ * Permanently delete retired notes and daily-log entries: `target` is one retirement's id from memory_map.retired
+ * (`retired:<hex>`), or `all` for every retired note and entry. With `all`, `only` (retirement ids, as the owner saw them)
+ * limits the deletion to those, so a retirement made after the owner's list was read is not deleted unseen. A live memory
+ * has no retirement id, so it can never be deleted in one step: it is retired first. A retired fact is kept in the fact
+ * ledger, which is replayed to rebuild the index, and is refused here.
+ *
+ * What goes: a note's stored copy (so its bytes stop counting toward storage), an entry's text in the journal, every
+ * journal record of the memory's earlier retirements that carried its text, the retire, restore and note events that
+ * name it, cached evidence read from its file, a note's path in the import journal (.renor-imports), and every replacement
+ * record that names it (replaced.jsonl). The search index
+ * lost the memory when it was retired. What stays: one journal record per deletion (rid, kind, time) and one write event
+ * (how many, of which kind), neither with an id, a path, a title or any text.
+ *
+ * Crash safety: events, cached evidence, import-journal entries and replacement records are dropped first (a crash then leaves
+ * the memory retired and restorable, without its event titles, its undo entry or its replacement link); the journal rewrite is atomic and is the moment of
+ * deletion (from then on nothing lists or restores it); a stored copy left behind by a crash after it is removed by the
+ * next retire, restore or delete (removePurgedCopies), and until then it counts toward storage but nothing reads it.
+ */
+export async function purgeRetired(ctx: MemoryMapContext, target: string, only?: readonly string[]): Promise<PurgeReceipt> {
+  if (factEventId(target) !== null) {
+    throw refusal('invalid_argument', 'a retired fact stays in the fact ledger and cannot be deleted here; email privacy@renor.cloud to erase one');
+  }
+  if (target !== 'all' && !target.startsWith('retired:')) {
+    throw refusal('invalid_argument', 'pass the id of a retired memory from memory_map.retired (retired:<id>) or "all"; a live memory is retired first');
+  }
+  if (only !== undefined && target !== 'all') {
+    throw refusal('invalid_argument', 'a list of ids goes with "all" only: one id deletes one memory');
+  }
+  return serialize(async () => {
+    await reconcile(ctx);
+    const rootReal = await fs.realpath(ctx.memoryDir);
+    const journal = await readJournal(ctx);
+    const live = (await collectMemories(ctx)).seen;
+    const completed = (await completedRetirements(ctx, live)).filter((r) => r.memory.kind !== 'fact');
+    const listed = only === undefined ? null : new Set(only);
+    const chosen = target === 'all'
+      ? completed.filter((r) => listed === null || listed.has(r.memory.id))
+      : completed.filter((r) => r.memory.id === target);
+    if (target !== 'all' && chosen.length === 0) throw refusal('memory_not_found', 'no retired note or entry with that id');
+    const at = new Date().toISOString();
+    if (chosen.length === 0) return { ok: true, action: 'deleted', ids: [], freedBytes: 0, at };
+
+    const rids = new Set(chosen.map((r) => r.memory.id));
+    const memoryIds = new Set(chosen.map((r) => r.memory.memoryId));
+    const byRid = new Map(activeRetired(journal).map((r) => [r.rid, r]));
+    let freedBytes = 0;
+    for (const rid of rids) {
+      const dir = byRid.get(rid)?.kind === 'note' ? storedCopyDir(rootReal, rid) : null;
+      if (dir) freedBytes += await bytesBelow(dir);
+    }
+
+    // 1. Events, cached evidence, import-journal entries and replacement records that carry its text or path. Idempotent, so a retry after a
+    // crash repeats them harmlessly.
+    const stems = new Set<string>();
+    await forgetImportedNotes(ctx.memoryDir, new Set(chosen.filter((r) => r.memory.kind === 'note').map((r) => r.memory.path)));
+    await forgetReplacementsOf(path.join(rootReal, RETIRED_DIR), new Set(chosen.map((r) => r.memory.memoryId).filter((id): id is string => typeof id === 'string')));
+    ctx.db.transaction(() => {
+      const named = ctx.db.prepare(
+        `DELETE FROM write_events WHERE action IN ('retire', 'restore') AND json_valid(summary) AND json_extract(summary, '$.id') = ?`,
+      );
+      const noted = ctx.db.prepare(`DELETE FROM write_events WHERE action = 'note' AND note_path IN (?, ?) AND summary = ?`);
+      for (const memoryId of memoryIds) named.run(memoryId);
+      for (const r of chosen) {
+        const rel = r.memory.path;
+        stems.add(rel);
+        stems.add(path.resolve(ctx.memoryDir, ...rel.split('/')));
+        if (r.memory.kind !== 'entry') continue;
+        const record = byRid.get(r.memory.id);
+        const text = record?.block ? parseEntries(rel, record.block).blocks[0]?.text : undefined;
+        if (text !== undefined) noted.run(rel, rel.split('/').join(path.sep), text.slice(0, 240));
+      }
+    })();
+    // A daily log is read whole by the evidence pass, so its live entries' extractions go too; the cache asks again.
+    if (ctx.evidenceCachePath) dropEvidenceForStems(ctx.evidenceCachePath, [...stems]);
+
+    // 2. The journal, rewritten atomically: the moment of deletion. Every record of a chosen retirement goes, and so does
+    // every ended retirement of the same memory (a restore or a void kept the entry's text); other retirements still in
+    // effect stay, so a memory retired twice keeps its other retirement.
+    const kept = journal.filter((r) => !rids.has(r.rid) && !(memoryIds.has(r.id) && !byRid.has(r.rid)));
+    const tombstones: RetiredRecord[] = [...rids].map((rid) => ({
+      rid, kind: byRid.get(rid)!.kind, purgedAt: at, voided: true,
+    }) as RetiredRecord);
+    const dir = await ensureRealDir(rootReal, RETIRED_DIR);
+    const file = path.join(dir, path.basename(RETIRED_INDEX));
+    const st = await fs.lstat(file);
+    if (!st.isFile() || st.nlink !== 1) throw new Error(`refusing to rewrite ${JSON.stringify(RETIRED_INDEX)}: it is not a regular file with a single name`);
+    await atomicWrite(file, [...kept, ...tombstones].map((r) => JSON.stringify(r) + '\n').join(''));
+
+    // 3. The stored copies. A crash before this leaves them to removePurgedCopies.
+    await removePurgedCopies(rootReal, tombstones);
+
+    // 4. The visible audit line: what kind and how many, nothing else.
+    const notes = tombstones.filter((r) => r.kind === 'note').length;
+    const entries = tombstones.length - notes;
+    const counted = [notes ? `${notes} note${notes === 1 ? '' : 's'}` : '', entries ? `${entries} entr${entries === 1 ? 'y' : 'ies'}` : '']
+      .filter(Boolean).join(' and ');
+    ctx.db.prepare('INSERT INTO write_events (note_path, action, summary, created_at, author) VALUES (?, ?, ?, ?, ?)')
+      .run('_retired_', 'delete', `deleted permanently: ${counted}`, at, ctx.source ?? null);
+    return { ok: true, action: 'deleted', ids: [...rids], freedBytes, at };
   });
 }
 

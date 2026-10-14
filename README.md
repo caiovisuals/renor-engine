@@ -10,13 +10,15 @@
 
 **Who it is for.** People who run coding agents every day and are willing to run a Node service. It is a single-owner engine: one person's notes, one set of agents. It is not a multi-user product.
 
-**Run it offline or hosted.** The ten-minute path below uses no paid model and no network: `eval-hash` and `none` are offline embedding settings that exist so you can try it, not a quality claim. If you would rather not run this yourself, a hosted service is at <https://renor.cloud>.
+**Run it offline or hosted.** After dependencies are installed, the ten-minute path's runtime indexing and search use no paid model and no network: `eval-hash` and `none` are offline embedding settings that exist so you can try it, not a quality claim. If you would rather not run this yourself, a hosted service is at <https://renor.cloud>.
 
 **License.** AGPL-3.0-only for Renor's work ([LICENSE](LICENSE)); imported upstream files remain ISC ([NOTICE](NOTICE)). Contributing: [CONTRIBUTING.md](CONTRIBUTING.md). Security reports: [SECURITY.md](SECURITY.md). Agent instructions, including the self-hosted setup, are in [skill/SKILL.md](skill/SKILL.md).
 
 Run everything below in the directory that contains this file and `package.json`.
 
-## Before you install: Node 22
+## Before you install: Node 22 and npm packages
+
+Installation requires internet access to the npm registry, or a populated npm cache that can satisfy `npm ci` and `npm rebuild`. Runtime indexing and search in the ten-minute path are offline after those dependencies are installed.
 
 Renor is tested on **Node 22** (`.nvmrc` and `mise.toml` pin it). Run `node -v` and check it prints `v22.x`. `better-sqlite3` and `sqlite-vec` are native modules compiled for one Node major; on a different major a native module can fail at `node dist/cli.js index` with:
 
@@ -46,15 +48,27 @@ If you use mise, `node` below means `mise exec node@22 -- node`, and `npm` means
 
 `npm run build` runs `scripts/ci/stamp-build.mjs` first (a `prebuild` step). It writes `dist/BUILD.json`, which `/version` reports as the build's commit. In a git checkout it reads that commit from `git`, so a local build needs nothing extra. A copy with no `.git` (a tarball, a GitHub "Download ZIP" or `git archive`) has no commit to read, so the build stops until `RENOR_BUILD_COMMIT` is set to a 7–40 character hex revision. That variable matters only for the stamp: the code builds and runs the same either way. If you know the revision you downloaded, use that sha. `0000000` only passes the check, and `/version` will report it.
 
+For a git checkout, clone and build without setting `RENOR_BUILD_COMMIT`:
+
 ```bash
-node -v
-export RENOR_BUILD_COMMIT="<the commit this copy came from>"
+git clone https://github.com/patrickpassosb/renor-engine.git
+cd renor-engine
+node -v                    # v22.x
 npm ci
 npm rebuild better-sqlite3 --ignore-scripts=false
 npm run build
 ```
 
-In a git checkout you can leave `RENOR_BUILD_COMMIT` unset: the build reads the commit from `git`.
+For an archive or GitHub **Download ZIP**, enter its extracted directory and set the revision before building. Use the 40-character hex revision the archive came from. The value below is only an example of the format; it is a commit in the private history, not in the public repository, so replace it:
+
+```bash
+cd renor-engine-*
+node -v                    # v22.x
+export RENOR_BUILD_COMMIT="9f25a24229ec3c29f1c149f4966f06435f5ac8e9"
+npm ci
+npm rebuild better-sqlite3 --ignore-scripts=false
+npm run build
+```
 
 ## 2. Command-line server
 
@@ -63,7 +77,8 @@ This server speaks MCP on stdin and stdout. Give it a new folder and one note. `
 `RENOR_EVIDENCE_MODE=off` keeps the smoke run from calling an extraction model. The server does not index on startup, so index before you connect a client.
 
 ```bash
-export VAULT_PATH="$PWD/.smoke/vault"
+export VAULT_PATH="$(mktemp -d)/renor-vault"
+printf 'Vault path (keep this): %s\n' "$VAULT_PATH"
 mkdir -p "$VAULT_PATH"
 printf '%s\n' 'The blue notebook is on the desk.' > "$VAULT_PATH/notebook.md"
 
@@ -76,6 +91,26 @@ node dist/cli.js mcp
 ```
 
 `node dist/cli.js index` exits 0. The first run on a new folder prints `[migrations] applied:` lines and then `Done. 1/1 indexed, 0 errors.` Leave `node dist/cli.js mcp` running. Its stdout is the MCP protocol; talk to it with a client, not by typing. Index before that process starts so those migration lines are not written onto the client's channel.
+
+### Verify it
+
+Stop the manually started server with **Ctrl-C**, then run the checked-in MCP SDK client. It starts the same stdio server, lists its tools, saves one current fact, searches for that value three ways, and stops the server itself:
+
+```bash
+node scripts/smoke-self-hosted.mjs
+```
+
+Those are the MCP calls `tools/list`, `tools/call` for `remember_fact` with `{"subject":"Ada","predicate":"favorite_color","object":"cerulean"}`, then `tools/call` for `search` with each of `{"query":"What is Ada's favorite color?"}`, `{"query":"Ada favorite color cerulean"}`, and `{"query":"cerulean"}`. The tool list must include `remember_fact` and `search`; every search must return `cerulean`. Success ends with:
+
+```text
+PASS: self-hosted stdio MCP can remember and retrieve a current fact.
+```
+
+The smoke client exits non-zero if a call fails or the value is missing. After you are finished with this disposable quickstart vault, remove the temporary directory:
+
+```bash
+rm -rf -- "$(dirname -- "$VAULT_PATH")"
+```
 
 ## 3. HTTP server
 

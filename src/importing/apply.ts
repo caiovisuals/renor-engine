@@ -47,6 +47,8 @@ export interface ApplyOptions {
   now?: () => Date;
   /** Journal ownership after exclusive creation, before bytes are written. May throw to roll back. */
   onNoteCreated?: (note: PlannedNote) => void;
+  /** Journal an identical note this import found and therefore re-asserted without writing. */
+  onNoteUnchanged?: (note: PlannedNote) => void;
 }
 
 export interface ApplyResult {
@@ -203,6 +205,7 @@ export async function applyImportPlan(
       }
       const onDisk = await fs.readFile(target, 'utf8');
       if (onDisk === planned.content) {
+        options.onNoteUnchanged?.(planned);
         notesUnchanged += 1;
         continue;
       }

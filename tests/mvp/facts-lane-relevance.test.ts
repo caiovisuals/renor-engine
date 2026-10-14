@@ -205,8 +205,13 @@ describe('facts do not crowd out the note that answers the question (F1)', () =>
     const body = await call('get_context', { query: 'Why did we consider moving Atlas to Fly.io?' }) as Context;
     expect(body.maxTokens).toBe(800);
     expect(body.memories.some(m => m.text.includes('$410/month'))).toBe(true);
-    // The fact the question is about, not every fact that says "Atlas".
-    expect(body.facts.map(factLine)).toEqual(['Atlas project · deploy_target · Fly.io']);
+    // The fact the question is about, not every fact that says "Atlas". The reversal fact also lists: its saved statement
+    // names Fly.io and the decision it reverses, so it shares the question's words (statement words count, see
+    // statement_words in migration 24). It costs about 47 tokens on this reply.
+    expect(body.facts.map(factLine)).toEqual([
+      'Atlas project · deploy_target · Fly.io',
+      'Atlas · deploy_target · AWS ECS Fargate',
+    ]);
   });
 
   it('keeps room for the memories when facts would fill the budget, and gives back what the memories leave', async () => {

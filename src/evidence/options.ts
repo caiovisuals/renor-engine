@@ -2,6 +2,7 @@ import path from 'node:path';
 import { createOllamaChat } from './ollamaChat';
 import { ollamaKeysForEndpoint } from './keyPool';
 import { EvidenceCache } from './evidenceCache';
+import { EvidenceDailyBudget, optinEndpointAllowed, readOptinKey, resolveEvidenceOptin, dailyBudgetGate } from './optin';
 import { resolveEvidenceMode, type EvidenceMode } from './gate';
 import type { EvidenceBackground } from './background';
 import {
@@ -27,6 +28,8 @@ export interface EvidenceToolOptions {
   charCap: number;
   cachePath?: string;
   chat?: EvidenceChat;
+  /** Present only for a workspace that opted in (optin.ts): its model calls per UTC day. */
+  dailyCap?: number;
   /** Present only when RENOR_EVIDENCE_MAX_TOKENS or RENOR_EVIDENCE_REASONING_EFFORT is set. */
   bounds?: EvidenceRequestBounds;
   /**
@@ -95,6 +98,9 @@ export function resolveEvidenceToolOptions(
   const cachePath = env.RENOR_EVIDENCE_CACHE?.trim()
     || path.join(path.dirname(config.dbPath), 'evidence-cache.db');
   const bounds = resolveEvidenceBounds(env);
+  // A workspace that opted in (RENOR_EVIDENCE_OPTIN, see optin.ts) reaches Ollama Cloud with the key file's key
+  // alone, on gemma4:31b, and spends a daily allowance of calls. Unset, this is the resolver it always was.
+  const optin = resolveEvidenceOptin(env);
   const { baseUrl, keys } = resolveEvidenceProvider(env);
   // Coverage knob (RENOR_EVIDENCE_SESSIONS). Default 20 matches the
   // promotion-grade full-500 arm. One model call per uncached search,
@@ -110,15 +116,30 @@ export function resolveEvidenceToolOptions(
   const maxSessions = Number.isFinite(requestedSessions) && requestedSessions >= 1
     ? Math.min(requestedSessions, 50)
     : MAX_EVIDENCE_SESSIONS;
+  let chat: EvidenceChat | undefined;
+  if (optin) {
+    const optinKey = optinEndpointAllowed(baseUrl) ? readOptinKey(optin.keyFile) : null;
+    if (optinKey) {
+      const dailyCap = optin.dailyCap;
+      // The allowance is spent per HTTP attempt (a retried 429 or 5xx is another request to the provider), so it
+      // sits inside the transport rather than around it.
+      chat = createOllamaChat({
+        keys: [optinKey],
+        beforeAttempt: dailyBudgetGate(() => new EvidenceDailyBudget(cachePath, dailyCap)),
+      });
+    }
+  } else if (keys.length > 0) {
+    chat = createOllamaChat({ baseUrl, keys });
+  }
   return {
     mode,
-    model,
+    // The opt-in is the gemma4:31b decision: a stray RENOR_EVIDENCE_MODEL does not change what the privacy page names.
+    model: optin ? EVIDENCE_MODEL_DEFAULT : model,
     maxSessions,
     charCap: EVIDENCE_SESSION_CHAR_CAP,
     cachePath,
-    ...(keys.length > 0
-      ? { chat: createOllamaChat({ baseUrl, keys }) }
-      : {}),
+    ...(chat ? { chat } : {}),
+    ...(optin ? { dailyCap: optin.dailyCap } : {}),
     ...(bounds.maxTokens !== undefined || bounds.reasoningEffort !== undefined ? { bounds } : {}),
   };
 }

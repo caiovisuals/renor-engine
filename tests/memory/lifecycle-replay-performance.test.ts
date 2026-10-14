@@ -47,7 +47,9 @@ function without<T extends Record<string, unknown>>(rows: T[], keys: string[]): 
 function projection(db: Database.Database) {
   return {
     entities: db.prepare("SELECT * FROM entities WHERE source_note = '_mcp_' ORDER BY id").all(),
-    facts: without(db.prepare('SELECT * FROM facts ORDER BY id').all() as Record<string, unknown>[], ['author']),
+    // statement_words is the facts lane's word index for a saved statement (migration 25), pinned on its own below; every
+    // other column is pinned here as before, and the digest value is unchanged.
+    facts: without(db.prepare('SELECT * FROM facts ORDER BY id').all() as Record<string, unknown>[], ['author', 'statement_words']),
     receipts: db.prepare('SELECT * FROM applied_ledger_events ORDER BY event_id').all(),
     writes: without(db.prepare('SELECT * FROM write_events ORDER BY id').all() as Record<string, unknown>[], ['author', 'scope']),
   };
@@ -109,5 +111,37 @@ it('preserves the complete pre-index replay projection for identity/history even
     });
     expect(await replayLedger(db, vault, 'ledger.md')).toBe(0);
     expect(projection(db)).toEqual(state);
+  } finally { db.close(); }
+});
+
+// statement_words (migration 25) is derived from the saved statement and is pinned on its own: the golden digest above
+// leaves it out, so this is where a wrong derivation on replay would fail.
+it('derives statement_words from the saved statement on replay, and leaves a statement-less fact null', async () => {
+  const { db, vault } = fixture(0);
+  fs.writeFileSync(path.join(vault, 'ledger.md'), [
+    '## MEM_SW1 · 2026-01-01T00:00:00.000Z',
+    '- kind: store',
+    '- subject: Atlas',
+    '- predicate: deploy_target',
+    '- object: Fly.io',
+    '- scope: project:atlas',
+    '- statement: "Refinement A of the get_context reservation fails."',
+    '',
+    '',
+    '## MEM_SW2 · 2026-01-01T00:00:01.000Z',
+    '- kind: store',
+    '- subject: Atlas',
+    '- predicate: region',
+    '- object: São Paulo',
+    '- scope: project:atlas',
+    '',
+    '',
+  ].join('\n'));
+  try {
+    expect(await replayLedger(db, vault, 'ledger.md')).toBe(2);
+    const words = (predicate: string) => (db.prepare('SELECT statement_words AS w FROM facts WHERE predicate = ?').get(predicate) as { w: string | null }).w;
+    // Lowercased words of two letters or more, `_` split into words, each word once, in order of first appearance.
+    expect(words('deploy_target')).toBe('refinement of the get context reservation fails');
+    expect(words('region')).toBeNull();
   } finally { db.close(); }
 });

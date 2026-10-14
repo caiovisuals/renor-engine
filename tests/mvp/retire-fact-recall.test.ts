@@ -56,6 +56,18 @@ async function reads(ws: Workspace) {
 }
 
 describe('retire_memory and restore_memory with a fact', () => {
+  it('revives an identical earlier statement for get_context when its restatement is retired', async () => {
+    const ws = await workspace();
+    const first = await ok(ws, 'remember', { statement: 'Kestrel staging runs on Postgres 14.', subject: 'Kestrel', predicate: 'staging_database', object: 'Postgres 14' });
+    expect(first.action).toBe('store');
+    const restatement = await ok(ws, 'remember', { statement: 'Confirmed: Kestrel staging is on Postgres 14.', subject: 'Kestrel', predicate: 'staging_database', object: 'Postgres 14' });
+    expect(restatement).toMatchObject({ action: 'supersede', closed: { object: 'Postgres 14' } });
+
+    await ok(ws, 'retire_memory', { id: `fact:${restatement.eventId}` });
+    const context = await ok(ws, 'get_context', { query: 'What database does Kestrel staging use?' });
+    expect(context.facts).toEqual([expect.objectContaining({ subject: 'Kestrel', predicate: 'staging_database', object: 'Postgres 14' })]);
+  });
+
   it('a retired fact leaves every read, its history stays, and restore brings every read back as it was', async () => {
     const ws = await workspace();
     await ok(ws, 'remember', { statement: 'Kestrel staging runs on Postgres 14.', subject: 'Kestrel', predicate: 'staging_database', object: 'Postgres 14' });
@@ -75,7 +87,7 @@ describe('retire_memory and restore_memory with a fact', () => {
     const after = await reads(ws);
     for (const [name, body] of Object.entries(after)) expect(JSON.stringify(body), name).not.toMatch(/quokkadb/i);
     expect(after.mapThings).toEqual([expect.objectContaining({ name: 'Kestrel', currentFacts: 0 })]);
-    // The value it replaced stays replaced: no current value, and the old one only as history.
+    // The different value it replaced stays replaced: no current value, and the old one only as history.
     expect(after.current.facts).toEqual([]);
     expect(after.current.known).toBe(true);
     expect(after.history.facts.map((f: any) => [f.object, f.current])).toEqual([['Postgres 14', false]]);
