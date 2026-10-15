@@ -1,6 +1,7 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import { EventEmitter } from 'events';
 import { IdleMonitor, DRAINING_HEADER } from '../../src/mvp/idle';
+import { ACTIVITY_PATH } from '../../src/mvp/activity';
 
 /**
  * The on-demand idle clock (RENOR_ON_DEMAND) on fake timers: what holds an engine awake,
@@ -85,5 +86,17 @@ describe('IdleMonitor', () => {
     expect(secondDrainedAt).toBe(-1);
     await vi.advanceTimersByTimeAsync(1);
     expect(secondDrainedAt).toBe(1_500);
+  });
+
+  it('the release\'s look at the activity report is a probe: it does not restart the idle clock', async () => {
+    vi.useFakeTimers();
+    const monitor = new IdleMonitor(1_000);
+    let drainedAt = -1;
+    const t0 = Date.now();
+    void monitor.start().then(() => { drainedAt = Date.now() - t0; });
+    await vi.advanceTimersByTimeAsync(900);
+    serve(monitor, 'GET', ACTIVITY_PATH).end(200); // a successful answer that would reset the clock if it counted
+    await vi.advanceTimersByTimeAsync(100);
+    expect(drainedAt).toBe(1_000);
   });
 });

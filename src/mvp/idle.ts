@@ -1,4 +1,5 @@
 import type { NextFunction, Request, Response } from 'express';
+import { ACTIVITY_PATH } from './activity';
 
 /**
  * On-demand idle exit (RENOR_ON_DEMAND=1, see config.ts). Off by default: without the
@@ -8,7 +9,7 @@ import type { NextFunction, Request, Response } from 'express';
  * included) and every MCP tool call until it returns, even one whose client has gone,
  * because a write or index job outlives its connection. The idle clock restarts when a
  * request ends below 400, so a scanner's 401/404 or a readiness probe on /version does
- * not keep a sleeping workspace resident.
+ * not keep a sleeping workspace resident (nor does the release's look at /internal/activity).
  *
  * With nothing in flight for the whole idle period the monitor starts draining: every
  * later request is answered 503 with the draining header before it does anything, so
@@ -53,7 +54,7 @@ export class IdleMonitor {
       res.status(503).json({ error: 'draining' });
       return;
     }
-    const probe = req.method === 'GET' && req.path === '/version';
+    const probe = req.method === 'GET' && (req.path === '/version' || req.path === ACTIVITY_PATH);
     const end = this.begin();
     let ended = false;
     const finish = (): void => {

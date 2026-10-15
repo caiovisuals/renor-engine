@@ -1,6 +1,5 @@
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import { instrument } from '@posthog/mcp';
-import { PostHog } from 'posthog-node';
+import type { PostHog } from 'posthog-node';
 import { createHash } from 'node:crypto';
 import { telemetryInstanceId } from './telemetry';
 
@@ -22,6 +21,13 @@ export type McpAnalyticsCaptureEvent = {
  */
 
 const DEFAULT_HOST = 'https://us.i.posthog.com';
+
+// The two packages are ~130 modules and ~110 ms of a cold start (measured with scripts/bench/cold-start.ts), and a
+// workspace without RENOR_POSTHOG_KEY, or with remote telemetry off, never calls into them (instrumentMcpServer returns
+// first). They are loaded here, on the first call that needs them, which is the same moment a configured workspace
+// loaded them before: createMvpApp builds its first server before the service listens.
+const loadPosthogNode = (): typeof import('posthog-node') => require('posthog-node');
+const loadPosthogMcp = (): typeof import('@posthog/mcp') => require('@posthog/mcp');
 
 /** Property keys that may carry args/results/content — always stripped. */
 const STRIP_EXACT = new Set([
@@ -140,7 +146,7 @@ function getOrCreateClient(): PostHog | null {
   }
   const host = env('RENOR_POSTHOG_HOST') || DEFAULT_HOST;
   try {
-    client = new PostHog(apiKey, {
+    client = new (loadPosthogNode().PostHog)(apiKey, {
       host,
       // Privacy: do not capture IP / personal profiles by default.
       disableGeoip: true,
@@ -174,7 +180,7 @@ export function instrumentMcpServer(server: McpServer): void {
     const tenant = telemetryInstanceId();
     const distinctId = pseudonymousDistinctId(tenant);
 
-    instrument(server, posthog, {
+    loadPosthogMcp().instrument(server, posthog, {
       context: false,
       enableConversationId: false,
       captureModel: false,

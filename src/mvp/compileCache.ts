@@ -41,6 +41,8 @@ export interface CompileCacheReport {
   directory: string | null;
   /** Why it was not used, when it was not. */
   reason: string | null;
+  /** How many entries were copied in from the release's seed (0 when the cache already held entries or there is no seed). */
+  seeded: number;
 }
 
 /** The data trees a compile cache must be disjoint from, in both directions. */
@@ -109,7 +111,88 @@ function declined(reason: string): CompileCacheReport {
     reported = true;
     console.error(`[mvp] compile cache not enabled (${reason}); the engine starts normally without it`);
   }
-  return { enabled: false, directory: null, reason };
+  return { enabled: false, directory: null, reason, seeded: 0 };
+}
+
+/**
+ * The release's compile-cache seed, copied into this workspace's own (empty) cache.
+ *
+ * WHY: Node keys a cache entry by the file's path, so every release path starts a workspace's cache empty
+ * (provision-renor-tenant.sh empties it when the pin moves), and the first wake after each release compiled the whole
+ * module graph again: about 400 ms of CPU on the harness's small workspace, which a hosted unit's CPUQuota stretches to
+ * about twice that in wall time. deploy-remote.sh runs `dist/mvp/compileSeed.js` once per release, at the release's final
+ * path, into `<release>/.compile-seed`; the engine copies those entries into the cache it owns when that cache is empty.
+ *
+ * WHY A COPY AND NOT A SHARED CACHE: the per-workspace cache above is one account's own write. Pointing every workspace at
+ * the release's directory would make it a shared one (or a read of one whose owner is another account). The copy keeps the
+ * invariant: the engine only ever loads code from a directory it owns, which only it can write, and that the seed
+ * filled before the first start.
+ *
+ * WHAT IS TRUSTED: only a seed directory that root (or this very account) owns and no group or other can write, holding
+ * regular files, in the sub-directory Node names for this Node build and V8 flags (it ends in the owner's uid; the build
+ * account's uid is not this workspace's, so the name is compared without it). Anything else is not read. A failure is
+ * never fatal: the cache fills as it always did.
+ */
+const SEED_ENTRY = /^[0-9a-f]{8}$/;
+const MAX_SEED_ENTRIES = 4096;
+const MAX_SEED_ENTRY_BYTES = 32 * 1024 * 1024;
+
+/** The directory deploy-remote.sh seeds for the release this code runs from, unless MVP_COMPILE_SEED_DIR names another. */
+export function releaseSeedDir(): string {
+  const explicit = resolvedEnvPath('MVP_COMPILE_SEED_DIR');
+  return explicit ?? path.resolve(__dirname, '..', '..', '.compile-seed');
+}
+
+function trustedSeedDir(dir: string): boolean {
+  let st: fs.Stats;
+  try {
+    st = fs.lstatSync(dir);
+  } catch {
+    return false;
+  }
+  if (!st.isDirectory() || st.isSymbolicLink() || (st.mode & 0o022) !== 0) return false;
+  const me = typeof process.geteuid === 'function' ? process.geteuid() : st.uid;
+  return st.uid === 0 || st.uid === me;
+}
+
+/** `v22.23.2-x64-9de703df-1000` -> `v22.23.2-x64-9de703df`: Node's cache sub-directory without the uid it ends in. */
+function withoutUid(name: string): string | null {
+  const m = /^(v[0-9][\w.]*-[\w]+-[0-9a-f]+)-\d+$/.exec(name);
+  return m ? m[1] : null;
+}
+
+/**
+ * Copy the seed into `target` (the versioned directory Node is using) when it holds no entries. Returns how many entries
+ * were copied. An entry that is half written (a start killed during the copy) is rejected by Node's own checksum and compiled again.
+ */
+function seedFromRelease(target: string): number {
+  try {
+    const seedRoot = releaseSeedDir();
+    if (!trustedSeedDir(seedRoot)) return 0;
+    const want = withoutUid(path.basename(target));
+    if (want === null) return 0;
+    const sub = fs.readdirSync(seedRoot).find(name => withoutUid(name) === want);
+    if (sub === undefined) return 0;
+    const from = path.join(seedRoot, sub);
+    if (!trustedSeedDir(from)) return 0;
+    fs.mkdirSync(target, { recursive: true, mode: 0o700 });
+    if (fs.readdirSync(target).length > 0) return 0; // this workspace already has its own entries: never mix
+    let copied = 0;
+    for (const entry of fs.readdirSync(from, { withFileTypes: true })) {
+      if (!entry.isFile() || !SEED_ENTRY.test(entry.name)) continue;
+      if (copied >= MAX_SEED_ENTRIES) break;
+      const src = path.join(from, entry.name);
+      if (fs.statSync(src).size > MAX_SEED_ENTRY_BYTES) continue;
+      // Straight to the final name: Node checks each entry's size and checksum before it uses one and compiles again when
+      // they do not match, so an entry a killed start left half written costs a compile, never a wrong result. A temporary
+      // name and a rename would add 30 ms of syscalls for 588 entries.
+      fs.copyFileSync(src, path.join(target, entry.name), fs.constants.COPYFILE_EXCL);
+      copied++;
+    }
+    return copied;
+  } catch {
+    return 0; // a speed optimisation: whatever went wrong, the engine starts and fills its cache as it always did
+  }
 }
 
 /**
@@ -124,7 +207,7 @@ function declined(reason: string): CompileCacheReport {
 export function enableWorkspaceCompileCache(): CompileCacheReport {
   const explicit = resolvedEnvPath('MVP_COMPILE_CACHE_DIR');
   if (explicit === null) {
-    return { enabled: false, directory: null, reason: 'MVP_COMPILE_CACHE_DIR is not set' };
+    return { enabled: false, directory: null, reason: 'MVP_COMPILE_CACHE_DIR is not set', seeded: 0 };
   }
   // BEFORE mkdir and before enabling: a directory inside a data tree is skipped, never created.
   // loadMvpConfig still refuses the start with the full message afterwards.
@@ -134,7 +217,7 @@ export function enableWorkspaceCompileCache(): CompileCacheReport {
     authStatePath: resolvedEnvPath('MVP_AUTH_STATE_PATH'),
   });
   if (overlap !== null) {
-    return { enabled: false, directory: null, reason: 'MVP_COMPILE_CACHE_DIR overlaps a data tree; no cache written' };
+    return { enabled: false, directory: null, reason: 'MVP_COMPILE_CACHE_DIR overlaps a data tree; no cache written', seeded: 0 };
   }
   if (typeof module.enableCompileCache !== 'function') {
     return declined('this Node build has no module.enableCompileCache');
@@ -157,7 +240,8 @@ export function enableWorkspaceCompileCache(): CompileCacheReport {
       ? 'disabled by NODE_DISABLE_COMPILE_CACHE'
       : result.message ?? `status ${result.status}`);
   }
-  return { enabled: true, directory: result.directory ?? explicit, reason: null };
+  const directory = result.directory ?? explicit;
+  return { enabled: true, directory, reason: null, seeded: seedFromRelease(module.getCompileCacheDir() ?? directory) };
 }
 
 /**

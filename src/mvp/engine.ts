@@ -329,6 +329,8 @@ export interface EmbeddingRebuild {
   done: Promise<void>;
   /** Stop between requests. The index stays unfinished and a later `engineRebuildEmbeddings` resumes it. */
   abort(): void;
+  /** True while it only waits out a delay before its next attempt: nothing is being written, and a restart resumes it. */
+  waiting(): boolean;
 }
 
 const embeddingRebuilds = new WeakMap<VectorIndex, EmbeddingRebuild>();
@@ -357,6 +359,11 @@ export function engineRebuildEmbeddings(
   const { outageDelayMs = (outage: number) => Math.min(300_000, 30_000 * 2 ** outage), ...rebuildOptions } = options;
   const controller = new AbortController();
   const startedAt = Date.now();
+  let waiting = false;
+  const wait = async (ms: number): Promise<void> => {
+    waiting = true;
+    try { await sleep(ms, controller.signal); } finally { waiting = false; }
+  };
   const run = async (): Promise<void> => {
     const chunks = () => db.prepare('SELECT COUNT(*) FROM chunks').pluck().get() as number;
     console.log(`[embeddings] rebuilding the vectors of ${chunks()} chunk(s) with ${space}; semantic search is off until it finishes`);
@@ -370,7 +377,7 @@ export function engineRebuildEmbeddings(
       } catch (err) {
         const delay = outageDelayMs(outage);
         console.error(`[embeddings] rebuild interrupted with ${chunksWithoutVectors(db)} of ${chunks()} chunk(s) still to embed; semantic search stays off; trying again in ${Math.round(delay / 1000)} s:`, err);
-        await sleep(delay, controller.signal);
+        await wait(delay);
       }
     }
   };
@@ -378,6 +385,7 @@ export function engineRebuildEmbeddings(
   // looking whole while it holds another model's vectors.
   const rebuild: EmbeddingRebuild = {
     abort: () => controller.abort(),
+    waiting: () => waiting,
     done: run().catch((err) => console.error('[embeddings] rebuild failed:', err)).finally(() => embeddingRebuilds.delete(vectorIndex)),
   };
   embeddingRebuilds.set(vectorIndex, rebuild);
@@ -1041,6 +1049,8 @@ export interface BackgroundIndex {
   done: Promise<void>;
   /** Stop between requests; what is left stays left, and the next save, read or start finishes it. */
   abort(): void;
+  /** True while it only waits out a delay before its next attempt: nothing is being written, and a restart resumes it. */
+  waiting(): boolean;
 }
 
 const backgroundIndexes = new WeakMap<Database.Database, BackgroundIndex>();
@@ -1073,8 +1083,13 @@ export function engineFinishIndexInBackground(
   const { firstDelayMs = BACKGROUND_INDEX_FIRST_DELAY_MS, retryDelayMs = backgroundIndexRetryDelayMs } = options;
   const controller = new AbortController();
   const unfinished = prepareOnce(db, UNFINISHED_FILES).pluck();
+  let waiting = false;
+  const wait = async (ms: number): Promise<void> => {
+    waiting = true;
+    try { await sleep(ms, controller.signal); } finally { waiting = false; }
+  };
   const run = async (): Promise<void> => {
-    await sleep(firstDelayMs, controller.signal);
+    await wait(firstDelayMs);
     for (let outage = 0; !controller.signal.aborted; outage++) {
       try {
         if (semanticReady(engine)) {
@@ -1094,12 +1109,13 @@ export function engineFinishIndexInBackground(
         if (controller.signal.aborted) return;
         const delay = retryDelayMs(outage);
         console.error(`[index] finishing the index in the background failed (${failureReason(err, 200)}); ${chunksWithoutVectors(db)} chunk(s) have no vector yet; trying again in ${Math.round(delay / 1000)} s`);
-        await sleep(delay, controller.signal);
+        await wait(delay);
       }
     }
   };
   const job: BackgroundIndex = {
     abort: () => controller.abort(),
+    waiting: () => waiting,
     done: run().catch((err) => console.error('[index] background indexing failed:', err)).finally(() => {
       if (backgroundIndexes.get(db) === job) backgroundIndexes.delete(db);
     }),

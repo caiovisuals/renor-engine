@@ -28,3 +28,25 @@ export function prepareOnce(db: Database.Database, sql: string): Database.Statem
   if (byText.size < MAX_PREPARED) byText.set(sql, statement);
   return statement;
 }
+
+/**
+ * One transaction wrapper per connection and body, for a transaction a replay runs once per ledger event.
+ *
+ * `db.transaction(fn)` builds the wrapper's four variants (default, deferred, immediate, exclusive) every time it is called, which
+ * is about 0.05 ms: the ledger replay at startup called it twice per event, about 35 ms of the 190 ms replay of a 1,000-fact
+ * workspace. The wrapper does not depend on what the body closes over, so the body takes the connection and its inputs as
+ * arguments, is a module-level function, and is wrapped once. What runs in the transaction, and when it commits or rolls back, is
+ * unchanged; a call inside another transaction is a savepoint, as before.
+ */
+const transactions = new WeakMap<Database.Database, Map<unknown, unknown>>();
+
+export function transactionOnce<A extends unknown[], R>(db: Database.Database, body: (db: Database.Database, ...args: A) => R): (...args: A) => R {
+  let byBody = transactions.get(db);
+  if (!byBody) transactions.set(db, byBody = new Map());
+  let tx = byBody.get(body) as ((...args: A) => R) | undefined;
+  if (!tx) {
+    tx = db.transaction((...args: A) => body(db, ...args));
+    byBody.set(body, tx);
+  }
+  return tx;
+}

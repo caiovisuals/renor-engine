@@ -71,6 +71,7 @@ import { previewImport, applyHostedImport, undoHostedImport, importPreviewSchema
 import { exportEverything, EXPORT_SECTIONS } from './exportAll';
 import { DEFAULT_MAP_LIMIT, buildMemoryMap, findMemories, purgeRetired, readMemory, retireMemory, restoreMemory } from '../memorymap/memoryMap';
 import { IdleMonitor } from './idle';
+import { ACTIVITY_PATH, ActivityGauge } from './activity';
 import { StoredSizeGauge } from './storedSize';
 import { escapeInvisibleControls, sanitizeErrorMessage } from './sanitize';
 import { unstorableControls } from '../memory/controls';
@@ -358,7 +359,7 @@ function isDashboardCall(headers: Record<string, unknown> | undefined, config: M
  * binds one transport per Protocol instance, so SSE sessions each get
  * their own server (bounded, in-process); JSON mode shares one.
  */
-function buildMcpServer(db: Database.Database, config: MvpConfig, engine: Engine, idle: IdleMonitor | null, digests: EngineDigests | null, usefulness: ReadUsefulness, connection: ConnectionStatus | null, announceFirst: boolean, telemetrySession: string | null = null, dashboard = false): McpServer {
+function buildMcpServer(db: Database.Database, config: MvpConfig, engine: Engine, idle: Pick<IdleMonitor, 'track'> | null, digests: EngineDigests | null, usefulness: ReadUsefulness, connection: ConnectionStatus | null, announceFirst: boolean, telemetrySession: string | null = null, dashboard = false): McpServer {
   // Which Renor this is, on the first reply of a session and on every error (connectionStatus.ts); nothing in a workspace
   // that is not hosted. A server that serves no session of its own (the stateless one, or one built for a session this
   // process forgot) has no first reply to announce on.
@@ -1259,17 +1260,22 @@ export function createMvpApp(config: MvpConfig, engineOverride?: EmbeddingProvid
   if (hasIndexWorkToFinish(db, engine)) engineFinishIndexInBackground(db, config, engine);
   const provider = new OwnerOAuthProvider(config);
   const idle = config.idleExitMs ? new IdleMonitor(config.idleExitMs) : null;
+  // What a release asks before it restarts this engine (GET /internal/activity): the work a restart would cut and when the
+  // last of it ended. It tracks the same work the idle monitor does and passes it on, so every place that held the engine
+  // awake goes through it; it also counts each MCP request until its response has ended (below) and the background jobs a
+  // call starts and does not await (the embedding rebuild and the background index, while they are working).
+  const activity = new ActivityGauge(idle, Date.now, () => [runningEmbeddingRebuild(engine), runningBackgroundIndex(db)]);
   // Markdown bytes: cached background measurements for reporting, fresh awaited walks for enforced write admission.
   // Both travel on the token mint the gateway already makes for every call. See storedSize.ts.
   const storedSize = new StoredSizeGauge(config.memoryDir);
 
   // Write-time digests: null unless RENOR_DIGESTS is on (it is off by default). The worker writes them after a save; it
   // starts here so notes an earlier run or an import left without one are caught up, and closes with the app.
-  const digests = resolveEngineDigests(db, config, engine, idle);
+  const digests = resolveEngineDigests(db, config, engine, activity);
   digests?.worker.start();
   const usefulness = new ReadUsefulness();
   const connection = connectionStatusFromEnv(process.env);
-  const server = buildMcpServer(db, config, engine, idle, digests, usefulness, connection, false);
+  const server = buildMcpServer(db, config, engine, activity, digests, usefulness, connection, false);
 
   // An index an earlier build wrote holds the engine's own daily-note headers as facts, and a note that has not changed
   // is never rebuilt, so they are removed here, before anything is read. A failure must not keep a workspace from serving.
@@ -1340,6 +1346,14 @@ export function createMvpApp(config: MvpConfig, engineOverride?: EmbeddingProvid
   // After the access log, so the draining 503s are logged like any other outcome.
   if (idle) app.use(idle.middleware);
 
+  // The activity report counts a POST or DELETE on /mcp from its start until its HTTP response has finished or closed, not
+  // until the tool handler returns: a streamed response can still be in delivery then, and a restart would truncate it. A GET
+  // is the idle stream a connected agent keeps open, which is not work.
+  app.use((req: express.Request, res: express.Response, next: () => void) => {
+    if ((req.method === 'POST' || req.method === 'DELETE') && /^\/mcp\/?$/i.test(req.path)) activity.request(res);
+    next();
+  });
+
   // Proxy hygiene (FUNNEL): this service NEVER trusts X-Forwarded-* headers
   // (AUTH-B1 stance — they are spoofable client input). Public-test proxies
   // (e.g. the tailscale funnel) append X-Forwarded-For, which makes SDK
@@ -1384,6 +1398,19 @@ export function createMvpApp(config: MvpConfig, engineOverride?: EmbeddingProvid
       return;
     }
     res.json({ ok: true, ...readBuildIdentity() });
+  });
+
+  // What the release judge reads before it restarts this engine: how many tool calls are running and how long ago the
+  // last one ended. Loopback-only like /version (a proxied or public caller gets the same 404 as any unknown path), no
+  // credential, and counts only: no tool name, argument, tenant or path. An open MCP stream is not a tool call, so a
+  // connected agent that is not calling anything does not show here.
+  app.get(ACTIVITY_PATH, (req: express.Request, res: express.Response) => {
+    res.set('Cache-Control', 'no-store');
+    if (!isLocalDirectCall(req)) {
+      res.status(404).json({ error: 'not found' });
+      return;
+    }
+    res.json(activity.report());
   });
 
   // Dynamic client registration is for MCP clients, which are native programs and send no Origin. The SDK answers
@@ -1558,7 +1585,7 @@ export function createMvpApp(config: MvpConfig, engineOverride?: EmbeddingProvid
       sessionIdGenerator: undefined, // stateless: this transport serves this one request
       enableJsonResponse: false,
     });
-    const sessionServer = buildMcpServer(db, config, engine, idle, digests, usefulness, connection, false, null, isDashboardCall(req.headers, config));
+    const sessionServer = buildMcpServer(db, config, engine, activity, digests, usefulness, connection, false, null, isDashboardCall(req.headers, config));
     res.once('close', () => { void transport.close(); void sessionServer.close(); });
     await sessionServer.connect(transport);
     await transport.handleRequest(req, res, req.body);
@@ -1621,7 +1648,7 @@ export function createMvpApp(config: MvpConfig, engineOverride?: EmbeddingProvid
           sessionIdGenerator: undefined, // stateless: one transport per request
           enableJsonResponse: true,
         });
-        const requestServer = buildMcpServer(db, config, engine, idle, digests, usefulness, connection, false, null, isDashboardCall(req.headers, config));
+        const requestServer = buildMcpServer(db, config, engine, activity, digests, usefulness, connection, false, null, isDashboardCall(req.headers, config));
         res.on('close', () => { void transport.close(); void requestServer.close(); });
         await requestServer.connect(transport);
         await transport.handleRequest(req, res, req.body);
@@ -1666,7 +1693,7 @@ export function createMvpApp(config: MvpConfig, engineOverride?: EmbeddingProvid
       // calls, isPlatformInitialize) gets no id: it still counts as a connection, but it writes no first call and its mcp_init
       // carries no id for the recall share to join, so the share counts agents only.
       const telemetrySession = isPlatformInitialize(req.body) ? null : crypto.randomBytes(8).toString('hex');
-      const sessionServer = buildMcpServer(db, config, engine, idle, digests, usefulness, connection, true, telemetrySession, isDashboardCall(req.headers, config));
+      const sessionServer = buildMcpServer(db, config, engine, activity, digests, usefulness, connection, true, telemetrySession, isDashboardCall(req.headers, config));
       transport.onclose = () => {
         sseSessions.delete(sessionId);
         emitTelemetry({ event: 'session', kind: 'mcp_close' });

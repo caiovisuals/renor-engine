@@ -288,7 +288,7 @@ async function openWorkspace(memoryDir: string, provider: EmbeddingProvider | nu
   return { app, client, close: async () => { await client.close(); await app.close(); } };
 }
 
-async function ensureFixture(o: BenchOptions, notes: number, authDir: string, log: (l: string) => void): Promise<{ memoryDir: string; fixture: Fixture }> {
+export async function ensureFixture(o: BenchOptions, notes: number, authDir: string, log: (l: string) => void): Promise<{ memoryDir: string; fixture: Fixture }> {
   const fixture: Fixture = {
     notes, facts: o.facts ?? Math.max(20, Math.floor(notes / 5)), seed: SEED, dims: o.dims,
     vectors: o.embeddings === 'vertex' ? 'vertex' : 'hash', // `none` measures the hash fixture with the provider detached

@@ -6,6 +6,7 @@ import { lookupEntity, type EntityRowFilter } from '../retrieval/entityLookup';
 import { identityKey, identityNames } from '../retrieval/queryHelpers';
 import { normalizeScope, savedScopeMatches, savedScopeSqlPredicate, scopeSpellings, type NormalizedScope } from '../mvp/scope';
 import { readUntilWrite } from '../db/readCache';
+import { transactionOnce } from '../db/statements';
 import { canonicalSubject, indexFactTerms, prepareOnce, statementTerms, unindexFactTerms } from './factTerms';
 import { MAX_STATEMENT_LENGTH } from './limits';
 import { appendConfined, createConfined, withConfinedFile } from './confinedWrite';
@@ -657,7 +658,7 @@ type ReplayEntityIndex = Map<string, LifecycleEntityMatch[]>;
 /** One replay-local scan; buckets retain the legacy lowest-row-id ordering. */
 function replayEntityIndex(db: Database.Database): ReplayEntityIndex {
   const index: ReplayEntityIndex = new Map();
-  const rows = db.prepare(
+  const rows = prepareOnce(db, 
     `SELECT id, canonical_name FROM entities WHERE source_note = ? ORDER BY id`
   ).all(LIFECYCLE_NOTE_PATH) as Array<{ id: number; canonical_name: string }>;
   for (const row of rows) addEntityToIndex(index, row);
@@ -722,7 +723,7 @@ function lifecycleEntityMatches(db: Database.Database, subject: string, index?: 
   if (index) return index.get(key) ?? [];
   const live = liveEntityIndex(db);
   if (live) return live.get(key) ?? [];
-  const rows = db.prepare(
+  const rows = prepareOnce(db, 
     `SELECT id, canonical_name FROM entities WHERE source_note = ? ORDER BY id`
   ).all(LIFECYCLE_NOTE_PATH) as Array<{ id: number; canonical_name: string }>;
   return rows
@@ -734,7 +735,7 @@ function lifecycleEntityMatches(db: Database.Database, subject: string, index?: 
 function conflictingLegacyStreams(db: Database.Database, entities: LifecycleEntityMatch[]): string[] {
   if (entities.length < 2) return [];
   const placeholders = entities.map(() => '?').join(',');
-  const rows = db.prepare(
+  const rows = prepareOnce(db, 
     `SELECT predicate, COALESCE(scope, 'global') AS scope, object_text
        FROM facts WHERE subject_entity_id IN (${placeholders}) AND valid_to IS NULL`
   ).all(...entities.map(e => e.id)) as Array<{ predicate: string; scope: string; object_text: string }>;
@@ -784,10 +785,10 @@ function resolveLifecycleEntity(
     return matches[0].id;
   }
   if (!create) return null;
-  db.prepare(
+  prepareOnce(db, 
     `INSERT OR IGNORE INTO notes (path, title, kind, note_hash, modified_at, frontmatter_json) VALUES (?, 'Memory Lifecycle', 'system', ?, ?, '{}')`
   ).run(LIFECYCLE_NOTE_PATH, LIFECYCLE_NOTE_PATH, at);
-  const id = (db.prepare(
+  const id = (prepareOnce(db, 
     `INSERT INTO entities (type, canonical_name, aliases_json, source_note, confidence, updated_at) VALUES ('concept', ?, '[]', ?, 1.0, ?) RETURNING id`
   ).get(subject, LIFECYCLE_NOTE_PATH, at) as { id: number }).id;
   // New rows have increasing ids, and an empty bucket is the only creation
@@ -798,7 +799,7 @@ function resolveLifecycleEntity(
 }
 
 function currentFact(db: Database.Database, entityId: number, predicate: string, scope: string = 'global') {
-  return db.prepare(
+  return prepareOnce(db, 
     `SELECT id, object_text, event_id, valid_from, scope FROM facts
      WHERE subject_entity_id = ? AND predicate = ? AND scope = ? AND valid_to IS NULL
      ORDER BY valid_from DESC, id DESC LIMIT 1`
@@ -827,7 +828,7 @@ function streamCurrentFacts(db: Database.Database, entityId: number, predicate: 
  */
 function currentFactClosedAcrossSpellings(db: Database.Database, ev: LedgerEvent, entityId: number, scope: NormalizedScope) {
   if (!ev.closedEvent) return undefined;
-  const named = db.prepare(
+  const named = prepareOnce(db, 
     `SELECT id, object_text, event_id, valid_from, scope FROM facts
      WHERE event_id = ? AND subject_entity_id = ? AND predicate = ? AND valid_to IS NULL`
   ).get(ev.closedEvent.toUpperCase(), entityId, ev.predicate) as { id: number; object_text: string; event_id: string | null; valid_from: string; scope: string } | undefined;
@@ -868,7 +869,7 @@ function currentFactClosedAcrossSpellings(db: Database.Database, ev: LedgerEvent
  */
 function rehomeLifecycleFact(db: Database.Database, ev: LedgerEvent, factId: number, positions: Map<string, number>, lifecycleId: number): void {
   const tx = db.transaction(() => {
-    const moving = db.prepare('SELECT id, valid_from, valid_to FROM facts WHERE id = ?').get(factId) as { id: number; valid_from: string; valid_to: string | null };
+    const moving = prepareOnce(db, 'SELECT id, valid_from, valid_to FROM facts WHERE id = ?').get(factId) as { id: number; valid_from: string; valid_to: string | null };
     const existing = currentFact(db, lifecycleId, ev.predicate, normalizeScope(ev.scope));
     if (existing && moving.valid_to === null) {
       const movingPos = requireLedgerPosition(positions, ev.id);
@@ -884,21 +885,21 @@ function rehomeLifecycleFact(db: Database.Database, ev: LedgerEvent, factId: num
         // Close the competing lifecycle current(s) BEFORE the move, so the
         // moving row is never a second open current. The valid_to value here
         // is provisional; reconcileStreamCurrent canonicalizes it afterwards.
-        db.prepare(
+        prepareOnce(db, 
           `UPDATE facts SET valid_to = ?, updated_at = ? WHERE subject_entity_id = ? AND predicate = ? AND scope = ? AND valid_to IS NULL AND id != ?`
         ).run(moving.valid_from, moving.valid_from, lifecycleId, ev.predicate, normalizeScope(ev.scope), moving.id);
-        db.prepare('UPDATE facts SET subject_entity_id = ? WHERE id = ?').run(lifecycleId, factId);
+        prepareOnce(db, 'UPDATE facts SET subject_entity_id = ? WHERE id = ?').run(lifecycleId, factId);
       } else {
         // The existing lifecycle current wins canonically: close AND move the
         // row in one statement. With valid_to set in the same UPDATE, the
         // partial index (valid_to IS NULL) never sees the moved row as open.
-        db.prepare('UPDATE facts SET subject_entity_id = ?, valid_to = ?, updated_at = ? WHERE id = ?')
+        prepareOnce(db, 'UPDATE facts SET subject_entity_id = ?, valid_to = ?, updated_at = ? WHERE id = ?')
           .run(lifecycleId, existing.valid_from, existing.valid_from, factId);
       }
     } else {
       // No competing open current, or the moving row is historical: a plain
       // move cannot violate the partial index.
-      db.prepare('UPDATE facts SET subject_entity_id = ? WHERE id = ?').run(lifecycleId, factId);
+      prepareOnce(db, 'UPDATE facts SET subject_entity_id = ? WHERE id = ?').run(lifecycleId, factId);
     }
   });
   tx();
@@ -943,72 +944,88 @@ function requireLedgerPosition(positions: Map<string, number>, eventId: string):
  * chain this function computed before scopes were one slug.
  */
 function reconcileStreamCurrent(db: Database.Database, lifecycleId: number, predicate: string, positions: Map<string, number>, scope: NormalizedScope = 'global', closedBy: Map<string, string> = new Map()): void {
-  const tx = db.transaction(() => {
-    const inStream = savedScopeSqlPredicate(scope, 'scope');
-    // A retired fact keeps its place in the stream (retireFact): it is hidden, not undone, so the value it closed stays
-    // closed and the value saved after it closes it, exactly as if it had never been retired.
-    const rows = db.prepare(
-      `SELECT id, event_id, valid_from, valid_to, scope, 0 AS retired FROM facts
-       WHERE subject_entity_id = ? AND predicate = ? AND ${inStream.sql} AND source_path = '_mcp_'
-       UNION ALL
-       SELECT id, event_id, valid_from, valid_to, scope, 1 AS retired FROM retired_facts
-       WHERE subject_entity_id = ? AND predicate = ? AND ${inStream.sql}`
-    ).all(lifecycleId, predicate, ...inStream.params, lifecycleId, predicate, ...inStream.params) as Array<{ id: number; event_id: string | null; valid_from: string; valid_to: string | null; scope: string; retired: 0 | 1 }>;
-    const table = (row: { retired: 0 | 1 }) => (row.retired ? 'retired_facts' : 'facts');
-    const canonical: Array<{ id: number; event_id: string; valid_from: string; valid_to: string | null; scope: string; retired: 0 | 1; pos: number }> = [];
+  transactionOnce(db, reconcileStreamCurrentBody)(lifecycleId, predicate, positions, scope, closedBy);
+}
+
+/** The body of reconcileStreamCurrent's transaction: a module-level function so replay wraps it once per connection (transactionOnce). */
+function reconcileStreamCurrentBody(db: Database.Database, lifecycleId: number, predicate: string, positions: Map<string, number>, scope: NormalizedScope, closedBy: Map<string, string>): void {
+  const inStream = savedScopeSqlPredicate(scope, 'scope');
+  // A retired fact keeps its place in the stream (retireFact): it is hidden, not undone, so the value it closed stays
+  // closed and the value saved after it closes it, exactly as if it had never been retired.
+  const rows = prepareOnce(db, 
+    `SELECT id, event_id, valid_from, valid_to, scope, 0 AS retired FROM facts
+     WHERE subject_entity_id = ? AND predicate = ? AND ${inStream.sql} AND source_path = '_mcp_'
+     UNION ALL
+     SELECT id, event_id, valid_from, valid_to, scope, 1 AS retired FROM retired_facts
+     WHERE subject_entity_id = ? AND predicate = ? AND ${inStream.sql}`
+  ).all(lifecycleId, predicate, ...inStream.params, lifecycleId, predicate, ...inStream.params) as Array<{ id: number; event_id: string | null; valid_from: string; valid_to: string | null; scope: string; retired: 0 | 1 }>;
+  const table = (row: { retired: 0 | 1 }) => (row.retired ? 'retired_facts' : 'facts');
+  const canonical: Array<{ id: number; event_id: string; valid_from: string; valid_to: string | null; scope: string; retired: 0 | 1; pos: number }> = [];
+  for (const r of rows) {
+    if (r.event_id == null) continue;
+    canonical.push({ ...r, event_id: r.event_id, pos: requireLedgerPosition(positions, r.event_id) });
+  }
+  canonical.sort((a, b) => a.pos - b.pos);
+  // The replay, in ledger order: the current row of each spelling, and the valid_to each closed row gets.
+  // Full equivalence with a fresh replay (K12): the fresh-apply path rejects
+  // an event whose time precedes the current fact it would close; the same
+  // rule applies to an already-projected chain, so an invalid ledger is
+  // rejected by BOTH upgrade replay and fresh rebuild, never repaired into
+  // a state a fresh replay could not produce. (Equal timestamps are legal.)
+  const current = new Map<string, (typeof canonical)[number]>();
+  const closeAt = new Map<number, string>();
+  for (const row of canonical) {
+    const named = closedBy.get(row.event_id);
+    const across = named === undefined ? undefined
+      : [...current.values()].find(r => r.scope !== row.scope && r.event_id === named);
+    for (const closed of [current.get(row.scope), across]) {
+      if (!closed) continue;
+      if (Date.parse(row.valid_from) < Date.parse(closed.valid_from)) {
+        throw new Error(`ledger event ${row.event_id} (${row.valid_from}) is older than the current fact for the same subject+predicate (valid_from ${closed.valid_from}, event ${closed.event_id}); refusing to apply out-of-order`);
+      }
+      closeAt.set(closed.id, maxInstant(row.valid_from, closed.valid_from));
+      current.delete(closed.scope);
+    }
+    current.set(row.scope, row);
+  }
+  // Pass 1 (constraint-safe): apply all NON-NULL valid_to targets first, so
+  // at most one open row per spelling remains before the NULL (current) updates.
+  for (const row of canonical) {
+    const want = closeAt.get(row.id);
+    if (want !== undefined && (row.valid_to ?? null) !== want) {
+      prepareOnce(db, `UPDATE ${table(row)} SET valid_to = ?, updated_at = ? WHERE id = ?`).run(want, want, row.id);
+    }
+  }
+  for (const spelling of scopeSpellings(scope)) {
+    const chain = canonical.filter(row => row.scope === spelling);
+    if (chain.length === 0) continue;
+    const last = current.get(spelling);
+    if (last && last.valid_to !== null) {
+      prepareOnce(db, `UPDATE ${table(last)} SET valid_to = NULL, updated_at = ? WHERE id = ?`).run(last.valid_from, last.id);
+    }
+    // Non-event-backed open rows never stay current against canonical events.
+    const firstCanonicalFrom = chain[0].valid_from;
     for (const r of rows) {
-      if (r.event_id == null) continue;
-      canonical.push({ ...r, event_id: r.event_id, pos: requireLedgerPosition(positions, r.event_id) });
-    }
-    canonical.sort((a, b) => a.pos - b.pos);
-    // The replay, in ledger order: the current row of each spelling, and the valid_to each closed row gets.
-    // Full equivalence with a fresh replay (K12): the fresh-apply path rejects
-    // an event whose time precedes the current fact it would close; the same
-    // rule applies to an already-projected chain, so an invalid ledger is
-    // rejected by BOTH upgrade replay and fresh rebuild, never repaired into
-    // a state a fresh replay could not produce. (Equal timestamps are legal.)
-    const current = new Map<string, (typeof canonical)[number]>();
-    const closeAt = new Map<number, string>();
-    for (const row of canonical) {
-      const named = closedBy.get(row.event_id);
-      const across = named === undefined ? undefined
-        : [...current.values()].find(r => r.scope !== row.scope && r.event_id === named);
-      for (const closed of [current.get(row.scope), across]) {
-        if (!closed) continue;
-        if (Date.parse(row.valid_from) < Date.parse(closed.valid_from)) {
-          throw new Error(`ledger event ${row.event_id} (${row.valid_from}) is older than the current fact for the same subject+predicate (valid_from ${closed.valid_from}, event ${closed.event_id}); refusing to apply out-of-order`);
-        }
-        closeAt.set(closed.id, maxInstant(row.valid_from, closed.valid_from));
-        current.delete(closed.scope);
-      }
-      current.set(row.scope, row);
-    }
-    // Pass 1 (constraint-safe): apply all NON-NULL valid_to targets first, so
-    // at most one open row per spelling remains before the NULL (current) updates.
-    for (const row of canonical) {
-      const want = closeAt.get(row.id);
-      if (want !== undefined && (row.valid_to ?? null) !== want) {
-        db.prepare(`UPDATE ${table(row)} SET valid_to = ?, updated_at = ? WHERE id = ?`).run(want, want, row.id);
+      if (r.scope === spelling && r.event_id == null && r.valid_to === null) {
+        const want = maxInstant(firstCanonicalFrom, r.valid_from);
+        prepareOnce(db, 'UPDATE facts SET valid_to = ?, updated_at = ? WHERE id = ?').run(want, want, r.id);
       }
     }
-    for (const spelling of scopeSpellings(scope)) {
-      const chain = canonical.filter(row => row.scope === spelling);
-      if (chain.length === 0) continue;
-      const last = current.get(spelling);
-      if (last && last.valid_to !== null) {
-        db.prepare(`UPDATE ${table(last)} SET valid_to = NULL, updated_at = ? WHERE id = ?`).run(last.valid_from, last.id);
-      }
-      // Non-event-backed open rows never stay current against canonical events.
-      const firstCanonicalFrom = chain[0].valid_from;
-      for (const r of rows) {
-        if (r.scope === spelling && r.event_id == null && r.valid_to === null) {
-          const want = maxInstant(firstCanonicalFrom, r.valid_from);
-          db.prepare('UPDATE facts SET valid_to = ?, updated_at = ? WHERE id = ?').run(want, want, r.id);
-        }
-      }
-    }
-  });
-  tx();
+  }
+}
+
+/**
+ * The transaction applyEvent runs for an event that is already projected: re-home a fact still attached to a disposable entity,
+ * then reconcile its stream. A module-level function so replay wraps it once per connection (transactionOnce).
+ */
+function reconcileProjectedEvent(db: Database.Database, ev: LedgerEvent, factId: number, rehome: boolean, positions: Map<string, number>, lifecycleId: number, closedBy: Map<string, string> | undefined): void {
+  if (rehome) {
+    rehomeLifecycleFact(db, ev, factId, positions, lifecycleId);
+  }
+  // Do not preserve stale winner/valid_to flags merely because the event
+  // is already projected: recompute the chain from canonical ledger order
+  // so the upgraded cache is equivalent to a fresh replay of the ledger.
+  reconcileStreamCurrent(db, lifecycleId, ev.predicate, positions, normalizeScope(ev.scope), closedBy);
 }
 
 /**
@@ -1021,7 +1038,7 @@ function applyEvent(db: Database.Database, ev: LedgerEvent, positions?: Map<stri
   validateLedgerEvent(ev);
   const digest = eventDigest(ev);
 
-  const seen = db.prepare('SELECT digest FROM applied_ledger_events WHERE event_id = ?').get(ev.id) as { digest: string } | undefined;
+  const seen = prepareOnce(db, 'SELECT digest FROM applied_ledger_events WHERE event_id = ?').get(ev.id) as { digest: string } | undefined;
   if (seen && seen.digest !== digest) {
     throw new Error(`ledger event id ${ev.id} was reused with a conflicting payload; refusing to apply (corruption)`);
   }
@@ -1032,9 +1049,9 @@ function applyEvent(db: Database.Database, ev: LedgerEvent, positions?: Map<stri
   }
 
   // A retired fact is projected too: its row waits in retired_facts.
-  const liveRow = db.prepare('SELECT id, subject_entity_id FROM facts WHERE event_id = ?').get(ev.id) as { id: number; subject_entity_id: number } | undefined;
+  const liveRow = prepareOnce(db, 'SELECT id, subject_entity_id FROM facts WHERE event_id = ?').get(ev.id) as { id: number; subject_entity_id: number } | undefined;
   const factRow = liveRow
-    ?? db.prepare('SELECT id, subject_entity_id FROM retired_facts WHERE event_id = ?').get(ev.id) as { id: number; subject_entity_id: number } | undefined;
+    ?? prepareOnce(db, 'SELECT id, subject_entity_id FROM retired_facts WHERE event_id = ?').get(ev.id) as { id: number; subject_entity_id: number } | undefined;
   if (factRow) {
     // Event already projected — but a pre-Gate1A index can hold this canonical
     // fact attached to a DISPOSABLE note-derived entity (the base engine
@@ -1049,26 +1066,17 @@ function applyEvent(db: Database.Database, ev: LedgerEvent, positions?: Map<stri
       throw new Error(`canonical ledger order is unavailable while reconciling already-projected event ${ev.id}; refusing to guess — reconciliation requires replay context`);
     }
     const lifecycleId = resolveLifecycleEntity(db, ev.subject, ev.at, true, { preferEntityId: factRow.subject_entity_id, index }) as number;
-    const owner = db.prepare('SELECT source_note FROM entities WHERE id = ?').get(factRow.subject_entity_id) as { source_note: string } | undefined;
+    const owner = prepareOnce(db, 'SELECT source_note FROM entities WHERE id = ?').get(factRow.subject_entity_id) as { source_note: string } | undefined;
     // Re-home and stream reconciliation are ONE atomic unit (nested
     // transactions become savepoints): a rejected ledger (out-of-order chain,
     // absent-from-ledger contradiction) rolls the reconciliation back and
     // leaves the cache exactly as it was held — never partially reconciled.
-    const reconcileTx = db.transaction(() => {
-      if (liveRow && owner?.source_note !== LIFECYCLE_NOTE_PATH) {
-        rehomeLifecycleFact(db, ev, factRow.id, positions, lifecycleId);
-      }
-      // Do not preserve stale winner/valid_to flags merely because the event
-      // is already projected: recompute the chain from canonical ledger order
-      // so the upgraded cache is equivalent to a fresh replay of the ledger.
-      reconcileStreamCurrent(db, lifecycleId, ev.predicate, positions, normalizeScope(ev.scope), closedBy);
-    });
-    reconcileTx();
+    transactionOnce(db, reconcileProjectedEvent)(ev, factRow.id, liveRow !== undefined && owner?.source_note !== LIFECYCLE_NOTE_PATH, positions, lifecycleId, closedBy);
     // If it predates the digest table (migration 6), backfill the digest so
     // future replays can tell identical dedup from conflicts (the legacy
     // payload itself can no longer be verified).
     if (!seen) {
-      db.prepare('INSERT OR IGNORE INTO applied_ledger_events (event_id, digest, applied_at) VALUES (?, ?, ?)')
+      prepareOnce(db, 'INSERT OR IGNORE INTO applied_ledger_events (event_id, digest, applied_at) VALUES (?, ?, ?)')
         .run(ev.id, digest, new Date().toISOString());
     }
     return { applied: false, factId: null }; // byte-identical event already committed — safe dedup
@@ -1109,7 +1117,7 @@ function applyEvent(db: Database.Database, ev: LedgerEvent, positions?: Map<stri
       // with this event's time) and full history is preserved — nothing is
       // dropped or duplicated, and the digest/id conflict checks above still
       // fail loudly on contradictory reuse.
-      db.prepare(`UPDATE facts SET valid_to = ?, updated_at = ? WHERE id = ?`).run(ev.at, ev.at, cur.id);
+      prepareOnce(db, `UPDATE facts SET valid_to = ?, updated_at = ? WHERE id = ?`).run(ev.at, ev.at, cur.id);
       closedFactIds.push(cur.id);
     }
     // A retired value that was current under this spelling is closed as if it had never been retired
@@ -1120,18 +1128,18 @@ function applyEvent(db: Database.Database, ev: LedgerEvent, positions?: Map<stri
       if (ev.at < hidden.valid_from) {
         throw new Error(`ledger event ${ev.id} (${ev.at}) is older than the retired fact it would close (valid_from ${hidden.valid_from}, event ${hidden.event_id}); refusing to apply out-of-order`);
       }
-      db.prepare('UPDATE retired_facts SET valid_to = ?, updated_at = ? WHERE id = ?').run(ev.at, ev.at, hidden.id);
+      prepareOnce(db, 'UPDATE retired_facts SET valid_to = ?, updated_at = ? WHERE id = ?').run(ev.at, ev.at, hidden.id);
     }
-    const row = db.prepare(
+    const row = prepareOnce(db, 
       `INSERT INTO facts (subject_entity_id, predicate, object_text, source_path, confidence, valid_from, valid_to, updated_at, event_id, scope, author, statement_words)
        VALUES (?, ?, ?, '_mcp_', 1.0, ?, NULL, ?, ?, ?, ?, ?) RETURNING id`
     ).get(entityId, ev.predicate, ev.object, ev.at, ev.at, ev.id, scope, ev.source, statementTerms(ev.statement)) as { id: number };
     // Searchable by its words from the moment it exists: the index row is written by this transaction,
     // under the subject name a read shows (the entity's, which may be an earlier spelling of ev.subject).
     indexFactTerms(db, row.id, scope, { subject: canonicalSubject(db, entityId), predicate: ev.predicate, object: ev.object });
-    db.prepare(`INSERT INTO write_events (note_path, action, summary, created_at, author, scope) VALUES ('_memory_ledger_', ?, ?, ?, ?, ?)`)
+    prepareOnce(db, `INSERT INTO write_events (note_path, action, summary, created_at, author, scope) VALUES ('_memory_ledger_', ?, ?, ?, ?, ?)`)
       .run(ev.kind, `${ev.subject} ${ev.predicate} → ${ev.object}${closedFactIds.length ? ` (closed fact${closedFactIds.length > 1 ? 's' : ''} ${closedFactIds.join(', ')})` : ''}`, ev.at, ev.source, ev.scope ?? 'global');
-    db.prepare('INSERT OR REPLACE INTO applied_ledger_events (event_id, digest, applied_at) VALUES (?, ?, ?)')
+    prepareOnce(db, 'INSERT OR REPLACE INTO applied_ledger_events (event_id, digest, applied_at) VALUES (?, ?, ?)')
       .run(ev.id, digest, ev.at);
     return row.id;
   });
@@ -1141,7 +1149,7 @@ function applyEvent(db: Database.Database, ev: LedgerEvent, positions?: Map<stri
 
 /** The retired fact that was the current value of a stream spelling when it was retired, if one still is. */
 function openRetiredFact(db: Database.Database, entityId: number, predicate: string, scope: string) {
-  return db.prepare(
+  return prepareOnce(db, 
     `SELECT id, event_id, valid_from, object_text, scope FROM retired_facts
      WHERE subject_entity_id = ? AND predicate = ? AND scope = ? AND valid_to IS NULL
      ORDER BY valid_from DESC, id DESC LIMIT 1`
@@ -1174,15 +1182,15 @@ interface FactRow {
  * False when no such row is in `facts` (it is already retired, or no fact has that event).
  */
 function moveFactOut(db: Database.Database, eventId: string, retire: LedgerEvent): boolean {
-  const row = db.prepare(`SELECT ${FACT_COLUMNS} FROM facts WHERE event_id = ? AND source_path = ?`)
+  const row = prepareOnce(db, `SELECT ${FACT_COLUMNS} FROM facts WHERE event_id = ? AND source_path = ?`)
     .get(eventId, LIFECYCLE_NOTE_PATH) as FactRow | undefined;
   if (!row) return false;
-  db.prepare(
+  prepareOnce(db, 
     `INSERT INTO retired_facts (${FACT_COLUMNS}, retire_event_id, retired_at, retired_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   ).run(row.id, row.subject_entity_id, row.predicate, row.object_text, row.confidence, row.valid_from, row.valid_to,
     row.updated_at, row.event_id, row.scope, row.author, row.statement_words, retire.id, retire.at, retire.source);
   unindexFactTerms(db, row.id, row.scope, { subject: canonicalSubject(db, row.subject_entity_id), predicate: row.predicate, object: row.object_text });
-  db.prepare('DELETE FROM facts WHERE id = ?').run(row.id);
+  prepareOnce(db, 'DELETE FROM facts WHERE id = ?').run(row.id);
   return true;
 }
 
@@ -1193,10 +1201,10 @@ function moveFactOut(db: Database.Database, eventId: string, retire: LedgerEvent
  * same choice without adding a second value to the retire event.
  */
 function reviveIdenticalPredecessor(db: Database.Database, eventId: string): void {
-  const retired = db.prepare(`SELECT ${FACT_COLUMNS} FROM retired_facts WHERE event_id = ?`).get(eventId) as FactRow | undefined;
+  const retired = prepareOnce(db, `SELECT ${FACT_COLUMNS} FROM retired_facts WHERE event_id = ?`).get(eventId) as FactRow | undefined;
   if (!retired || retired.valid_to !== null) return; // Retiring history never changes the current value.
   const inStream = savedScopeSqlPredicate(normalizeScope(retired.scope), 'scope');
-  const prior = db.prepare(
+  const prior = prepareOnce(db, 
     `SELECT ${FACT_COLUMNS} FROM facts
       WHERE subject_entity_id = ? AND predicate = ? AND object_text = ? AND valid_to = ?
         AND source_path = ? AND ${inStream.sql}
@@ -1204,12 +1212,12 @@ function reviveIdenticalPredecessor(db: Database.Database, eventId: string): voi
   ).get(retired.subject_entity_id, retired.predicate, retired.object_text, retired.valid_from,
     LIFECYCLE_NOTE_PATH, ...inStream.params) as FactRow | undefined;
   if (!prior) return;
-  db.prepare('UPDATE facts SET valid_to = NULL, updated_at = ? WHERE id = ?').run(retired.updated_at, prior.id);
+  prepareOnce(db, 'UPDATE facts SET valid_to = NULL, updated_at = ? WHERE id = ?').run(retired.updated_at, prior.id);
 }
 
 /** Puts a retired fact's row back into `facts` as it was. False when it is not retired. */
 function moveFactBack(db: Database.Database, eventId: string): boolean {
-  const row = db.prepare(`SELECT ${FACT_COLUMNS}, retired_at FROM retired_facts WHERE event_id = ?`).get(eventId) as (FactRow & { retired_at: string }) | undefined;
+  const row = prepareOnce(db, `SELECT ${FACT_COLUMNS}, retired_at FROM retired_facts WHERE event_id = ?`).get(eventId) as (FactRow & { retired_at: string }) | undefined;
   if (!row) return false;
   let validTo = row.valid_to;
   if (validTo === null) {
@@ -1229,12 +1237,12 @@ function moveFactBack(db: Database.Database, eventId: string): boolean {
       else validTo = open.valid_from;
     }
   }
-  db.prepare(
+  prepareOnce(db, 
     `INSERT INTO facts (${FACT_COLUMNS}, source_path) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   ).run(row.id, row.subject_entity_id, row.predicate, row.object_text, row.confidence, row.valid_from, validTo,
     validTo === row.valid_to ? row.updated_at : validTo, row.event_id, row.scope, row.author, row.statement_words, LIFECYCLE_NOTE_PATH);
   indexFactTerms(db, row.id, row.scope, { subject: canonicalSubject(db, row.subject_entity_id), predicate: row.predicate, object: row.object_text });
-  db.prepare('DELETE FROM retired_facts WHERE id = ?').run(row.id);
+  prepareOnce(db, 'DELETE FROM retired_facts WHERE id = ?').run(row.id);
   return true;
 }
 
@@ -1248,19 +1256,19 @@ function moveFactBack(db: Database.Database, eventId: string): boolean {
 function applyRetirement(db: Database.Database, ev: LedgerEvent, digest: string, alreadyApplied: boolean): void {
   const target = ev.target!.toUpperCase();
   db.transaction(() => {
-    db.prepare('INSERT OR IGNORE INTO fact_retirements (event_id, kind, target, at, source) VALUES (?, ?, ?, ?, ?)')
+    prepareOnce(db, 'INSERT OR IGNORE INTO fact_retirements (event_id, kind, target, at, source) VALUES (?, ?, ?, ?, ?)')
       .run(ev.id, ev.kind, target, ev.at, ev.source);
     if (alreadyApplied) return;
     const moved = ev.kind === 'retire' ? moveFactOut(db, target, ev) : moveFactBack(db, target);
     if (ev.kind === 'retire') reviveIdenticalPredecessor(db, target);
     const already = ev.kind === 'retire'
-      ? db.prepare('SELECT 1 FROM retired_facts WHERE event_id = ?').get(target)
-      : db.prepare('SELECT 1 FROM facts WHERE event_id = ?').get(target);
+      ? prepareOnce(db, 'SELECT 1 FROM retired_facts WHERE event_id = ?').get(target)
+      : prepareOnce(db, 'SELECT 1 FROM facts WHERE event_id = ?').get(target);
     if (!moved && !already) throw new Error(`ledger corruption in event ${ev.id}: its target ${target} is no saved fact`);
     // The value stays out of the log, as it stays out of the event: memory_map lists this event.
-    db.prepare('INSERT INTO write_events (note_path, action, summary, created_at, author, scope) VALUES (?, ?, ?, ?, ?, ?)')
+    prepareOnce(db, 'INSERT INTO write_events (note_path, action, summary, created_at, author, scope) VALUES (?, ?, ?, ?, ?, ?)')
       .run('_memory_ledger_', ev.kind, JSON.stringify({ id: `fact:${target}`, title: `${ev.subject} ${ev.predicate}` }), ev.at, ev.source, ev.scope ?? 'global');
-    db.prepare('INSERT OR REPLACE INTO applied_ledger_events (event_id, digest, applied_at) VALUES (?, ?, ?)')
+    prepareOnce(db, 'INSERT OR REPLACE INTO applied_ledger_events (event_id, digest, applied_at) VALUES (?, ?, ?)')
       .run(ev.id, digest, ev.at);
   })();
 }
@@ -1273,7 +1281,7 @@ function applyRetirement(db: Database.Database, ev: LedgerEvent, digest: string,
 function settleRetirements(db: Database.Database, events: LedgerEvent[]): void {
   const last = new Map<string, LedgerEvent>();
   for (const ev of events) if (RETIREMENT_KINDS.has(ev.kind)) last.set(ev.target!.toUpperCase(), ev);
-  const retired = db.prepare('SELECT event_id FROM retired_facts').all() as Array<{ event_id: string }>;
+  const retired = prepareOnce(db, 'SELECT event_id FROM retired_facts').all() as Array<{ event_id: string }>;
   db.transaction(() => {
     for (const [target, ev] of last) {
       if (ev.kind === 'retire') {
@@ -1298,7 +1306,7 @@ export async function replayLedger(
     ({ content, finalEventKnown } = await readLedgerForReplay(
       vaultPath,
       filePath,
-      eventId => db.prepare('SELECT 1 FROM applied_ledger_events WHERE event_id = ?').get(eventId) !== undefined,
+      eventId => prepareOnce(db, 'SELECT 1 FROM applied_ledger_events WHERE event_id = ?').get(eventId) !== undefined,
       options.setTornTailAside === true,
     ));
   } catch (err: any) {
@@ -1315,9 +1323,9 @@ export async function replayLedger(
       // these with an empty digest table — digests are only backfilled BY a
       // successful replay, which needs the ledger), and lifecycle write_events.
       const projected =
-        (db.prepare('SELECT COUNT(*) c FROM applied_ledger_events').get() as { c: number }).c
-        + (db.prepare('SELECT COUNT(*) c FROM facts WHERE event_id IS NOT NULL').get() as { c: number }).c
-        + (db.prepare(`SELECT COUNT(*) c FROM write_events WHERE note_path = '_memory_ledger_'`).get() as { c: number }).c;
+        (prepareOnce(db, 'SELECT COUNT(*) c FROM applied_ledger_events').get() as { c: number }).c
+        + (prepareOnce(db, 'SELECT COUNT(*) c FROM facts WHERE event_id IS NOT NULL').get() as { c: number }).c
+        + (prepareOnce(db, `SELECT COUNT(*) c FROM write_events WHERE note_path = '_memory_ledger_'`).get() as { c: number }).c;
       if (projected > 0) {
         throw new Error(`ledger file is missing at ${filePath} but ${projected} canonical event(s) are already projected in the index; refusing to treat this as an empty vault — restore the ledger or deliberately rebuild from scratch`);
       }
@@ -1362,7 +1370,7 @@ export async function replayLedger(
   // checks. Unrelated (non '_mcp_') and NULL-event rows are not touched; no
   // history is dropped or invented — the operator restores the ledger or
   // deliberately rebuilds the derived index.
-  const projectedIds = db.prepare(
+  const projectedIds = prepareOnce(db, 
     `SELECT DISTINCT event_id FROM facts WHERE event_id IS NOT NULL AND source_path = '_mcp_'
      UNION SELECT event_id FROM retired_facts`
   ).all() as Array<{ event_id: string }>;
@@ -1391,16 +1399,16 @@ const STATEMENT_WORDS_BACKFILL = 'statement_words_backfilled';
  * index rows only; the ledger is read, never written. Facts saved without a statement stay null.
  */
 function backfillStatementWords(db: Database.Database, events: LedgerEvent[]): void {
-  if (db.prepare('SELECT 1 FROM index_state WHERE key = ?').get(STATEMENT_WORDS_BACKFILL) !== undefined) return;
-  const live = db.prepare('UPDATE facts SET statement_words = ? WHERE event_id = ? AND statement_words IS NULL');
-  const retired = db.prepare('UPDATE retired_facts SET statement_words = ? WHERE event_id = ? AND statement_words IS NULL');
+  if (prepareOnce(db, 'SELECT 1 FROM index_state WHERE key = ?').get(STATEMENT_WORDS_BACKFILL) !== undefined) return;
+  const live = prepareOnce(db, 'UPDATE facts SET statement_words = ? WHERE event_id = ? AND statement_words IS NULL');
+  const retired = prepareOnce(db, 'UPDATE retired_facts SET statement_words = ? WHERE event_id = ? AND statement_words IS NULL');
   for (const ev of events) {
     const words = statementTerms(ev.statement);
     if (words === null) continue;
     live.run(words, ev.id);
     retired.run(words, ev.id);
   }
-  db.prepare('INSERT OR REPLACE INTO index_state (key, value) VALUES (?, ?)').run(STATEMENT_WORDS_BACKFILL, '1');
+  prepareOnce(db, 'INSERT OR REPLACE INTO index_state (key, value) VALUES (?, ?)').run(STATEMENT_WORDS_BACKFILL, '1');
 }
 
 // In-process single-writer chain: serializes the full lifecycle decision +
@@ -1646,13 +1654,13 @@ export async function retireFact(db: Database.Database, vaultPath: string, ledge
   return serializeLifecycleWrite(async () => {
     const target = factEventId(id);
     if (target === null) throw new LifecycleInputError('id', `not a fact id: ${JSON.stringify(id)} (a fact's id is fact: and its eventId)`, 'invalid_argument');
-    const row = db.prepare(
+    const row = prepareOnce(db, 
       `SELECT f.predicate, f.object_text, f.valid_to, f.scope, e.canonical_name AS subject, e.source_note
          FROM facts f JOIN entities e ON e.id = f.subject_entity_id
         WHERE f.event_id = ? AND f.source_path = ?`
     ).get(target, LIFECYCLE_NOTE_PATH) as { predicate: string; object_text: string; valid_to: string | null; scope: string; subject: string; source_note: string } | undefined;
     if (!row) {
-      if (db.prepare('SELECT 1 FROM retired_facts WHERE event_id = ?').get(target)) {
+      if (prepareOnce(db, 'SELECT 1 FROM retired_facts WHERE event_id = ?').get(target)) {
         throw new LifecycleInputError('id', 'that fact is already retired (restore_memory brings it back)', 'memory_already_retired');
       }
       throw new LifecycleInputError('id', 'no saved fact has that id', 'memory_not_found');
@@ -1679,12 +1687,12 @@ export async function restoreFact(db: Database.Database, vaultPath: string, ledg
   return serializeLifecycleWrite(async () => {
     const target = factEventId(id);
     if (target === null) throw new LifecycleInputError('id', `not a fact id: ${JSON.stringify(id)} (a fact's id is fact: and its eventId)`, 'invalid_argument');
-    const row = db.prepare(
+    const row = prepareOnce(db, 
       `SELECT r.predicate, r.object_text, r.scope, e.canonical_name AS subject
          FROM retired_facts r JOIN entities e ON e.id = r.subject_entity_id WHERE r.event_id = ?`
     ).get(target) as { predicate: string; object_text: string; scope: string; subject: string } | undefined;
     if (!row) {
-      if (db.prepare('SELECT 1 FROM facts WHERE event_id = ?').get(target)) throw new LifecycleInputError('id', 'that fact is not retired', 'memory_not_found');
+      if (prepareOnce(db, 'SELECT 1 FROM facts WHERE event_id = ?').get(target)) throw new LifecycleInputError('id', 'that fact is not retired', 'memory_not_found');
       throw new LifecycleInputError('id', 'no retired fact has that id', 'memory_not_found');
     }
     if (secretGuardEnabled()) await refuseSecrets({ subject: row.subject, predicate: row.predicate, object: row.object_text });
@@ -1695,7 +1703,7 @@ export async function restoreFact(db: Database.Database, vaultPath: string, ledg
     };
     await appendLedgerEvent(vaultPath, ledgerRelPath, ev);
     applyEvent(db, ev);
-    const back = db.prepare('SELECT valid_to FROM facts WHERE event_id = ?').get(target) as { valid_to: string | null };
+    const back = prepareOnce(db, 'SELECT valid_to FROM facts WHERE event_id = ?').get(target) as { valid_to: string | null };
     return { ok: true, id: `fact:${target}`, action: 'restored', title: factTitle(row.subject, row.predicate, row.object_text), at: ev.at, eventId: ev.id, current: back.valid_to === null };
   });
 }
@@ -1716,7 +1724,7 @@ export interface RetiredFact {
 
 /** Every retired fact, newest retirement first. */
 export function listRetiredFacts(db: Database.Database): RetiredFact[] {
-  const rows = db.prepare(
+  const rows = prepareOnce(db, 
     `SELECT r.event_id, e.canonical_name AS subject, r.predicate, r.object_text, r.scope, r.valid_from, r.retired_at, r.retired_by
        FROM retired_facts r JOIN entities e ON e.id = r.subject_entity_id
       ORDER BY r.retired_at DESC, r.id DESC`
@@ -1745,7 +1753,7 @@ export function scopeFilterFor(scope: string | undefined): NormalizedScope | nul
 export function listLifecycleSubjects(db: Database.Database, opts: { scope?: string } = {}): string[] {
   const scope = scopeFilterFor(opts.scope);
   const inScope = scope === null ? null : savedScopeSqlPredicate(scope, 'f.scope');
-  const rows = db.prepare(
+  const rows = prepareOnce(db, 
     `SELECT DISTINCT e.canonical_name AS name FROM entities e
       WHERE e.source_note = ?
         AND EXISTS (SELECT 1 FROM facts f WHERE f.subject_entity_id = e.id${inScope ? ` AND ${inScope.sql}` : ''})
@@ -1772,7 +1780,7 @@ function workspaceReadInstant(db: Database.Database, scope: NormalizedScope | nu
     // Each observation source carries its own scope predicate and parameter spellings.
     const scopeSql = inScope ? ` AND ${inScope.sql}` : '';
     const scopeParams = inScope ? inScope.params : [];
-    return (db.prepare(
+    return (prepareOnce(db, 
       `SELECT MAX(newest) AS newest FROM (`
       + ` SELECT valid_from AS newest FROM facts WHERE source_path = ?${scopeSql}`
       + ` UNION ALL`
@@ -1857,11 +1865,11 @@ export function factsFor(db: Database.Database, entityName: string, opts: { asOf
   if (opts.asOf !== undefined) {
     const t = toCanonicalInstant(opts.asOf);
     if (inScope) {
-      return db.prepare(
+      return prepareOnce(db, 
         `SELECT * FROM facts WHERE subject_entity_id IN (${placeholders}) AND ${inScope.sql} AND valid_from <= ? AND (valid_to IS NULL OR valid_to > ?) ORDER BY valid_from DESC, id DESC`
       ).all(...entityIds, ...inScope.params, t, t);
     }
-    return db.prepare(
+    return prepareOnce(db, 
       `SELECT * FROM facts WHERE subject_entity_id IN (${placeholders}) AND valid_from <= ? AND (valid_to IS NULL OR valid_to > ?) ORDER BY valid_from DESC, id DESC`
     ).all(...entityIds, t, t);
   }
@@ -1873,11 +1881,11 @@ export function factsFor(db: Database.Database, entityName: string, opts: { asOf
   // observation, so the same step cannot hide a note the vault already holds either.
   const readInstant = noteReadInstant(db, scopeFilter);
   if (inScope) {
-    return db.prepare(
+    return prepareOnce(db, 
       `SELECT * FROM facts WHERE subject_entity_id IN (${placeholders}) AND ${inScope.sql} AND ${DEFAULT_CURRENT_SQL} ORDER BY valid_from DESC, id DESC`
     ).all(...entityIds, ...inScope.params, readInstant, readInstant);
   }
-  return db.prepare(
+  return prepareOnce(db, 
     `SELECT * FROM facts WHERE subject_entity_id IN (${placeholders}) AND ${DEFAULT_CURRENT_SQL} ORDER BY valid_from DESC, id DESC`
   ).all(...entityIds, readInstant, readInstant);
 }

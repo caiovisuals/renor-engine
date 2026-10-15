@@ -4,6 +4,16 @@
 
 **Renor is memory for coding agents.** You keep notes as Markdown files in a folder on your machine. Renor indexes them and serves them to any MCP client (Claude Code, Codex and others), so an agent can recall what you already decided instead of asking you to paste the same context again.
 
+**Try it.** After the install and index steps below, stop `node dist/cli.js mcp` if you left it running (Claude Code starts its own), then, in the same terminal and from this directory, with Node 22 as the `node` on your `PATH`, add Renor to Claude Code over MCP:
+
+```bash
+claude mcp add --scope local renor-local -e VAULT_PATH="$VAULT_PATH" -e EMBEDDING_PROVIDER=eval-hash -e RENOR_EVIDENCE_MODE=off -- node "$PWD/dist/cli.js" mcp
+```
+
+Then start Claude Code in this directory (restart it if it was already running) and `/mcp` should list `renor-local`. Claude Code can then search your notes, save facts, and recall them in later sessions. The quickstart vault is a temporary folder, and the cleanup step at the end of "Verify it" below deletes it. For notes you want to keep, point `VAULT_PATH` at a permanent folder, run `node dist/cli.js index`, then `claude mcp remove renor-local` and the command above again.
+
+A hosted version with no install is at <https://renor.cloud>.
+
 **The problem.** Every new session starts from zero. You re-explain the project, the decision you made last week and why, the thing you corrected twice. Renor keeps that context in files you own and hands the relevant part back when an agent asks.
 
 **What it does.** It indexes your Markdown notes into a local SQLite database, ranks them with embeddings plus keyword and entity signals, and exposes search, recall and remember tools over MCP. Two servers ship here: a command-line server on stdin/stdout, and an HTTP server with OAuth sign-in.

@@ -170,6 +170,7 @@ function enableInChild(env: Record<string, string | undefined>): {
   enabled: boolean;
   directory: string | null;
   reason: string | null;
+  seeded: number;
   cacheRootMode: string | null;
 } {
   const script = `
@@ -302,6 +303,123 @@ describe('enabling the workspace compile cache', () => {
 
     expect(report.enabled).toBe(false);
     expect(report.reason).toMatch(/MVP_COMPILE_CACHE_DIR/);
+  });
+});
+
+describe('the release seed', () => {
+  // Node names the sub-directory of a cache after its version, architecture, V8 flag hash and the owner's uid. The seed is made by
+  // the build account, so its uid is not the workspace's: the copy has to match on everything but the uid.
+  let root: string;
+  let seed: string;
+  let versioned: string;
+
+  /** The name Node gives this build's cache sub-directory, found by enabling a throwaway cache. */
+  function versionedName(): string {
+    const script = `
+      const { enableWorkspaceCompileCache } = require(${JSON.stringify(path.resolve(__dirname, '../../dist/mvp/compileCache.js'))});
+      enableWorkspaceCompileCache();
+      process.stdout.write(require('node:path').basename(require('node:module').getCompileCacheDir()));
+    `;
+    const res = spawnSync(process.execPath, ['-e', script], {
+      env: { ...BASE_ENV, MVP_MEMORY_DIR: path.join(root, 'memory'), MVP_COMPILE_CACHE_DIR: path.join(root, 'probe') } as NodeJS.ProcessEnv,
+      encoding: 'utf8', timeout: 30_000,
+    });
+    if (res.status !== 0) throw new Error(`child failed (${res.status}): ${(res.stderr || '').slice(0, 500)}`);
+    return res.stdout;
+  }
+
+  const entries = (dir: string): string[] => (fs.existsSync(dir) ? fs.readdirSync(dir).sort() : []);
+
+  beforeEach(() => {
+    root = workspaceRoot('seed');
+    versioned = versionedName();
+    seed = path.join(root, 'seed');
+    // The build account's uid (here 0) in place of this one.
+    fs.mkdirSync(path.join(seed, versioned.replace(/-\d+$/, '-0')), { recursive: true });
+    for (const name of ['0a1b2c3d', 'deadbeef']) fs.writeFileSync(path.join(seed, versioned.replace(/-\d+$/, '-0'), name), `entry ${name}`);
+    fs.chmodSync(seed, 0o755);
+  });
+
+  function enableWithSeed(cacheDir: string, seedDir: string | undefined = seed): { report: ReturnType<typeof enableInChild>; cached: string[] } {
+    const report = enableInChild({ MVP_MEMORY_DIR: path.join(root, 'memory'), MVP_COMPILE_CACHE_DIR: cacheDir, MVP_COMPILE_SEED_DIR: seedDir });
+    return { report, cached: entries(path.join(cacheDir, versioned)) };
+  }
+
+  it('copies the release seed into an empty cache of this workspace, whatever uid the seed was made under', () => {
+    const { report, cached } = enableWithSeed(path.join(root, 'cache', 'compile'));
+
+    expect(report.enabled).toBe(true);
+    expect(report.seeded).toBe(2);
+    expect(cached).toEqual(['0a1b2c3d', 'deadbeef']);
+    expect(fs.readFileSync(path.join(root, 'cache', 'compile', versioned, 'deadbeef'), 'utf8')).toBe('entry deadbeef');
+  });
+
+  it('never mixes the seed into a cache that already holds entries of its own', () => {
+    const cacheDir = path.join(root, 'cache', 'compile');
+    fs.mkdirSync(path.join(cacheDir, versioned), { recursive: true, mode: 0o700 });
+    fs.writeFileSync(path.join(cacheDir, versioned, '11111111'), 'own entry');
+
+    const { report, cached } = enableWithSeed(cacheDir);
+
+    expect(report.seeded).toBe(0);
+    expect(cached).toEqual(['11111111']);
+  });
+
+  it('does not read a seed directory that group or others can write', () => {
+    fs.chmodSync(seed, 0o775);
+    const { report, cached } = enableWithSeed(path.join(root, 'cache', 'compile'));
+
+    expect(report.enabled).toBe(true);
+    expect(report.seeded).toBe(0);
+    expect(cached).toEqual([]);
+  });
+
+  it('does not read a seed sub-directory writable by others, or one made by a different Node or V8 build', () => {
+    const sub = path.join(seed, versioned.replace(/-\d+$/, '-0'));
+    fs.chmodSync(sub, 0o777);
+    expect(enableWithSeed(path.join(root, 'cache', 'a')).report.seeded).toBe(0);
+    fs.chmodSync(sub, 0o755);
+    fs.renameSync(sub, path.join(seed, versioned.replace(/-[0-9a-f]+-\d+$/, '-00000000-0')));
+    expect(enableWithSeed(path.join(root, 'cache', 'b')).report.seeded).toBe(0);
+  });
+
+  it('copies regular entries with hex names only: a symlink, a directory or another name is left', () => {
+    const sub = path.join(seed, versioned.replace(/-\d+$/, '-0'));
+    fs.symlinkSync('/etc/hostname', path.join(sub, 'cafebabe'));
+    fs.mkdirSync(path.join(sub, 'abcdef01'));
+    fs.writeFileSync(path.join(sub, 'evil.js'), 'x');
+    fs.writeFileSync(path.join(sub, 'ABCDEF02'), 'x');
+
+    const { report, cached } = enableWithSeed(path.join(root, 'cache', 'compile'));
+
+    expect(report.seeded).toBe(2);
+    expect(cached).toEqual(['0a1b2c3d', 'deadbeef']);
+  });
+
+  it('starts as it always did when there is no seed, or the seed path is not a directory', () => {
+    expect(enableWithSeed(path.join(root, 'cache', 'a'), path.join(root, 'no-such-seed')).report.seeded).toBe(0);
+    const file = path.join(root, 'a-file');
+    fs.writeFileSync(file, 'x');
+    const none = enableWithSeed(path.join(root, 'cache', 'b'), file);
+    expect(none.report.enabled).toBe(true);
+    expect(none.report.seeded).toBe(0);
+  });
+
+  it('a seed made by compileSeed.js is used by the next start: the first start of a release finds the modules cached', () => {
+    // The real thing, end to end: the seeding script fills a cache, and an engine start copies it. The copied entries are Node's own
+    // (not stand-ins), so this is what a deploy followed by a first wake does.
+    const seeded = path.join(root, 'real-seed');
+    const make = spawnSync(process.execPath, [path.resolve(__dirname, '../../dist/mvp/compileSeed.js')], {
+      env: { ...BASE_ENV, MVP_COMPILE_CACHE_DIR: seeded } as NodeJS.ProcessEnv, encoding: 'utf8', timeout: 120_000,
+    });
+    expect(make.status).toBe(0);
+    expect(entries(path.join(seeded, versioned.replace(/-\d+$/, `-${process.getuid!()}`))).length).toBeGreaterThan(50);
+    fs.chmodSync(seeded, 0o755);
+
+    const { report, cached } = enableWithSeed(path.join(root, 'cache', 'compile'), seeded);
+
+    expect(report.seeded).toBeGreaterThan(50);
+    expect(cached.length).toBe(report.seeded);
   });
 });
 
