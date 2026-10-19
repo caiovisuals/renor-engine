@@ -1,9 +1,9 @@
 {
   "schema": 1,
   "benchmark": "renorbench-v2-product",
-  "reason": "Re-record after #645 (reader layout for conversation replies): a conversation's chunks on one date now come as one hit, so the replies cost fewer tokens (mean 6026.9195 to 3086.931, p95 9157 to 4123); no quality metric or verdict rate moved.",
-  "recordedAt": "2026-10-18T21:23:42.858Z",
-  "gitSha": "44192c99cba19c8b97311f4f73dee0db060a52e3",
+  "reason": "Re-record after PR #714 makes the reader event and duration lines default-on: one session-detail reply (detail-marathon-4) gains its expected leading events hit, +92 reply tokens; every quality metric is unchanged.",
+  "recordedAt": "2026-10-19T15:48:15.347Z",
+  "gitSha": "07f113fde24e6e00e9b741098a5821758f0fe75d",
   "manifest": {
     "benchmark": "renorbench-v2-product",
     "casesSha256": "104079aba16672ec96b866572ce5f2578281cc2b68c5890f929dfceb5e9247c6",
@@ -15,7 +15,7 @@
       "qualityEligible": false
     },
     "qualityEligible": false,
-    "evaluatorSha256": "49cd959e53e8b95349f7d40e7f5a49b9e922aa1699be41a1526c75cf07a7f28c",
+    "evaluatorSha256": "c281ad8b629287da8f120bc42e16c518d9b6a655e09a6a98a34029b81734ab1c",
     "chunking": {
       "maxTokens": 400,
       "overlapTokens": 0
@@ -54,7 +54,7 @@
       "verdictRelevantRate": 1,
       "verdictAbstainRate": 1,
       "verdictMissingCases": 0,
-      "meanReplyTokens": 3086.931,
+      "meanReplyTokens": 3087.9885,
       "p95ReplyTokens": 4123
     },
     "byCategory": {
@@ -72,7 +72,7 @@
         "verdictRelevantRate": 1,
         "verdictAbstainRate": null,
         "verdictMissingCases": 0,
-        "meanReplyTokens": 3592.65,
+        "meanReplyTokens": 3594.95,
         "p95ReplyTokens": 4123
       },
       "knowledge_update": {
@@ -110,5 +110,13 @@
         "p95ReplyTokens": 4101
       }
     }
+  },
+  "lowering": {
+    "reason": "Re-record after PR #714 makes the reader event and duration lines default-on: one session-detail reply (detail-marathon-4) gains its expected leading events hit, +92 reply tokens; every quality metric is unchanged.",
+    "fromBaselineSha256": "1000b3b9e71ae5a457de4c32e631074ce1485bfc7319b06c3561f8ed528e324e",
+    "movedMetrics": [
+      "meanReplyTokens",
+      "session_detail.meanReplyTokens"
+    ]
   }
 }

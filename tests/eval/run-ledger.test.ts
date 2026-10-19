@@ -9,7 +9,8 @@ import {
   archiveRow,
   canonicalJson,
   codeIdentity,
-  PRESENCE_ONLY_ENV,
+  ORDINARY_CREDENTIAL_NAMED_ENV,
+  isPresenceOnlyEnv,
   PRODUCT_ENV_NAMESPACES,
   productEnvironment,
   questionSet,
@@ -272,12 +273,54 @@ describe('run ledger: which environment is configuration', () => {
     });
     // Every credential name the runner passes today, and the router keys an open PR adds, keeps only its presence...
     for (const name of ['OPENAI_API_KEY', 'RENOR_EVIDENCE_API_KEY', 'RENOR_EVIDENCE_API_KEYS', 'OLLAMA_CLOUD_KEY_1', 'OLLAMA_MAX_KEY', 'OLLAMA_API_KEY', 'RENOR_EXTRACTOR_API_KEYS', 'RENOR_ROUTER_API_KEYS', 'RENOR_ROUTER_CACHE']) {
-      expect(PRESENCE_ONLY_ENV.test(name), name).toBe(true);
+      expect(isPresenceOnlyEnv(name), name).toBe(true);
     }
-    // ...while a setting that merely contains such a word keeps its value, so it cannot hide a difference.
-    for (const name of ['RENOR_EVIDENCE_MAX_TOKENS', 'RENOR_KEYWORD_WEIGHT', 'MVP_ACCESS_TOKEN_TTL_SECONDS', 'RENOR_SESSION_ROUTER']) {
-      expect(PRESENCE_ONLY_ENV.test(name), name).toBe(false);
+    // ...and so does a credential name with anything after the credential word (the OPENAI_API_KEY_BENCH value was
+    // written to the shared ledger in plain text because only a name ENDING in _KEY was masked)...
+    for (const name of ['OPENAI_API_KEY_BENCH', 'OPENAI_API_KEYS_BENCH', 'RENOR_EVIDENCE_API_KEY_PRIMARY', 'OLLAMA_CLOUD_KEY_BENCH_2', 'RENOR_DIGEST_API_KEY_B',
+      'MVP_GATEWAY_SECRET_NEW', 'RENOR_API_TOKEN_PROD', 'GOOGLE_OAUTH_ACCESS_TOKEN_2', 'MVP_OWNER_PASSWORD_OLD', 'GOOGLE_APPLICATION_CREDENTIALS_BENCH', 'RENOR_VERTEX_KEY_FILE_2', 'EMBEDDING_APIKEY']) {
+      expect(isPresenceOnlyEnv(name), name).toBe(true);
     }
+    // ...whatever word the name then ends in: a trailing setting word never turns a credential name into a setting.
+    for (const word of ['TTL_SECONDS', 'SECONDS', 'MS', 'MAX', 'MIN', 'LIMIT', 'COUNT', 'TIMEOUT', 'ENABLED', 'GUARD', 'ENV', 'NAMES', 'CANARY', 'CANDIDATE', 'MODE', 'POLICY', 'FILE']) {
+      for (const credential of ['OPENAI_API_KEY_BENCH', 'MVP_REFRESH_TOKEN', 'RENOR_GATEWAY_SECRET', 'MVP_OWNER_PASSWORD', 'GOOGLE_APPLICATION_CREDENTIALS']) {
+        expect(isPresenceOnlyEnv(`${credential}_${word}`), `${credential}_${word}`).toBe(true);
+      }
+    }
+    // ...and a credential word in front of anything does too (the first part of the name is not special).
+    for (const name of ['RENOR_SECRET_SCANNER_MODE', 'MVP_PASSWORD_POLICY', 'RENOR_TOKEN_TIMEOUT_MS', 'OPENAI_KEY_ENV', 'OLLAMA_KEY_ENV_NAMES', 'RENOR_SECRET_CANARY', 'RENOR_SECRET_CANDIDATE', 'RENOR_EVAL_SECRETS_FILE']) {
+      expect(isPresenceOnlyEnv(name), name).toBe(true);
+    }
+    // Settings that merely contain such a letter run, or count tokens (the plural), keep their value, so they cannot hide a difference.
+    for (const name of ['RENOR_EVIDENCE_MAX_TOKENS', 'RENOR_KEYWORD_WEIGHT', 'RENOR_SESSION_ROUTER', 'CHUNK_MAX_TOKENS', 'RENOR_CONTEXT_BUDGET_TOKENS', 'RENOR_DIGEST_TOKENS', 'RENOR_SESSION_EXPAND_TOKENS', 'MVP_KEYSTONE_MODE', 'RENOR_MONKEY_PATCH']) {
+      expect(isPresenceOnlyEnv(name), name).toBe(false);
+    }
+    // The settings that really are read from the environment and carry a credential word keep their value, by full name only.
+    for (const name of ['MVP_ACCESS_TOKEN_TTL_SECONDS', 'RENOR_SECRET_GUARD']) {
+      expect(isPresenceOnlyEnv(name), name).toBe(false);
+    }
+    expect(isPresenceOnlyEnv('MVP_ACCESS_TOKEN_TTL_SECONDS_BENCH')).toBe(true);
+    expect(isPresenceOnlyEnv('PREFIX_RENOR_SECRET_GUARD')).toBe(true);
+    expect(isPresenceOnlyEnv('RENOR_SECRET_GUARD_KEY')).toBe(true);
+  });
+
+  it('records a suffixed credential name as "set", never its value, in the run record environment', () => {
+    const secret = 'THIS-MUST-NOT-APPEAR-credential-value';
+    const credentialNames = ['OPENAI_API_KEY_BENCH', 'OPENAI_API_KEY', 'RENOR_API_TOKEN_PROD', 'MVP_GATEWAY_SECRET_NEW', 'OPENAI_API_KEY_BENCH_TTL_SECONDS',
+      'OPENAI_API_KEY_BENCH_ENABLED', 'OPENAI_API_KEY_BENCH_GUARD', 'OPENAI_API_KEY_BENCH_ENV', 'RENOR_SECRET_SCANNER_MODE', 'MVP_PASSWORD_POLICY'];
+    const settings = { MVP_ACCESS_TOKEN_TTL_SECONDS: '900', RENOR_SECRET_GUARD: 'on', RENOR_EVIDENCE_MAX_TOKENS: '4096', CHUNK_MAX_TOKENS: '300' };
+    const env = productEnvironment({ ...Object.fromEntries(credentialNames.map(name => [name, secret])), ...settings });
+    expect(env).toEqual({ ...Object.fromEntries(credentialNames.map(name => [name, 'set'])), ...settings });
+    expect(JSON.stringify(env)).not.toContain(secret);
+  });
+
+  it('every ordinary setting listed as having a credential word in its name is still read by engine/src', () => {
+    // A listed name that engine/src no longer reads is stale and would keep a future credential of that name in the clear.
+    const files = (dir: string): string[] => fs.readdirSync(dir, { withFileTypes: true })
+      .flatMap(entry => entry.isDirectory() ? files(path.join(dir, entry.name)) : entry.name.endsWith('.ts') && entry.name !== 'runLedger.ts' ? [path.join(dir, entry.name)] : []);
+    const text = files(path.join(ENGINE_ROOT, 'src')).map(file => fs.readFileSync(file, 'utf8')).join('\n');
+    for (const name of ORDINARY_CREDENTIAL_NAMED_ENV) expect(text.includes(name), name).toBe(true);
+    expect([...ORDINARY_CREDENTIAL_NAMED_ENV].sort()).toEqual(['MVP_ACCESS_TOKEN_TTL_SECONDS', 'RENOR_SECRET_GUARD']);
   });
 
   it('every environment variable engine/src reads is inside the fingerprinted namespaces, or is listed here with why it is not configuration', () => {

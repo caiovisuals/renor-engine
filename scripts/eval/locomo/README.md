@@ -57,6 +57,60 @@ python3 scripts/eval/locomo/score-locomo.py \
 Authoritative headline QA uses `--no-cache`, unique `RENOR_QA_SESSION`, and
 must complete with answerErrors=0 / judgeParseFailures=0.
 
+## Options added 2026-10-18 (all default off; without them every output is byte-identical to before)
+
+Why: the miss analysis of the 52.1% row (`docs/evals/results/locomo-delivery-20261018/README.md`) found that 65% of its misses stop in the corpus and 25% at the
+page cap, and only 6% at the reader. The adapter skipped every turn that carries a picture, its own text included (1,226 of 5,882 turns), and the pages were
+whole sessions cut at 6,000 tokens (8.3 of 12 retrieved sessions).
+
+```bash
+# the turns that carry a picture come back: text only, or text plus the dataset's BLIP caption as "[shared an image: ...]"
+python3 scripts/eval/locomo/build-corpus.py --dataset ~/bench-data/locomo10.json \
+  --output ~/bench-data/locomo/adapter-v2-caption --image-turns caption      # skip (default) | text | caption
+
+# pages of turn windows (the turns the chunk hits matched +-N, "[...]" for the gap) over a different corpus, same retrieval
+python3 scripts/eval/locomo/assemble-sessions.py --run ~/bench-data/locomo/retrieval-vertex \
+  --output ~/bench-data/locomo/retrieval-vertex-windows2-caption \
+  --corpus-from ~/bench-data/locomo/adapter-v2-caption --window 2            # both optional; neither = full sessions as before
+```
+
+`python3 scripts/eval/locomo/test_corpus_options.py` tests both (not wired into CI: `.github/**` is a critical path).
+
+Category numbers in `cases.jsonl` are the dataset's own; the **names** `build-corpus.py` gives them are shifted and are kept because every recorded row carries
+them: category 1 is multi-hop (the name says single-hop), 2 temporal (multi-hop), 3 open-domain (temporal), 4 single-hop (open-domain). The 2026-09-20 report's
+"single-hop 38.3%" is category 1, its "multi-hop 42.1%" is category 2, "temporal 52.1%" is category 3 and "open-domain 60.6%" is category 4.
+
+## Product-path runner (`run-locomo-product.ts`, 2026-10-18)
+
+The harness above retrieves with `src/` directly and assembles the pages itself; its numbers are research diagnostics. `run-locomo-product.ts` is the LoCoMo twin of
+`scripts/eval/run-longmemeval-product.ts`: an external client of the shipped `renor` CLI. Each conversation's rendered markdown is indexed **once** through
+`src/cli.ts index`; each question is answered from `src/cli.ts search --json --top-k 20` (what an agent receives), and the client builds the page from that reply alone
+(`assembleClientContext`: duplicate collapse, token cap, excerpt numbering, optional session dates). Gold (category, answer, gold turns) is scorer-side only; **one answer
+contract applies to every question** (no gold-derived prompt, unlike the recorded rows, which ran categories 1-4 `bestguess` and the adversarial set `direct`).
+
+```bash
+# 0. the fixed corpus (picture turns back, BLIP caption as text) and the cache-only embed proxy (a miss is an error; no Vertex credential is loaded)
+python3 scripts/eval/locomo/build-corpus.py --dataset ~/bench-data/locomo10.json --output ~/bench-data/locomo/adapter-v2-caption --image-turns caption
+node --import tsx scripts/eval/embed-proxy-cache-only.ts --port <free port> --cache-db ~/.local/share/renor/embed-cache.db --stats-path <stats.json>
+
+# 1. retrieval and the page audit: no model call, no spend. Writes replies/<id>.json.gz (the product's own reply), pages.jsonl (tokens, gold turns on the page), results.jsonl, cases.jsonl
+EMBEDDING_BASE_URL=http://127.0.0.1:<port> EMBEDDING_MODEL=gemini-embedding-001 EMBEDDING_DIMS=768 OPENAI_API_KEY=local-embed-proxy \
+  node --import tsx scripts/eval/locomo/run-locomo-product.ts --adapter ~/bench-data/locomo/adapter-v2-caption --output <dir> \
+    --embedding-provider openai --stage retrieve --embed-proxy-stats <stats.json> [--ids-file <order.txt> --limit 300]
+
+# 2. reader and judge over the stored replies of step 1 (same --output; refused if the product code, environment, corpus or top-K changed since)
+node --import tsx scripts/eval/locomo/run-locomo-product.ts ... --stage answer --answer-style bestguess --context-dates --answer-max-tokens 20000 \
+    --base-url http://127.0.0.1:<tap port>/fw/v1 --api-key-env TAP_DUMMY_KEY --max-live-calls <n> [--arm promotion --no-cache]
+
+# 3. the recorded scorer reads the output unchanged
+python3 scripts/eval/locomo/score-locomo.py --cases <dir>/cases.jsonl --results <dir>/results.jsonl --qa <dir>/qa-cases.jsonl --output <dir>
+```
+
+An arm changes one product setting with `--product-env RENOR_NAME=VALUE` (recorded in the manifest and the run ledger; credentials, endpoints, model slots and runner variables
+are refused). Evidence extraction is off (`RENOR_SEARCH_EVIDENCE=0`) unless an arm sets it: a LoCoMo product row has a reader and a judge, no third model. Two arms that pin the
+same `RENOR_QA_CACHE_SCOPE` and share `--cache-dir` replay a question whose page and answer are byte-identical, so such a pair is one draw, not two.
+`tests/eval/locomo-product-runner.test.ts` is the offline contract (request bodies equal the LongMemEval product runner's, gold-mutation parity, index once per conversation, stage semantics, replay).
+
 Headline (authoritative, `--no-cache`):
 - cats 1–4 `bestguess`: **803/1540 = 52.1%** (`qa-cats14-cold-20260920`)
 Development / paired:

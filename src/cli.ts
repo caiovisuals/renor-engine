@@ -8,7 +8,9 @@ import { indexVault, MAX_NOTE_BYTES } from "./indexer/pipeline";
 import { startWatcher } from "./watcher/watcher";
 import { stalenessGate, stalenessJsonField } from "./indexer/staleness";
 import { retrieveContext } from "./retrieval/orchestrator";
-import { readerLayoutEnabled, layoutHitsForReader, conversationNoteMatcher } from "./retrieval/readerLayout";
+import { readerLayoutEnabledFor, layoutHitsForReader, conversationNoteMatcher } from "./retrieval/readerLayout";
+import { isEventQuestion, noteTurnsLoader, readerEventsEnabled, turnScorer, vectorsMeanSomething } from "./retrieval/readerEvents";
+import type { RetrievalProbe } from "./retrieval/semantic";
 import { ledgerNoteMatcher, presentLedgerEvents } from "./retrieval/ledgerPresentation";
 import { attachSearchEvidence, searchEvidenceEnabled, EVIDENCE_HIT_PATH } from "./evidence/attach";
 import { createEvidenceExtractor, resolveEvidenceToolOptions } from "./evidence/options";
@@ -255,6 +257,8 @@ program
     const vaultStaleness = stalenessJsonField(stalenessGate(config.vaultPath).staleness);
     // The ledger is the engine's own record, not a memory: a search returns neither its header nor the markup of its records.
     const isLedger = ledgerNoteMatcher({ memoryDir: config.vaultPath, ledgerRelPath: config.memoryLedger ?? DEFAULT_LEDGER_REL });
+    // RENOR_READER_EVENTS reads the question's vector for its lines, only for an order or a date question: nothing else changes.
+    const probe: RetrievalProbe | undefined = readerEventsEnabled() && isEventQuestion(query) ? {} : undefined;
     const retrieved = await retrieveContext(
       db,
       vectorIndex,
@@ -263,7 +267,7 @@ program
       Number(opts.topK),
       config.priorityPaths,
       {},
-      { isLedgerNote: isLedger },
+      { isLedgerNote: isLedger, ...(probe ? { probe } : {}) },
     );
     // Session router (RENOR_SESSION_ROUTER, default off): null when off, and then nothing here changes.
     const routed = await routeSearch({ db, config, query, retrieved });
@@ -282,10 +286,11 @@ program
       ? await attachDigest({ db, query, hits: result.hits, options: digestOptions, provider, isLedgerNote: isLedger })
       : null;
     // The evidence pass read the sources as stored; what is printed is what the user said.
-    // Laid out for the model that reads it (RENOR_READER_LAYOUT; readerLayout.ts): the hits of a session come as one, and its time phrases are resolved.
+    // Laid out for the model that reads it (RENOR_READER_LAYOUT; readerLayout.ts): the hits of a session come as one, and its time phrases are resolved. RENOR_READER_EVENTS adds event lines above them for an order or a date question.
+    // A query that asks to be advised keeps the page as it was when RENOR_READER_LAYOUT_SKIP_ADVICE is on.
     const presented = presentLedgerEvents(digested ? digested.hits : result.hits, isLedger);
-    const hits = readerLayoutEnabled()
-      ? layoutHitsForReader(presented, { rankedBy: retrieved.rankedBy, isLedger: (p) => isLedger(p) || p === EVIDENCE_HIT_PATH || p === DIGEST_HIT_PATH, isConversation: conversationNoteMatcher(db) })
+    const hits = readerLayoutEnabledFor(query)
+      ? layoutHitsForReader(presented, { rankedBy: retrieved.rankedBy, isLedger: (p) => isLedger(p) || p === EVIDENCE_HIT_PATH || p === DIGEST_HIT_PATH, isConversation: conversationNoteMatcher(db), query, turnsOf: readerEventsEnabled() ? noteTurnsLoader(db) : undefined, scoreTurns: probe?.queryVector && provider && vectorIndex && vectorsMeanSomething(provider.identity?.kind) ? turnScorer(vectorIndex, probe.queryVector) : undefined })
       : presented;
     if (opts.json) {
       // Sole stdout content: machine-readable hits with FULL text. This is the

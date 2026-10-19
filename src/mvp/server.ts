@@ -64,7 +64,9 @@ import { withHitDates } from './hitDates';
 import { assertReplaceable, recordReplacement, replacementIndex, withReplacements } from '../memorymap/replacements';
 import { CONTEXT_BUDGET_KEEPS_NEWEST, CONTEXT_RELEVANCE_GUIDANCE, CONTEXT_RELEVANCE_KEEPS_MATCH, SEARCH_RELEVANCE_GUIDANCE, contextRelevanceArmed } from './contextRelevance';
 import { applyHitFloor, searchHitFloor } from './hitFloor';
-import { readerLayoutEnabled, readerLayoutOf } from '../retrieval/readerLayout';
+import { readerLayoutEnabled, readerLayoutEnabledFor, readerLayoutOf, readerTimelineEnabled } from '../retrieval/readerLayout';
+import { readerDurationNamed } from '../retrieval/questionSpan';
+import { noteTurnsLoader, readerEventsEnabled, readerEventsNamed, turnScorer, vectorsMeanSomething } from '../retrieval/readerEvents';
 import type { RetrievalProbe } from '../retrieval/semantic';
 import { readBuildIdentity } from '../buildIdentity';
 import { hostHeaderValidation } from '@modelcontextprotocol/sdk/server/middleware/hostHeaderValidation.js';
@@ -104,8 +106,32 @@ import { markErrorReason, markToolRefusal, refusal, refusalReason, toolRefusalOf
  * What search_memory says of the digest table, only where write-time digests are switched on (RENOR_DIGESTS), so a
  * workspace without them has the description it always had.
  */
+/**
+ * What search_memory says of the event lines, only where RENOR_READER_EVENTS is set to an on value (`1`, `true`, `yes`, `on`).
+ * With it unset the lines still lead the page (the default) and say what they are in their own first words, but the tool list is
+ * the one it was before the lines: the description stays under the 1,200 characters a directory client takes, and equal to the
+ * gateway's server card.
+ */
+const EVENTS_HITS =
+  ' When the question asks for the order or the date of something the user did, the first hit is a list of the user\'s own statements that match it, each under the day it is about, oldest first, and the excerpts stay in full below it (reason "events"). A question about a duration has no such list.';
+
 const DIGEST_HITS =
   ' This workspace writes a dated digest of each saved note in the background: when the notes matched have digests, one table of dated items drawn from them leads the hits (after any evidence table), outside the rankedBy order and top_k, with reason "digest". It is read from stored digests, no model is called to make it, and a note saved a moment ago may not have its digest yet. Use the table when it holds the value needed, and the excerpts when it does not.';
+
+/**
+ * What search_memory says of the duration line, only where RENOR_READER_DURATION is set to an on value (`1`, `true`, `yes`, `on`)
+ * and the reader layout it rides on is on. With it unset the line still leads the page (the default) and says what it is in its own
+ * first words, but the tool list is the one it was before the line (under 1,200 characters, equal to the gateway's server card).
+ */
+const SPAN_HITS =
+  ' When the question asks how many days, weeks or months lie between two events and the user wrote the date of each in their own words, the first hit is one short line that quotes those two dates and counts the days between them (reason "span"), outside the rankedBy order and top_k; the excerpts stay in full below it. It counts written dates only, never a session date.';
+
+/**
+ * What search_memory says of the current-value timeline, only where RENOR_READER_TIMELINE is on. Default off, so the
+ * tool list a deployment ships is unchanged: the timeline hit (reason "timeline") exists only on that flag.
+ */
+const TIMELINE_HITS =
+  ' When the question asks what a value is now, the first hit is a timeline of the user\'s own statements of that value, oldest first, the last line marked latest, and the excerpts stay in full below it (reason "timeline"). A question about a duration or an order has no timeline.';
 
 export interface MvpApp {
   app: express.Express;
@@ -836,7 +862,7 @@ function buildMcpServer(db: Database.Database, config: MvpConfig, engine: Engine
   server.registerTool('search_memory', {
     title: 'Search memory by meaning (where enabled)',
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-    description: 'Searches notes by meaning when memory_status reports semantic: true; otherwise it returns no hits and says why (semantic-unavailable or semantic-rebuilding), so use search_text or get_context. rankedBy "session_date" (the default) is newest first, so hits[0] is the latest, not necessarily the best; "score" is best match first. Judge hits by score (higher is closer), not position. One conversation\'s hits on one date come as one hit, opening with its date; a time phrase in it is resolved below, counted from that session. A hit without session_date comes last; a fact\'s hit has no notePath. There is no `evidence` object when this deployment has no evidence model configured and the pass is not switched off: no second pass runs, and the hits are the whole result. When there is one, its items come first, outside rankedBy, with reason "evidence", and its state is "ok", "off", "not-applied" or "failed". Facts saved with remember are added outside rankedBy, within top_k; a writerConflict line on one means it replaced another agent\'s value. index.stale: the semantic index lags the saved facts. A "replaced" hit\'s correction is listed before it (by: its id, source: who saved it).' + (evidence?.options.background ? EVIDENCE_WAIT_STATES : '') + (evidence?.options.dailyCap !== undefined ? EVIDENCE_DAILY_CAP_STATE : '') + (digests ? DIGEST_HITS : '') + (relevanceGuidance ? SEARCH_RELEVANCE_GUIDANCE : ''),
+    description: 'Searches notes by meaning when memory_status reports semantic: true; otherwise it returns no hits and says why (semantic-unavailable or semantic-rebuilding), so use search_text or get_context. rankedBy "session_date" (the default) is newest first, so hits[0] is the latest, not necessarily the best; "score" is best match first. Judge hits by score (higher is closer), not position. One conversation\'s hits on one date come as one hit, opening with its date; a time phrase in it is resolved below, counted from that session. A hit without session_date comes last; a fact\'s hit has no notePath. There is no `evidence` object when this deployment has no evidence model configured and the pass is not switched off: no second pass runs, and the hits are the whole result. When there is one, its items come first, outside rankedBy, with reason "evidence", and its state is "ok", "off", "not-applied" or "failed". Facts saved with remember are added outside rankedBy, within top_k; a writerConflict line on one means it replaced another agent\'s value. index.stale: the semantic index lags the saved facts. A "replaced" hit\'s correction is listed before it (by: its id, source: who saved it).' + (evidence?.options.background ? EVIDENCE_WAIT_STATES : '') + (evidence?.options.dailyCap !== undefined ? EVIDENCE_DAILY_CAP_STATE : '') + (digests ? DIGEST_HITS : '') + (readerLayoutEnabled() && readerDurationNamed() ? SPAN_HITS : '') + (readerEventsNamed() ? EVENTS_HITS : '') + (readerTimelineEnabled() ? TIMELINE_HITS : '') + (relevanceGuidance ? SEARCH_RELEVANCE_GUIDANCE : ''),
     inputSchema: {
       query: z.string().min(1).max(500).describe('Natural language query'),
       top_k: z.number().int().min(1).max(50).optional().describe('Max matches (default 20), not counting the short statements the session expansion adds to them'),
@@ -848,7 +874,8 @@ function buildMcpServer(db: Database.Database, config: MvpConfig, engine: Engine
       const topK = args.top_k ?? 20;
       const floor = searchHitFloor(engine.modelKey);
       const probe: RetrievalProbe = {};
-      const body = await engineSearchMemory(db, engine, config.memoryDir, args.query, topK, args.scope, evidence, args.include_history === true, config.ledgerRelPath, probe, digests, undefined, floor > 0, readerLayoutEnabled());
+      const laidOut = readerLayoutEnabledFor(args.query);
+      const body = await engineSearchMemory(db, engine, config.memoryDir, args.query, topK, args.scope, evidence, args.include_history === true, config.ledgerRelPath, probe, digests, undefined, floor > 0, laidOut);
       let result: Record<string, unknown> = body;
       if (body.ok) {
         // Who saved each fact among the hits, marked before anything reads them (the verdict, the page, the floor).
@@ -885,7 +912,7 @@ function buildMcpServer(db: Database.Database, config: MvpConfig, engine: Engine
         // The event of a fact is read from the ledger's heading, which is taken off below.
         result = {
           ...body,
-          hits: readerLayoutOf(body.rankedBy, (await withReplacements(mapContext(), withoutLedgerMetadata(page, ledgerNoteMatcher(config)), { limit: Math.max(page.length, topK) })).map(labelMemoryText), ledgerNoteMatcher(config)),
+          hits: readerLayoutOf(body.rankedBy, (await withReplacements(mapContext(), withoutLedgerMetadata(page, ledgerNoteMatcher(config)), { limit: Math.max(page.length, topK) })).map(labelMemoryText), ledgerNoteMatcher(config), { query: args.query, turnsOf: readerEventsEnabled() ? noteTurnsLoader(db) : undefined, scoreTurns: readerEventsEnabled() && vectorsMeanSomething(engine.provider?.identity?.kind) && probe.queryVector && engine.vectorIndex ? turnScorer(engine.vectorIndex, probe.queryVector) : undefined }, laidOut),
           ...indexNotice(db, true, config, args.scope),
           ...(shownVerdict.relevance ? { relevance: shownVerdict.relevance } : {}),
           ...(floored ? { floor: { similarity: floor, withheld: floored.withheld } } : {}),

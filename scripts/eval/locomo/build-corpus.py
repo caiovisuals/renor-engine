@@ -23,8 +23,14 @@ Protocol (mirrors the LongMemEval harness byte-for-byte where applicable):
   '# Session <id>\\n\\nTimestamp: <date>\\n\\n### Turn <i> — <Speaker>\\n\\n<text>'
   Turn index = the turn number from dia_id ('D<sess>:<turn>'), so gold
   evidence refs stay exact. Multimodal/image turns (img_url/blip_caption) are
-  SKIPPED (text-only baseline); the count is recorded and their session-level
-  gold mapping survives because gold is mapped by dia_id session prefix.
+  SKIPPED by default (--image-turns skip, the protocol of every row recorded
+  before 2026-10-18): the whole turn goes, its text included (1,226 of 5,882
+  turns); the count is recorded and their session-level gold mapping survives
+  because gold is mapped by dia_id session prefix. --image-turns text keeps the
+  text of those turns; --image-turns caption keeps the text and appends the
+  BLIP caption the dataset gives for the picture as a '[shared an image: ...]'
+  line (the dataset's own textual form of the image). Both are opt-in; with the
+  default every output file is byte-identical to the version before the flag.
 - gold evidence mapping: dia_id 'D<sess>:<turn>' -> session id (session-level
   recall) + exact turn (turn-level bonus metric). Unparseable evidence refs
   ('D', 'D:11:26') are dropped from the gold mapping and recorded.
@@ -49,7 +55,11 @@ import sys
 MONTHS = {mn: i + 1 for i, mn in enumerate(
     'January February March April May June July August September October November December'.split())}
 DOW = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']
+# NOTE: these names are shifted against the dataset's own numbering (1 multi-hop, 2 temporal, 3 open-domain,
+# 4 single-hop, 5 adversarial). They are kept as they are because every recorded row, cases.jsonl and QA file
+# carries them; the numbers (categoryNo) are right. results/locomo-delivery-20261018/README.md gives the mapping.
 CATEGORY_NAMES = {1: 'single-hop', 2: 'multi-hop', 3: 'temporal', 4: 'open-domain', 5: 'adversarial'}
+IMAGE_TURN_MODES = ('skip', 'text', 'caption')
 
 DATE_RE = re.compile(r'^(\d+):(\d+) (am|pm) on (\d+) (\w+), (\d{4})$')
 TURN_RE = re.compile(r'^D(\d+):(\d+)$')
@@ -106,6 +116,10 @@ def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument('--dataset', required=True, help='path to locomo10.json')
     ap.add_argument('--output', required=True, help='output directory')
+    ap.add_argument(
+        '--image-turns', choices=IMAGE_TURN_MODES, default='skip',
+        help="turns with img_url/blip_caption: 'skip' drops the whole turn (default, the recorded protocol), "
+             "'text' keeps the turn's text, 'caption' keeps the text and the BLIP caption")
     args = ap.parse_args()
 
     with open(args.dataset, 'r', encoding='utf-8') as fh:
@@ -150,20 +164,27 @@ def main() -> None:
             turns = []
             for turn in conv[f'session_{n}']:
                 meta['turns_total'] += 1
-                if 'img_url' in turn or 'blip_caption' in turn:
+                is_image = 'img_url' in turn or 'blip_caption' in turn
+                if is_image and args.image_turns == 'skip':
                     image_skipped += 1
                     meta['image_turns_skipped'] += 1
-                    continue  # multimodal turn — text-only protocol skips it
+                    continue  # multimodal turn — the recorded protocol skips it, text included
                 m = TURN_RE.match(turn['dia_id'])
                 if not m or int(m.group(1)) != n:
                     raise ValueError(f'{sample_id}: bad dia_id {turn["dia_id"]} in session {n}')
                 text = turn.get('text', '')
+                caption = (turn.get('blip_caption') or '').strip()
+                if is_image and args.image_turns == 'caption' and caption:
+                    marker = f'[shared an image: {caption}]'
+                    text = f'{text.rstrip()}\n\n{marker}' if text.strip() else marker
                 if not text.strip():
                     image_skipped += 1  # empty non-textual placeholder
                     meta['image_turns_skipped'] += 1
                     continue
                 speaker = turn.get('speaker') or '?'
                 sess_turns.setdefault(n, []).append((int(m.group(2)), speaker, text))
+                if is_image:
+                    meta['image_turns_rendered'] = meta.get('image_turns_rendered', 0) + 1
             meta['turns_rendered'] += len(sess_turns.get(n, []))
 
         # write session files
@@ -267,6 +288,8 @@ def main() -> None:
             fh.write(json.dumps(row, ensure_ascii=False) + '\n')
     with open(os.path.join(out, 'locomo-dataset.json'), 'w', encoding='utf-8') as fh:
         json.dump(dataset_rows, fh, ensure_ascii=False)
+    if args.image_turns != 'skip':
+        meta['image_turns_mode'] = args.image_turns  # absent in the default mode: its adapter-meta.json is unchanged
     meta['perConversation'] = per_conv
     meta['corpusDirs'] = corpus_dirs
     meta['datasetSha256'] = dataset_sha

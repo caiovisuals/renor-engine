@@ -107,19 +107,44 @@ export const PRODUCT_ENV_NAMESPACES = /^(RENOR_|MVP_|EMBEDDING_|OPENAI_|OLLAMA_|
 const NOT_PRODUCT_CONFIGURATION = /^RENOR_QA_|^RENOR_EVAL_RUN_LEDGER$|^RENOR_EVAL_MAX_EMBED_TOKENS$/;
 
 /**
- * Names whose values never enter a run record: credentials (`*_KEY`, `*_KEYS`, `*_KEY_<n>`, tokens, secrets,
- * passwords, credential and key files), cloud project ids, and cache locations (where a cache lives is not what is
- * measured). Their presence is recorded. Only these shapes: an ordinary setting that merely contains such a word
- * keeps its value, so two runs that differ in it never share a fingerprint.
+ * Names whose values never enter a run record: any name with a credential word as a whole `_`-separated part
+ * (`KEY`, `KEYS`, `API_KEY`, `APIKEY`, `TOKEN`, `SECRET(S)`, `PASSWORD`, `PASSWD`, `CREDENTIAL(S)`) anywhere in it,
+ * cloud project ids, and cache locations (where a cache lives is not what is measured). Their presence is recorded.
+ *
+ * The position of the word does not matter: `OPENAI_API_KEY_BENCH`, `OLLAMA_CLOUD_KEY_4` and `OPENAI_API_KEY_BENCH_TTL_SECONDS`
+ * are all credential names, because the words around the credential word say which credential, not that the value is
+ * safe to write. A part that only contains such a word (`RENOR_KEYWORD_WEIGHT`, `RENOR_EVIDENCE_MAX_TOKENS`) is not one.
+ *
+ * Fail closed: a new ordinary setting whose name has a credential part is masked until it is listed in
+ * ORDINARY_CREDENTIAL_NAMED_ENV, which holds the full names of the settings that really are read from the environment
+ * (tests/eval/run-ledger.test.ts fails when a listed name is no longer read by engine/src).
  */
-export const PRESENCE_ONLY_ENV = /_(KEYS?|TOKEN|SECRET|PASSWORD|CREDENTIALS?)(_\d+)?$|_KEY_FILE$|_PROJECT$|_CACHE$/;
+const CREDENTIAL_PART = /(?:^|_)(?:API_?)?(?:KEYS?|TOKEN|SECRETS?|PASSWORD|PASSWD|CREDENTIALS?)(?:_|$)/;
+
+/**
+ * Settings whose names carry a credential word and whose values are not credentials; their values stay in the record,
+ * so two runs that differ in one never share a fingerprint. Only full names: a suffix or prefix never makes a name
+ * ordinary.
+ * - MVP_ACCESS_TOKEN_TTL_SECONDS: how long an issued access token lives (src/mvp/config.ts).
+ * - RENOR_SECRET_GUARD: on/off switch of the secret-looking-note filter in import (src/extraction/secretGuard.ts).
+ */
+export const ORDINARY_CREDENTIAL_NAMED_ENV: ReadonlySet<string> = new Set([
+  'MVP_ACCESS_TOKEN_TTL_SECONDS',
+  'RENOR_SECRET_GUARD',
+]);
+
+/** True for a name whose value must be recorded as `set`, never as itself. */
+export function isPresenceOnlyEnv(name: string): boolean {
+  if (ORDINARY_CREDENTIAL_NAMED_ENV.has(name)) return false;
+  return CREDENTIAL_PART.test(name) || /_PROJECT$|_CACHE$/.test(name);
+}
 
 /** The configuration a product process's environment carries: its product-namespace variables, credentials and caches by presence only. */
 export function productEnvironment(env: Record<string, string | undefined>): Record<string, string> {
   return Object.fromEntries(Object.entries(env)
     .filter((entry): entry is [string, string] => entry[1] !== undefined
       && PRODUCT_ENV_NAMESPACES.test(entry[0]) && !NOT_PRODUCT_CONFIGURATION.test(entry[0]))
-    .map(([name, value]) => [name, PRESENCE_ONLY_ENV.test(name) ? 'set' : value]));
+    .map(([name, value]) => [name, isPresenceOnlyEnv(name) ? 'set' : value]));
 }
 
 export interface RunRecord {

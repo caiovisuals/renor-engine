@@ -99,6 +99,10 @@ export const PRODUCT_FEATURE_FLAGS = [
   { env: 'RENOR_SESSION_EXPAND_TOKENS', component: 'session-expand-budget' },
   { env: 'RENOR_SESSION_EXPAND_STATEMENT_TOKENS', component: 'session-expand-statement' },
   { env: 'RENOR_SESSION_EXPAND_DOCUMENT_STATEMENT_TOKENS', component: 'session-expand-document-statement' },
+  // The operator's declaration that an OpenAI-compatible endpoint returns a calibrated provider's vectors (retrieval
+  // orchestrator calibratedModelKey, default unset): it arms the ranked expansion on the CLI path the way a hosted
+  // workspace has it, so an arm that sets it is a different arm from its control and is recorded as one.
+  { env: 'RENOR_EMBEDDING_SERVED_BY', component: 'embedding-served-by' },
   // Session router (src/router/sessionRouter.ts, default OFF: off|replace|union) and the two models it calls. The
   // models are recorded because two router arms that differ only in a model are different arms.
   { env: 'RENOR_SESSION_ROUTER', component: 'session-router' },

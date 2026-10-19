@@ -37,6 +37,7 @@ describe('product feature flags (C2–C5 screen arming)', () => {
       'RENOR_DIGEST_MODEL',
       'RENOR_DIGEST_REASONING_EFFORT',
       'RENOR_DIGEST_TOKENS',
+      'RENOR_EMBEDDING_SERVED_BY',
       'RENOR_EVIDENCE_ENUMERATE',
       'RENOR_EVIDENCE_MAX_TOKENS',
       'RENOR_EVIDENCE_MODE',
@@ -80,6 +81,11 @@ describe('product feature flags (C2–C5 screen arming)', () => {
     expect(overrides).toEqual(['RENOR_TYPED_FACTS=1', 'RENOR_QUERY_SCOPED_ROWS=1']);
     // Not the unrelated variable:
     expect(overrides.join()).not.toContain('RENOR_UNRELATED');
+  });
+
+  it('records the declaration that an endpoint serves a calibrated provider, so its arm can never share a control\'s provenance', () => {
+    expect(productFeatureFlagOverrides({ RENOR_EMBEDDING_SERVED_BY: 'vertex' })).toEqual(['RENOR_EMBEDDING_SERVED_BY=vertex']);
+    expect(productFeatureFlagOverrides({ RENOR_EMBEDDING_SERVED_BY: 'vertex' })).not.toEqual(productFeatureFlagOverrides({}));
   });
 
   it('records the session expansion and its budget so two budget arms cannot share provenance', () => {

@@ -35,18 +35,33 @@ function addMonths(date: Date, months: number): Date {
   return out;
 }
 
-function format(date: Date, slashStyle: boolean): string {
+/** A day as the hit's own date style writes it: `2023/05/07 (Sun)` for the benchmark's slash dates, `2023-05-07` otherwise. */
+export function formatDay(date: Date, slashStyle: boolean): string {
   const ymd = slashStyle ? `${date.getUTCFullYear()}/${pad(date.getUTCMonth() + 1)}/${pad(date.getUTCDate())}` : `${date.getUTCFullYear()}-${pad(date.getUTCMonth() + 1)}-${pad(date.getUTCDate())}`;
   return slashStyle ? `${ymd} (${DAY_NAMES[date.getUTCDay()]})` : ymd;
 }
 
-/** The hints for one excerpt: `"three weeks ago" is 2023/05/07 (Sun)`, in the order the phrases appear, each phrase once. */
-export function relativeTimeHints(text: string, sessionDate: string | undefined): string[] {
+/** One time phrase of an excerpt, placed on the calendar. */
+export interface RelativeTimePoint {
+  /** Where the phrase starts in the text. */
+  at: number;
+  /** The phrase as written; the simple ones (yesterday, last week) with their spaces collapsed. */
+  phrase: string;
+  /** The day it names, counted from the session date; the first day of the month or year when only that is named. */
+  date: Date;
+  /** The same date as the hint prints it: a day, or only `2023/04` for "last month" and `2022` for "last year". */
+  value: string;
+  /** How much of `date` the phrase names. */
+  grain: 'day' | 'month' | 'year';
+}
+
+/** The phrases of one excerpt that name a point in time, in the order they appear, each phrase once. */
+export function relativeTimePoints(text: string, sessionDate: string | undefined): RelativeTimePoint[] {
   const ms = sessionDateMs(sessionDate);
   if (!Number.isFinite(ms) || sessionDate === undefined) return [];
   const slashStyle = /^\d{4}\//.test(sessionDate);
   const base = new Date(Math.floor(ms / DAY_MS) * DAY_MS);
-  const found: Array<{ at: number; phrase: string; value: string }> = [];
+  const found: RelativeTimePoint[] = [];
   for (const m of text.matchAll(AGO)) {
     const raw = m[1].toLowerCase();
     const n = raw in NUMBER_WORDS ? NUMBER_WORDS[raw] : Number(raw);
@@ -55,30 +70,38 @@ export function relativeTimeHints(text: string, sessionDate: string | undefined)
       : unit === 'week' ? new Date(base.getTime() - 7 * n * DAY_MS)
         : unit === 'month' ? addMonths(base, -n)
           : addMonths(base, -12 * n);
-    found.push({ at: m.index ?? 0, phrase: m[0], value: format(date, slashStyle) });
+    found.push({ at: m.index ?? 0, phrase: m[0], date, value: formatDay(date, slashStyle), grain: 'day' });
   }
   for (const m of text.matchAll(SIMPLE)) {
     const phrase = m[1].toLowerCase().replace(/\s+/g, ' ');
+    let date: Date;
     let value: string;
-    if (phrase === 'today') value = format(base, slashStyle);
-    else if (phrase === 'yesterday') value = format(new Date(base.getTime() - DAY_MS), slashStyle);
-    else if (phrase === 'last week') value = format(new Date(base.getTime() - 7 * DAY_MS), slashStyle);
-    else if (phrase === 'last month') value = format(addMonths(base, -1), slashStyle).slice(0, slashStyle ? 7 : 7);
-    else if (phrase === 'last year') value = String(base.getUTCFullYear() - 1);
+    let grain: RelativeTimePoint['grain'] = 'day';
+    if (phrase === 'today') { date = base; value = formatDay(date, slashStyle); }
+    else if (phrase === 'yesterday') { date = new Date(base.getTime() - DAY_MS); value = formatDay(date, slashStyle); }
+    else if (phrase === 'last week') { date = new Date(base.getTime() - 7 * DAY_MS); value = formatDay(date, slashStyle); }
+    else if (phrase === 'last month') { date = addMonths(base, -1); value = formatDay(date, slashStyle).slice(0, 7); grain = 'month'; }
+    else if (phrase === 'last year') { date = new Date(Date.UTC(base.getUTCFullYear() - 1, 0, 1)); value = String(base.getUTCFullYear() - 1); grain = 'year'; }
     else {
       const target = WEEKDAYS.indexOf(phrase.slice(5));
       const back = ((base.getUTCDay() - target + 7) % 7) || 7;
-      value = format(new Date(base.getTime() - back * DAY_MS), slashStyle);
+      date = new Date(base.getTime() - back * DAY_MS);
+      value = formatDay(date, slashStyle);
     }
-    found.push({ at: m.index ?? 0, phrase: m[1].replace(/\s+/g, ' '), value });
+    found.push({ at: m.index ?? 0, phrase: m[1].replace(/\s+/g, ' '), date, value, grain });
   }
   const seen = new Set<string>();
   return found.sort((a, b) => a.at - b.at).flatMap(f => {
     const key = f.phrase.toLowerCase();
     if (seen.has(key)) return [];
     seen.add(key);
-    return [`"${f.phrase}" is ${f.value}`];
+    return [f];
   });
+}
+
+/** The hints for one excerpt: `"three weeks ago" is 2023/05/07 (Sun)`, in the order the phrases appear, each phrase once. */
+export function relativeTimeHints(text: string, sessionDate: string | undefined): string[] {
+  return relativeTimePoints(text, sessionDate).map(point => `"${point.phrase}" is ${point.value}`);
 }
 
 /** The excerpt with its hints on one line below it; the text itself is untouched. An excerpt with no hint is returned as it was. */

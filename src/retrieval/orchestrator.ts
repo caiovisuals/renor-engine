@@ -527,6 +527,8 @@ function applySessionDiversity<T extends { notePath: string; chunkId: number; te
  * evidence of a multi-session question sits in a session ranked below five. Measured on the held-out 400 in
  * docs/evals/results/RANKED-EXPANSION-20261011.md. Armed only for a calibrated model because it relies on the
  * cosine's order being meaningful: the lexical eval stub and an unmeasured model keep the expansion above, byte for byte.
+ * An OpenAI-compatible endpoint that returns a calibrated model's vectors is armed by the operator's declaration
+ * (RENOR_EMBEDDING_SERVED_BY, see calibratedModelKey); docs/evals/results/EXPANSION-PATH-ALIGNMENT-20261018.md.
  *
  * Unset is five notes. 0, a value that names no note, a budget that allows nothing or both statement limits admitting
  * nothing is off, and off costs nothing: no statement is prepared and the result is what it was before the expansion
@@ -616,6 +618,29 @@ export function resolveRankedExpansion(env: NodeJS.ProcessEnv = process.env): Ra
     statementTokens: legacy.statementTokens,
     documentStatementTokens: legacy.documentStatementTokens,
   };
+}
+
+/**
+ * The calibrated key (CALIBRATED_BARS) of the embedding model behind a provider, or null when there is none.
+ *
+ * A key names the provider that made the vectors. An OpenAI-compatible endpoint that returns Vertex's gemini-embedding-001
+ * vectors (the benchmark's embedding cache proxy replays them) declares itself `openai:gemini-embedding-001:768`, which is
+ * not calibrated, so it keeps the former expansion where a hosted workspace, which calls Vertex itself, runs the ranked one.
+ * RENOR_EMBEDDING_SERVED_BY (default unset) is the operator's declaration of whose vectors the endpoint returns: `vertex`
+ * there counts the provider as the calibrated model, but only when the key that makes (the declared kind with the provider's
+ * own model and dimensions) is in CALIBRATED_BARS. Any other value, model or size changes nothing, and the declaration is the
+ * operator's word: nothing here checks the vectors. Read here and nowhere else; a hosted workspace is unaffected.
+ */
+export function calibratedModelKey(
+  identity: { kind: string; model: string } | undefined, dimensions: number | undefined, env: NodeJS.ProcessEnv = process.env,
+): string | null {
+  if (!identity) return null;
+  const own = embeddingModelKey(identity.kind, identity.model, dimensions);
+  if (own in CALIBRATED_BARS) return own;
+  const servedBy = (env.RENOR_EMBEDDING_SERVED_BY ?? '').trim().toLowerCase();
+  if (servedBy === '') return null;
+  const declared = embeddingModelKey(servedBy, identity.model, dimensions);
+  return declared in CALIBRATED_BARS ? declared : null;
 }
 
 function sessionExpansionHits(
@@ -1105,9 +1130,8 @@ async function finishContext(read: {
   const expansion = resolveSessionExpand();
   // Ranking by cosine is armed only for an embedding model the product has calibrated (CALIBRATED_BARS): the order
   // of cosines was measured for that model. Any other provider (the lexical eval stub, an unmeasured model) keeps the
-  // former expansion.
-  const rankedExpansion = provider?.identity && embeddingModelKey(provider.identity.kind, provider.identity.model, provider.dimensions) in CALIBRATED_BARS
-    ? resolveRankedExpansion() : null;
+  // former expansion, unless the operator declares that its endpoint serves a calibrated model (calibratedModelKey).
+  const rankedExpansion = calibratedModelKey(provider?.identity, provider?.dimensions) !== null ? resolveRankedExpansion() : null;
   if (expansion) hits = [...hits, ...inReadSnapshot(db, () => sessionExpansionHits(db, hits, expansion, rankedExpansion && queryProbe.queryVector && vectorIndex ? { vectorIndex, queryVector: queryProbe.queryVector, ranked: rankedExpansion } : undefined))];
   // Default-on (S0 78.4%): lay the already-selected window out newest-session-first.
   // Does not replace scoring or change which chunks enter top-K. Opt out: RENOR_NEWEST_FIRST=0.

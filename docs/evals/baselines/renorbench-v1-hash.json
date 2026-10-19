@@ -1,9 +1,9 @@
 {
   "schema": 1,
   "benchmark": "renorbench-v1",
-  "reason": "Refresh the shared evaluator identity after partial-index filename diagnostics changed run-longmemeval-product.ts; clean commit 95f36468 measures identical stored summary values, with no score or floor changes.",
-  "recordedAt": "2026-10-11T14:26:01.220Z",
-  "gitSha": "95f36468b9b4fa81b7fc211e987926ce54c2b18a",
+  "reason": "Re-record on the evaluator hash main has after #686 (src/eval/runManifest.ts lists RENOR_EMBEDDING_SERVED_BY): every metric of this arm is equal to the previous baseline; only evaluatorSha256, gitSha and recordedAt change.",
+  "recordedAt": "2026-10-19T15:24:55.387Z",
+  "gitSha": "f1d34623fb9c38bd4101fe6bf511fabe528c758e",
   "manifest": {
     "benchmark": "renorbench-v1",
     "casesSha256": "dcefabf571d40270f780281f08ecd09be90d5403207c816d0aeaac2d3a0d4060",
@@ -16,7 +16,7 @@
       "qualityEligible": false
     },
     "qualityEligible": false,
-    "evaluatorSha256": "49cd959e53e8b95349f7d40e7f5a49b9e922aa1699be41a1526c75cf07a7f28c",
+    "evaluatorSha256": "c281ad8b629287da8f120bc42e16c518d9b6a655e09a6a98a34029b81734ab1c",
     "chunking": {
       "maxTokens": 400,
       "overlapTokens": 50
