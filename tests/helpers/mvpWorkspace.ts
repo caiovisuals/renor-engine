@@ -1,13 +1,13 @@
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
-import net from 'net';
 import crypto from 'crypto';
 import request from 'supertest';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { loadMvpConfig, type MvpConfig } from '../../src/mvp/config';
-import { startMvpService, MVP_MCP_PATH, type MvpApp } from '../../src/mvp/server';
+import { MVP_MCP_PATH, type MvpApp } from '../../src/mvp/server';
+import { startMvpServiceOnFreePort } from './mvpPort';
 import type { EmbeddingProvider } from '../../src/embeddings/types';
 
 /**
@@ -36,16 +36,7 @@ export function restoreWorkspaceEnv(): void {
   }
 }
 
-export function freePort(): Promise<number> {
-  return new Promise((resolve, reject) => {
-    const srv = net.createServer();
-    srv.listen(0, '127.0.0.1', () => {
-      const port = (srv.address() as net.AddressInfo).port;
-      srv.close(() => resolve(port));
-    });
-    srv.on('error', reject);
-  });
-}
+export { freePort } from './mvpPort';
 
 export async function authorize(app: Parameters<typeof request>[0], clientName = 'workspace-helper'): Promise<string> {
   const redirectUri = 'http://127.0.0.1:1/callback';
@@ -96,19 +87,19 @@ export async function startWorkspace(
 ): Promise<Workspace> {
   const memoryDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mvp-ws-'));
   const authDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mvp-ws-auth-'));
-  const port = await freePort();
-  process.env.MVP_MEMORY_DIR = memoryDir;
-  process.env.MVP_AUTH_STATE_PATH = path.join(authDir, 'clients.json');
-  process.env.MVP_BASE_URL = `http://127.0.0.1:${port}`;
-  process.env.MVP_OWNER_EMAIL = OWNER_EMAIL;
-  process.env.MVP_OWNER_PASSWORD = OWNER_PASSWORD;
-  process.env.MVP_PORT = String(port);
-  process.env.MVP_ALLOWED_CALLBACK_URIS = 'http://127.0.0.1:1/callback';
-  for (const key of ['MVP_HISTORY_DIR', 'MVP_LEDGER_REL', 'MVP_EMBEDDING_PROVIDER', 'EMBEDDING_PROVIDER', 'MVP_DB_PATH']) delete process.env[key];
-  process.env.RENOR_SEARCH_EVIDENCE = '0';
-  process.env.MVP_MCP_JSON = 'false';
-  const config = loadMvpConfig();
-  const service = await startMvpService(config, makeProvider(config));
+  const { started: service, config, port } = await startMvpServiceOnFreePort((port) => {
+    process.env.MVP_MEMORY_DIR = memoryDir;
+    process.env.MVP_AUTH_STATE_PATH = path.join(authDir, 'clients.json');
+    process.env.MVP_BASE_URL = `http://127.0.0.1:${port}`;
+    process.env.MVP_OWNER_EMAIL = OWNER_EMAIL;
+    process.env.MVP_OWNER_PASSWORD = OWNER_PASSWORD;
+    process.env.MVP_PORT = String(port);
+    process.env.MVP_ALLOWED_CALLBACK_URIS = 'http://127.0.0.1:1/callback';
+    for (const key of ['MVP_HISTORY_DIR', 'MVP_LEDGER_REL', 'MVP_EMBEDDING_PROVIDER', 'EMBEDDING_PROVIDER', 'MVP_DB_PATH']) delete process.env[key];
+    process.env.RENOR_SEARCH_EVIDENCE = '0';
+    process.env.MVP_MCP_JSON = 'false';
+    return loadMvpConfig();
+  }, makeProvider);
   const token = await authorize(service.app);
   const clients: Client[] = [];
   const connect = async (): Promise<Client> => {

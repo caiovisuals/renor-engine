@@ -1,9 +1,11 @@
 import crypto from 'crypto';
 import fs from 'fs/promises';
 import path from 'path';
+import { journalLogName } from './journalLog';
 
 /**
- * The import journal: one JSON manifest per applied batch in `.renor-imports/` (hosted.ts writes it and undo_import reads it).
+ * The import journal: one JSON manifest per batch in `.renor-imports/` (hosted.ts writes it and undo_import reads it). While a
+ * batch is applying, its notes are in a sidecar log beside the manifest instead (journalLog.ts).
  * It names every note a batch created, by path, and the batch's label, which is the folder name of those notes. A note that is
  * permanently deleted (purgeRetired) leaves no trace there: its path is a name the owner chose, and the label can say more
  * than the note does.
@@ -21,6 +23,8 @@ async function replaceManifest(file: string, manifest: object): Promise<void> {
   const tmp = `${file}.${crypto.randomUUID()}.tmp`;
   await fs.writeFile(tmp, JSON.stringify(manifest), { flag: 'wx', mode: 0o600 });
   await fs.rename(tmp, file);
+  // A batch that is no longer applying has no log of its own to keep: a log left beside it would still name the paths removed here.
+  await fs.rm(path.join(path.dirname(file), journalLogName(path.basename(file, '.json'))), { force: true }).catch(() => undefined);
 }
 
 /**

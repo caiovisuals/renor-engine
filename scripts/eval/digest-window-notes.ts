@@ -24,6 +24,7 @@ import { OpenAIEmbeddingProvider } from '../../src/embeddings/openai';
 import { validateLongMemRows, type LongMemInstance } from '../../src/eval/longmemeval';
 import { digestIndexedNotes, resolveDigestOptions, type DigestBuildStats } from '../../src/digests/digests';
 import { cliPublicSearch, writeQuestionVault } from './run-longmemeval-product';
+import { windowNotePaths } from './digest-window-paths';
 
 interface CaseSummary {
   id: string;
@@ -81,16 +82,17 @@ async function main(): Promise<void> {
           RENOR_DIGESTS: '0',
         };
         const result = await cliPublicSearch({ query, vaultDir: rendered.vaultDir, dbPath, env, topK: 20, cwd: process.cwd() });
-        const paths = new Set(result.hits.map(hit => hit.notePath).filter(p => !p.startsWith('_renor/')));
+        // The CLI prints a note's path relative to the vault; the index may store it either way, so match both forms.
+        const paths = windowNotePaths(result.hits, rendered.vaultDir);
         const config = { dbPath, vaultPath: rendered.vaultDir, memoryLedger: undefined as unknown as string };
         const options = resolveDigestOptions(config, digestEnv);
         if (!options) throw new Error('digests resolved off');
         const db = openDb(dbPath);
         try {
           const stats = await digestIndexedNotes({ db, config, options, provider, onlyPaths: paths });
-          summaries.push({ id: row.question_id, windowNotes: paths.size, stats });
+          summaries.push({ id: row.question_id, windowNotes: stats.notes, stats });
           if (stats.failed > 0) failed++;
-          process.stderr.write(`[digest-window] ${row.question_id} window=${paths.size} cached=${stats.cached} digested=${stats.digested} failed=${stats.failed} calls=${stats.calls}\n`);
+          process.stderr.write(`[digest-window] ${row.question_id} window=${stats.notes} cached=${stats.cached} digested=${stats.digested} failed=${stats.failed} calls=${stats.calls}\n`);
         } finally {
           db.close();
         }

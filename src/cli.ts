@@ -8,6 +8,7 @@ import { indexVault, MAX_NOTE_BYTES } from "./indexer/pipeline";
 import { startWatcher } from "./watcher/watcher";
 import { stalenessGate, stalenessJsonField } from "./indexer/staleness";
 import { retrieveContext } from "./retrieval/orchestrator";
+import { readerLayoutEnabled, layoutHitsForReader, conversationNoteMatcher } from "./retrieval/readerLayout";
 import { ledgerNoteMatcher, presentLedgerEvents } from "./retrieval/ledgerPresentation";
 import { attachSearchEvidence, searchEvidenceEnabled, EVIDENCE_HIT_PATH } from "./evidence/attach";
 import { createEvidenceExtractor, resolveEvidenceToolOptions } from "./evidence/options";
@@ -60,16 +61,17 @@ async function setup({ serving = false }: { serving?: boolean } = {}) {
     db.close();
     process.exit(1);
   }
-  let provider: EmbeddingProvider;
+  let provider: EmbeddingProvider | undefined;
   if (config.embeddingProvider === "local") {
     provider = new LocalEmbeddingProvider(config.embeddingModel);
   } else if (config.embeddingProvider === "eval-hash") {
     provider = new EvalHashEmbeddingProvider();
-  } else {
+  } else if (config.embeddingProvider === "openai") {
     provider = new OpenAIEmbeddingProvider(config.openaiApiKey!.split(',').map(k => k.trim()).filter(Boolean), config.embeddingModel, config.embeddingBaseURL, config.embeddingDims);
   }
-  const vectorIndex = new VectorIndex(db, provider.dimensions);
-  vectorIndex.initTable();
+  if (!provider) console.error('[embeddings] Semantic search is off; set EMBEDDING_PROVIDER=openai to turn it on.');
+  const vectorIndex = provider ? new VectorIndex(db, provider.dimensions) : undefined;
+  vectorIndex?.initTable();
   const { factExtractor, numericFactExtractor, eventExtractor, preferenceExtractor } =
     buildWritePathExtractors(config);
   return { config, db, provider, vectorIndex, factExtractor, numericFactExtractor, eventExtractor, preferenceExtractor };
@@ -141,6 +143,18 @@ function refuseDigestsWithoutProvider(db: { close(): void }, digests: DigestOpti
   process.exit(1);
 }
 
+/**
+ * RENOR_DIGESTS armed with semantic search off (EMBEDDING_PROVIDER omitted). Digests are written and looked up by their
+ * embedding, cache-only runs included, so with no embedding provider the lane would index and search as if no digest existed.
+ * Same contract as above: an armed flag that cannot run fails the command instead of quietly measuring the control.
+ */
+function refuseDigestsWithoutEmbeddings(db: { close(): void }, digests: DigestOptions | null, provider: EmbeddingProvider | undefined): void {
+  if (!digests || provider) return;
+  console.error('[digests] armed without an embedding provider: RENOR_DIGESTS writes and looks up digests by embedding, so it needs EMBEDDING_PROVIDER (for example openai); semantic search is off, so no digest was built or read');
+  db.close();
+  process.exit(1);
+}
+
 /** Index-time digests. Returns how many notes were left without one (an index error). */
 async function buildDigests(
   db: Parameters<typeof digestIndexedNotes>[0]['db'],
@@ -190,6 +204,7 @@ program
     refuseRouterWithoutProvider(db, router);
     const digests = resolveDigestOptions(config);
     refuseDigestsWithoutProvider(db, digests);
+    refuseDigestsWithoutEmbeddings(db, digests, provider);
     console.log(`Indexing: ${config.vaultPath}`);
     const stats = await indexVault(
       db,
@@ -213,7 +228,7 @@ program
     );
     printNotIndexed(stats.skippedNonUtf8Names, 15, stats.skippedTooLarge);
     const unsummarized = router ? await buildRouterSummaries(db, config, router) : 0;
-    const undigested = digests ? await buildDigests(db, config, digests, provider) : 0;
+    const undigested = digests && provider ? await buildDigests(db, config, digests, provider) : 0;
     db.close();
     // #188: a partial index is not a success. The completion line reports the
     // error count and the process status must agree with it, or automation
@@ -262,11 +277,16 @@ program
     });
     // Write-time digests (RENOR_DIGESTS, default off): null when off, and then nothing here changes. No model call.
     const digestOptions = resolveDigestOptions(config);
-    const digested = digestOptions
+    refuseDigestsWithoutEmbeddings(db, digestOptions, provider);
+    const digested = digestOptions && provider
       ? await attachDigest({ db, query, hits: result.hits, options: digestOptions, provider, isLedgerNote: isLedger })
       : null;
     // The evidence pass read the sources as stored; what is printed is what the user said.
-    const hits = presentLedgerEvents(digested ? digested.hits : result.hits, isLedger);
+    // Laid out for the model that reads it (RENOR_READER_LAYOUT; readerLayout.ts): the hits of a session come as one, and its time phrases are resolved.
+    const presented = presentLedgerEvents(digested ? digested.hits : result.hits, isLedger);
+    const hits = readerLayoutEnabled()
+      ? layoutHitsForReader(presented, { rankedBy: retrieved.rankedBy, isLedger: (p) => isLedger(p) || p === EVIDENCE_HIT_PATH || p === DIGEST_HIT_PATH, isConversation: conversationNoteMatcher(db) })
+      : presented;
     if (opts.json) {
       // Sole stdout content: machine-readable hits with FULL text. This is the
       // public CLI contract consumed by external clients (authoritative
@@ -396,11 +416,12 @@ program
     refuseRouterWithoutProvider(db, router);
     const digests = resolveDigestOptions(config);
     refuseDigestsWithoutProvider(db, digests);
+    refuseDigestsWithoutEmbeddings(db, digests, provider);
     let rebuildErrors = 0;
     try {
       // Clear vector index — drop and recreate
       db.prepare("DROP TABLE IF EXISTS chunk_embeddings").run();
-      vectorIndex.initTable(); // recreates it
+      vectorIndex?.initTable(); // recreates it
       // Clear SQL derived tables atomically
       db.transaction(() => {
         ["facts", "relations", "entities", "chunks", "notes", "applied_ledger_events"].forEach((t) =>
@@ -438,7 +459,7 @@ program
       );
       printNotIndexed(rebuildStats.skippedNonUtf8Names, 17, rebuildStats.skippedTooLarge);
       rebuildErrors = rebuildStats.errors + (router ? await buildRouterSummaries(db, config, router) : 0)
-        + (digests ? await buildDigests(db, config, digests, provider) : 0);
+        + (digests && provider ? await buildDigests(db, config, digests, provider) : 0);
     } catch (err) {
       console.error(
         `[memory] rebuild failed:`,

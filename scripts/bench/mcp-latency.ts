@@ -5,7 +5,7 @@
  * 100 / 1,000 / 10,000 notes plus facts.
  *
  *   npx tsx scripts/bench/mcp-latency.ts [--sizes 100,1000,10000] [--runs 7] [--out result.json] [--label before]
- *       [--embeddings hash|vertex|none] [--dims 768] [--evidence default|off] [--dir <fixtures>] [--profile] [--per-call]
+ *       [--embeddings hash|vertex|cache-only|none] [--dims 768] [--evidence default|off] [--dir <fixtures>] [--profile] [--per-call]
  *       [--shape live | --pad-sections N --facts N --fact-subjects N] [--queries wide] [--tools get_context,search_memory]
  *       [--calls '<regex over tool:label>'] [--cpu-profile out.cpuprofile]
  *   npx tsx scripts/bench/mcp-latency.ts --embeddings vertex --probe-hop 20 [--embed-cache <path>]
@@ -20,6 +20,10 @@
  *           and byte-stable. Needs RENOR_EVAL_VERTEX_* (or GOOGLE_APPLICATION_CREDENTIALS) in the
  *           environment. --probe-hop N times N LIVE query embeddings: the network hop a hosted
  *           workspace pays on every call, reported beside the tool timings and never inside them.
+ *   cache-only  the same Vertex vectors read from --embed-cache and nothing else (src/embeddings/caching.ts
+ *           CacheOnlyVertex): the cache is opened read-only, a text it does not hold is a fatal error, and there
+ *           is no upstream to fall back to, so the tier cannot spend. It measures a fixture that was built
+ *           beforehand (a missing one is not generated); 768 dimensions only.
  *   none    a workspace with no embedding provider: get_context is lifecycle facts + keyword search and
  *           search_memory answers semantic-unavailable (so it is not measured). Uses the hash fixture.
  * No local embedding model is ever loaded.
@@ -48,17 +52,20 @@ import { createMvpApp } from '../../src/mvp/server';
 import { EvalHashEmbeddingProvider } from '../../src/eval/hashEmbedding';
 import { VertexEmbeddingProvider } from '../../src/embeddings/vertex';
 import { collectOllamaKeys } from '../../src/evidence/keyPool';
-import { CachingEmbeddingProvider, resolveEmbeddingCachePath } from '../../src/embeddings/caching';
+import { CachingEmbeddingProvider, CacheOnlyVertex, resolveEmbeddingCachePath } from '../../src/embeddings/caching';
 import type { EmbeddingProvider } from '../../src/embeddings/types';
 import { CpuProfile } from './cpu-profile';
 
+/** `--shape live`: the production workspace's size and shape (measured 2026-10-06 on the hosted workspace: 85 notes, 1,946 chunks, 413 entities, 806 facts). */
+export const LIVE_SHAPE = { notes: 85, padSections: 10, facts: 671, factSubjects: 220 } as const;
+
 export const FROZEN_NOW_MS = Date.UTC(2026, 9, 1, 12, 0, 0);
 const DAY_MS = 86_400_000;
-const SEED = 20260930;
+export const SEED = 20260930;
 /** Spend guard for a Vertex fixture: a 10,000-note corpus is ~4M tokens. */
 const VERTEX_TOKEN_CAP = 12_000_000;
 
-export type Embeddings = 'hash' | 'vertex' | 'none';
+export type Embeddings = 'hash' | 'vertex' | 'cache-only' | 'none';
 
 export interface BenchOptions {
   sizes: number[];
@@ -151,9 +158,9 @@ function sentence(rnd: () => number, n: number): string {
   return s.charAt(0).toUpperCase() + s.slice(1) + '.';
 }
 
-interface Fixture { notes: number; facts: number; seed: number; dims: number; vectors: 'hash' | 'vertex'; padSections?: number; factSubjects?: number }
+export interface Fixture { notes: number; facts: number; seed: number; dims: number; vectors: 'hash' | 'vertex' | 'cache-only'; padSections?: number; factSubjects?: number }
 
-function writeNotes(memoryDir: string, p: Fixture): void {
+export function writeNotes(memoryDir: string, p: Fixture): void {
   const rnd = mulberry32(p.seed);
   for (let i = 0; i < p.notes; i++) {
     const topic = TOPICS[i % TOPICS.length];
@@ -199,7 +206,7 @@ const FACT_PREDICATES = [
   'stack', 'deadline', 'budget', 'cofounder', 'reviewer',
 ];
 
-async function writeFacts(client: Client, p: Fixture): Promise<void> {
+export async function writeFacts(client: Client, p: Fixture): Promise<void> {
   const rnd = mulberry32(p.seed + 1);
   const subjects = factSubjectNames(p.factSubjects ?? 62);
   for (let i = 0; i < p.facts; i++) {
@@ -259,6 +266,11 @@ function openVectors(kind: Embeddings, o: Pick<BenchOptions, 'dims' | 'embedCach
   if (kind === 'hash') {
     return { provider: Object.assign(new EvalHashEmbeddingProvider(), { dimensions: o.dims }), close() {} };
   }
+  if (kind === 'cache-only') {
+    if (!o.embedCache) throw new Error('--embeddings cache-only needs --embed-cache <the cache file to read>');
+    const cache = new CacheOnlyVertex(o.embedCache);
+    return { provider: cache, close: () => cache.close() };
+  }
   const vertex = new VertexEmbeddingProvider({ dimensions: o.dims, maxInputTokens: VERTEX_TOKEN_CAP });
   const cachePath = o.embedCache ?? resolveEmbeddingCachePath();
   if (!cachePath) throw new Error('--embeddings vertex needs a persistent cache: pass --embed-cache or unset RENOR_EVAL_EMBED_CACHE=off');
@@ -279,7 +291,7 @@ function benchConfig(memoryDir: string, authDir: string): MvpConfig {
   return loadMvpConfig();
 }
 
-async function openWorkspace(memoryDir: string, provider: EmbeddingProvider | null, authDir: string) {
+export async function openWorkspace(memoryDir: string, provider: EmbeddingProvider | null, authDir: string) {
   const app = createMvpApp(benchConfig(memoryDir, authDir), provider);
   const [clientT, serverT] = InMemoryTransport.createLinkedPair();
   await app.server.connect(serverT);
@@ -288,18 +300,24 @@ async function openWorkspace(memoryDir: string, provider: EmbeddingProvider | nu
   return { app, client, close: async () => { await client.close(); await app.close(); } };
 }
 
-export async function ensureFixture(o: BenchOptions, notes: number, authDir: string, log: (l: string) => void): Promise<{ memoryDir: string; fixture: Fixture }> {
+/** The fixture an option set asks for, and the directory it lives in: `<dir>/n<notes>[-p<pad>-f<facts>-s<subjects>]-<vectors><dims>`. */
+export function fixtureFor(o: BenchOptions, notes: number): { memoryDir: string; fixture: Fixture } {
   const fixture: Fixture = {
     notes, facts: o.facts ?? Math.max(20, Math.floor(notes / 5)), seed: SEED, dims: o.dims,
-    vectors: o.embeddings === 'vertex' ? 'vertex' : 'hash', // `none` measures the hash fixture with the provider detached
+    vectors: o.embeddings === 'vertex' || o.embeddings === 'cache-only' ? o.embeddings : 'hash', // `none` measures the hash fixture with the provider detached
     ...(o.padSections ? { padSections: o.padSections } : {}),
     ...(o.factSubjects ? { factSubjects: o.factSubjects } : {}),
   };
   const shape = o.padSections || o.facts || o.factSubjects ? `-p${o.padSections ?? 0}-f${fixture.facts}-s${o.factSubjects ?? 62}` : '';
-  const memoryDir = path.join(o.dir, `n${notes}${shape}-${fixture.vectors}${o.dims}`);
+  return { memoryDir: path.join(o.dir, `n${notes}${shape}-${fixture.vectors}${o.dims}`), fixture };
+}
+
+export async function ensureFixture(o: BenchOptions, notes: number, authDir: string, log: (l: string) => void): Promise<{ memoryDir: string; fixture: Fixture }> {
+  const { memoryDir, fixture } = fixtureFor(o, notes);
   const marker = path.join(memoryDir, '.bench-fixture.json');
   const want = JSON.stringify(fixture);
   if (fs.existsSync(marker) && fs.readFileSync(marker, 'utf8') === want) return { memoryDir, fixture };
+  if (o.embeddings === 'cache-only') throw new Error(`--embeddings cache-only measures a fixture built beforehand: ${memoryDir} is missing or was built for other options`);
   fs.rmSync(memoryDir, { recursive: true, force: true });
   fs.mkdirSync(memoryDir, { recursive: true });
   const t0 = performance.now();
@@ -569,6 +587,14 @@ async function measure(memoryDir: string, fixture: Fixture, o: BenchOptions, aut
     // Warm pass, real clock: statement and page caches, lazy init, and (vertex) the first, paid
     // embedding of every query. After it every provider call is a cache hit.
     for (const c of calls) await run(c);
+    // A read that cannot embed its query answers without the semantic lane instead of failing, so a cache-only
+    // run that missed would time a different, cheaper read: refuse it.
+    const assertNoMisses = (): void => {
+      if (vectors.provider instanceof CacheOnlyVertex && vectors.provider.stats.misses > 0) {
+        throw new Error(`cache-only: ${vectors.provider.stats.misses} embedding(s) were not in ${o.embedCache}, so the reads were not the dense reads this tier measures`);
+      }
+    };
+    assertNoMisses();
 
     const wall: Record<string, number[]> = {}, cpu: Record<string, number[]> = {}, thread: Record<string, number[]> = {}, byCall: Record<string, number[]> = {};
     const digests: Record<string, string> = {}, bytes: Record<string, number> = {}, texts: Record<string, string> = {};
@@ -598,6 +624,7 @@ async function measure(memoryDir: string, fixture: Fixture, o: BenchOptions, aut
       Date.now = realNow;
       if (cpuProfile && o.cpuProfile) fs.writeFileSync(o.cpuProfile, JSON.stringify(await cpuProfile.stop()));
     }
+    assertNoMisses();
     const statsOf = (m: Record<string, number[]>) => Object.fromEntries(Object.entries(m).map(([k, v]) => [k, stat(v)]));
     return {
       notes: fixture.notes, facts: fixture.facts,
@@ -743,49 +770,55 @@ export function compare(before: BenchResult[], after: BenchResult[]): { identica
 
 // ---- CLI -----------------------------------------------------------------------------------------
 
-function arg(name: string): string | undefined {
-  const i = process.argv.indexOf(`--${name}`);
-  return i >= 0 ? process.argv[i + 1] : undefined;
+/** What a command line (`--sizes`, `--runs`, ... as in the header) asks runBench for, and where to write the result. */
+export function benchOptionsFromArgs(argv: string[]): { options: BenchOptions; out?: string } {
+  const arg = (name: string): string | undefined => {
+    const i = argv.indexOf(`--${name}`);
+    return i >= 0 ? argv[i + 1] : undefined;
+  };
+  const flag = (name: string): boolean => argv.includes(`--${name}`);
+  const embeddings = (arg('embeddings') ?? 'hash') as Embeddings;
+  if (!['hash', 'vertex', 'cache-only', 'none'].includes(embeddings)) throw new Error('--embeddings must be hash, vertex, cache-only or none');
+  // `--shape live` (LIVE_SHAPE). Individual flags override the preset.
+  const live = arg('shape') === 'live';
+  const num = (name: string, fallback?: number) => (arg(name) !== undefined ? Number(arg(name)) : fallback);
+  const shape = { padSections: num('pad-sections', live ? LIVE_SHAPE.padSections : undefined), facts: num('facts', live ? LIVE_SHAPE.facts : undefined), factSubjects: num('fact-subjects', live ? LIVE_SHAPE.factSubjects : undefined) };
+  if (flag('profile') && arg('cpu-profile')) throw new Error('--profile and --cpu-profile both slow every call: run them separately');
+  return {
+    out: arg('out'),
+    options: {
+      sizes: (arg('sizes') ?? (live ? String(LIVE_SHAPE.notes) : '100,1000,10000')).split(',').map(Number),
+      runs: Number(arg('runs') ?? 7),
+      embeddings,
+      dims: Number(arg('dims') ?? 768),
+      dir: arg('dir') ?? path.join(os.tmpdir(), 'renor-mcp-latency-fixtures'),
+      label: arg('label'),
+      evidence: arg('evidence') === 'off' ? 'off' : 'default',
+      profile: flag('profile'),
+      perCall: flag('per-call'),
+      padSections: shape.padSections, facts: shape.facts, factSubjects: shape.factSubjects,
+      queries: arg('queries') === 'wide' ? 'wide' : 'default',
+      tools: arg('tools')?.split(','),
+      calls: arg('calls') ? new RegExp(arg('calls')!) : undefined,
+      cpuProfile: arg('cpu-profile'),
+      probeHop: arg('probe-hop') ? Number(arg('probe-hop')) : undefined,
+      embedCache: arg('embed-cache'),
+    },
+  };
 }
-const flag = (name: string): boolean => process.argv.includes(`--${name}`);
+
 const say = (line: string): void => { process.stdout.write(line + '\n'); };
 
 async function main(): Promise<void> {
-  if (flag('compare')) {
+  if (process.argv.includes('--compare')) {
     const i = process.argv.indexOf('--compare');
     const load = (list: string) => list.split(',').map(f => JSON.parse(fs.readFileSync(f, 'utf8')) as BenchResult);
     const { identical, lines } = compare(load(process.argv[i + 1]), load(process.argv[i + 2]));
     lines.forEach(say);
     process.exit(identical ? 0 : 1);
   }
-  const embeddings = (arg('embeddings') ?? 'hash') as Embeddings;
-  if (!['hash', 'vertex', 'none'].includes(embeddings)) throw new Error('--embeddings must be hash, vertex or none');
-  const out = arg('out');
-  // `--shape live`: the production workspace's size and shape (measured 2026-10-06 on the hosted workspace:
-  // 85 notes, 1,946 chunks, 413 entities, 806 facts). Individual flags override the preset.
-  const live = arg('shape') === 'live';
-  const num = (name: string, fallback?: number) => (arg(name) !== undefined ? Number(arg(name)) : fallback);
-  const shape = { padSections: num('pad-sections', live ? 10 : undefined), facts: num('facts', live ? 671 : undefined), factSubjects: num('fact-subjects', live ? 220 : undefined) };
-  if (flag('profile') && arg('cpu-profile')) throw new Error('--profile and --cpu-profile both slow every call: run them separately');
-  const result = await runBench({
-    sizes: (arg('sizes') ?? (live ? '85' : '100,1000,10000')).split(',').map(Number),
-    runs: Number(arg('runs') ?? 7),
-    embeddings,
-    dims: Number(arg('dims') ?? 768),
-    dir: arg('dir') ?? path.join(os.tmpdir(), 'renor-mcp-latency-fixtures'),
-    label: arg('label'),
-    evidence: arg('evidence') === 'off' ? 'off' : 'default',
-    profile: flag('profile'),
-    perCall: flag('per-call'),
-    padSections: shape.padSections, facts: shape.facts, factSubjects: shape.factSubjects,
-    queries: arg('queries') === 'wide' ? 'wide' : 'default',
-    tools: arg('tools')?.split(','),
-    calls: arg('calls') ? new RegExp(arg('calls')!) : undefined,
-    cpuProfile: arg('cpu-profile'),
-    probeHop: arg('probe-hop') ? Number(arg('probe-hop')) : undefined,
-    embedCache: arg('embed-cache'),
-    log: say,
-  });
+  const { options, out } = benchOptionsFromArgs(process.argv);
+  const result = await runBench({ ...options, log: say });
   if (out) fs.writeFileSync(out, JSON.stringify(result, null, 2));
 }
 

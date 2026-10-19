@@ -7,7 +7,8 @@ import { VectorIndex } from '../embeddings/vectorIndex';
 import { retrieveContext } from '../retrieval/orchestrator';
 import { lookupEntity } from '../retrieval/entityLookup';
 import { appendDailyMemory } from '../memory/writer';
-import { remember, factsFor, DEFAULT_LEDGER_REL } from '../memory/lifecycle';
+import { remember, factsFor, resolveLedgerPath, DEFAULT_LEDGER_REL } from '../memory/lifecycle';
+import { indexFile } from '../indexer/pipeline';
 import { pickEntityName, pickTopK, quoteFtsQuery, shownPage } from '../retrieval/queryHelpers';
 import { keywordSearch } from '../retrieval/keyword';
 import { clientPath } from '../mvp/engine';
@@ -27,9 +28,9 @@ import { matchingCurrentFactHits } from '../retrieval/factsFirst';
 
 export function createMcpTools(
   db: Database.Database,
-  vectorIndex: VectorIndex,
-  provider: EmbeddingProvider,
-  config: Pick<Config, 'vaultPath' | 'memoryDir' | 'priorityPaths' | 'memoryLedger'>,
+  vectorIndex: VectorIndex | undefined,
+  provider: EmbeddingProvider | undefined,
+  config: Pick<Config, 'vaultPath' | 'memoryDir' | 'priorityPaths' | 'memoryLedger'> & Partial<Pick<Config, 'chunkMaxTokens' | 'chunkOverlapTokens'>>,
   evidence: EvidenceToolOptions = { mode: 'off', model: '', maxSessions: 12, charCap: 6000 }
 ) {
   // Startup configuration, captured once: tool arguments and later env changes cannot rename a connection.
@@ -49,6 +50,26 @@ export function createMcpTools(
   // The ledger is the engine's own record, not a memory: no read tool returns its header or the markup of its records.
   const vault = { memoryDir: config.vaultPath, ledgerRelPath: config.memoryLedger ?? DEFAULT_LEDGER_REL };
   const isLedger = ledgerNoteMatcher(vault);
+
+  // A save writes a file (the day's note, or the ledger) and nothing else, so search and keyword would not find it until
+  // `renor index` ran again. Index the file just written, cut the way `renor index` cuts it, as the hosted save does.
+  // The memory is already saved, so a failed refresh is said in the reply instead of failing the save.
+  const indexSaved = async (file: string): Promise<{ warning: string; detail: string } | null> => {
+    try {
+      const maxTokens = config.chunkMaxTokens ?? 400;
+      await indexFile(db, file, {
+        embeddingProvider: provider,
+        vectorIndex,
+        // The defaults of loadConfig (CHUNK_MAX_TOKENS, CHUNK_OVERLAP_TOKENS): the chunker's own default overlap is 0.
+        // A default overlap stays below a maximum the caller named, as loadConfig requires of the pair.
+        chunkOptions: { maxTokens, overlapTokens: config.chunkOverlapTokens ?? Math.min(50, maxTokens - 1) },
+      });
+      return null;
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err);
+      return { warning: 'memory-saved-but-index-refresh-failed', detail: detail.slice(0, 300) };
+    }
+  };
 
   return {
     ...hive,
@@ -157,7 +178,12 @@ export function createMcpTools(
 
     /** The principal durable-memory verb: ledger-first, supersedes the current fact for the same subject+predicate. Returns a receipt. */
     async remember_fact(args: { subject: string; predicate: string; object: string; source?: string }) {
-      return remember(db, config.vaultPath, config.memoryLedger ?? DEFAULT_LEDGER_REL, { ...args, source: identity ?? undefined });
+      const ledgerRel = config.memoryLedger ?? DEFAULT_LEDGER_REL;
+      const receipt = await remember(db, config.vaultPath, ledgerRel, { ...args, source: identity ?? undefined });
+      // Nothing was written when the fact was already current, as the hosted save skips its refresh.
+      if (receipt.action === 'nochange') return receipt;
+      const failed = await indexSaved(resolveLedgerPath(config.vaultPath, ledgerRel));
+      return failed ? { ...receipt, ...failed } : receipt;
     },
 
     async status(_args: {}) {
@@ -175,7 +201,8 @@ export function createMcpTools(
       const date = args.date ?? new Date().toISOString().substring(0, 10);
       const source = identity ?? 'mcp';
       const filePath = await appendDailyMemory(config.vaultPath, date, { text: args.text, source }, config.memoryDir);
-      return { ok: true, path: filePath };
+      const failed = await indexSaved(filePath);
+      return { ok: true, path: filePath, ...failed };
     },
   };
 }
@@ -353,8 +380,8 @@ export function registerMcpHandlers(server: Server, tools: ReturnType<typeof cre
 
 export async function startMcpServer(
   db: Database.Database,
-  vectorIndex: VectorIndex,
-  provider: EmbeddingProvider,
+  vectorIndex: VectorIndex | undefined,
+  provider: EmbeddingProvider | undefined,
   config: Config
 ) {
   const server = new Server({ name: 'renor', version: '1.0.0' }, { capabilities: { tools: {} } });

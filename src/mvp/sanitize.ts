@@ -40,7 +40,11 @@ const OUTPUT_INVISIBLE = new RegExp(
   'gu',
 );
 
+/** A text of printable ASCII alone holds none of the characters above: found by a plain character class, not by the Unicode properties. */
+const PRINTABLE_ASCII = /^[\x20-\x7e]*$/;
+
 export function escapeInvisibleControls(text: string): string {
+  if (PRINTABLE_ASCII.test(text)) return text;
   return text.replace(OUTPUT_INVISIBLE, ch =>
     Array.from({ length: ch.length }, (_, i) => `\\u${ch.charCodeAt(i).toString(16).padStart(4, '0')}`).join(''));
 }

@@ -10,8 +10,10 @@ export default defineConfig({
     // Every worker gets the backstop that kills process groups a suite left behind when the
     // runner is signalled (gate timeout, Ctrl-C) — the per-file afterEach cannot run in that case.
     setupFiles: ['tests/setup/childTreeBackstop.ts'],
-    // Compile the tree under test first; then the run fails if any child this run started is still
-    // alive once the workers have exited.
-    globalSetup: ['tests/globalSetup.ts', 'tests/setup/orphanGuard.ts'],
+    // Scratch first: a temp directory on a disk moves to RAM when RAM can spare the room, so a run
+    // does not write its fixtures to the SSD (tests/setup/ramScratch.ts). Then compile the tree
+    // under test; then the run fails if any child this run started is still alive once the
+    // workers have exited.
+    globalSetup: ['tests/setup/ramScratch.ts', 'tests/globalSetup.ts', 'tests/setup/orphanGuard.ts'],
   },
 });

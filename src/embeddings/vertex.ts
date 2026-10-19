@@ -205,7 +205,8 @@ export class VertexEmbeddingProvider implements EmbeddingProvider {
     }
     if (!response.ok) {
       const bodyText = await response.text();
-      throw new Error(`Vertex predict failed (${response.status}): ${bodyText.slice(0, 400)}`);
+      // The status travels with the error (the message is unchanged): a 400 names an input the service refuses.
+      throw Object.assign(new Error(`Vertex predict failed (${response.status}): ${bodyText.slice(0, 400)}`), { status: response.status });
     }
     const data = await response.json() as {
       predictions?: Array<{ embeddings?: { values?: number[]; statistics?: { token_count?: number } } }>;

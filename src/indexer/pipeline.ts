@@ -4,6 +4,7 @@ import { constants as fsConstants } from 'fs';
 import { createHash } from 'crypto';
 import { isUtf8 } from 'buffer';
 import Database from 'better-sqlite3';
+import { prepareOnce } from '../db/statements';
 import { hashContent } from './hasher';
 import { noteContentHash } from './dailyEntries';
 import { parseNoteDetailed, wikilinkTargets, wikilinksSettled, type ParsedNote } from './parser';
@@ -60,6 +61,12 @@ export interface IndexOptions {
   embedBudgetMs?: number;
   vectorIndex?: {
     upsert(id: number, embedding: number[]): void;
+    /**
+     * The vector of a chunk this pass has just written, which usually has no stored vector yet: the same rows as `upsert`,
+     * without the delete it runs first. If a background job stored one meanwhile, the insert falls back to `upsert` (see
+     * `VectorIndex.insertNew`). Optional: without it `upsert` is used.
+     */
+    insertNew?(id: number, embedding: number[]): void;
     delete(id: number): void;
     /**
      * Give chunk `toId` the stored vector of chunk `fromId`, byte for byte; false if `fromId` has
@@ -229,30 +236,106 @@ function upsertNoteRow(
 const asciiLower = (s: string): string => s.replace(/[A-Z]/g, c => String.fromCharCode(c.charCodeAt(0) + 32));
 
 /**
- * The entity each wikilink points at, keyed by the link with its ASCII letters lowercased, in ONE pass over the entities.
- * A link names the entity whose note's path ends in `/<link>.md` or whose name is the link (ASCII case-insensitive), and
- * where several do, the one with the lowest id. That is what a query per link with `path LIKE '%/<link>.md' OR name = ?`
- * answered, but a leading wildcard cannot use an index, so that cost a scan of every note per distinct link: a 61 KB note
- * of 7,000 links took 22 s in a 2,000-note vault. A link nothing names has no entry.
+ * The entity each wikilink points at, keyed by the link with its ASCII letters lowercased. A link names the entity whose
+ * note's path ends in `/<link>.md` or whose name is the link (ASCII case-insensitive), and where several do, the one with
+ * the lowest id. That is what a query per link with `path LIKE '%/<link>.md' OR name = ?` answered, but a leading wildcard
+ * cannot use an index, so that cost a scan of every note per distinct link: a 61 KB note of 7,000 links took 22 s in a
+ * 2,000-note vault. A link nothing names has no entry. The claims are kept (see claimsOf), so a note does not scan them.
  */
 export function resolveWikilinks(db: Database.Database, links: string[]): Map<string, number> {
   const wanted = new Set(links.map(asciiLower));
   const found = new Map<string, number>();
   if (wanted.size === 0) return found;
+  const byKey = claimsOf(db);
+  for (const key of wanted) {
+    const ids = byKey.get(key);
+    if (ids !== undefined) found.set(key, ids[0]);
+  }
+  return found;
+}
+
+/** The keys an entity answers to: its name, and each path below its note's folder (see resolveWikilinks). */
+function claimKeysOf(name: string, path: string): string[] {
+  const keys = [asciiLower(name)];
+  const lowerPath = asciiLower(path);
+  if (lowerPath.endsWith('.md')) {
+    const stem = lowerPath.slice(0, -3);
+    for (let at = stem.indexOf('/'); at !== -1; at = stem.indexOf('/', at + 1)) keys.push(stem.slice(at + 1));
+  }
+  return keys;
+}
+
+/**
+ * What resolveWikilinks reads, per database: each claimed key with the ids that claim it, lowest first. It is built from one
+ * scan of the entities, then followed as rebuildNoteRows deletes and inserts a note's entity, so a pass over N notes does not
+ * scan N entities for each note (that scan was most of an index pass's time). The claims are trusted only while the entities
+ * are the ones they were built from: the newest entity id and their count, which an insert or a delete changes (an entity is
+ * never updated, and an id is never reused). Any other writer of entities changes that fingerprint, and the claims are read
+ * again in full.
+ */
+interface Claims { fingerprint: string; byKey: Map<string, number[]> }
+const claimsByDb = new WeakMap<Database.Database, Claims>();
+
+function entityFingerprint(db: Database.Database): string {
+  return prepareOnce(db, "SELECT COALESCE(MAX(id), 0) || '|' || COUNT(*) FROM entities").pluck().get() as string;
+}
+
+function addClaim(byKey: Map<string, number[]>, key: string, id: number): void {
+  const ids = byKey.get(key);
+  // Ids arrive in ascending order (a new entity is the newest), so the last one is the only one this id can repeat.
+  if (ids === undefined) byKey.set(key, [id]);
+  else if (ids[ids.length - 1] !== id) ids.push(id);
+}
+
+function dropClaim(byKey: Map<string, number[]>, key: string, id: number): void {
+  const ids = byKey.get(key);
+  if (ids === undefined) return;
+  const at = ids.indexOf(id);
+  if (at !== -1) ids.splice(at, 1);
+  if (ids.length === 0) byKey.delete(key);
+}
+
+function claimsOf(db: Database.Database): Map<string, number[]> {
+  const fingerprint = entityFingerprint(db);
+  const held = claimsByDb.get(db);
+  if (held !== undefined && held.fingerprint === fingerprint) return held.byKey;
+  const byKey = new Map<string, number[]>();
   const rows = db.prepare(
     'SELECT e.id AS id, e.canonical_name AS name, n.path AS path FROM entities e JOIN notes n ON e.source_note = n.path ORDER BY e.id'
   ).iterate() as IterableIterator<{ id: number; name: string; path: string }>;
   for (const row of rows) {
-    const claim = (key: string) => { if (wanted.has(key) && !found.has(key)) found.set(key, row.id); };
-    claim(asciiLower(row.name));
-    const lowerPath = asciiLower(row.path);
-    if (lowerPath.endsWith('.md')) {
-      const stem = lowerPath.slice(0, -3);
-      for (let at = stem.indexOf('/'); at !== -1; at = stem.indexOf('/', at + 1)) claim(stem.slice(at + 1));
-    }
-    if (found.size === wanted.size) break;
+    for (const key of claimKeysOf(row.name, row.path)) addClaim(byKey, key, row.id);
   }
-  return found;
+  claimsByDb.set(db, { fingerprint, byKey });
+  return byKey;
+}
+
+/** The entity rows of one note, as the claims read them (joined to their note, as resolveWikilinks joins them). */
+function entityRowsOf(db: Database.Database, filePath: string): Array<{ id: number; name: string; path: string }> {
+  return prepareOnce(db, 'SELECT e.id AS id, e.canonical_name AS name, n.path AS path FROM entities e JOIN notes n ON e.source_note = n.path WHERE e.source_note = ?')
+    .all(filePath) as Array<{ id: number; name: string; path: string }>;
+}
+
+/**
+ * Follows one note's entity change (rebuildNoteRows: its old entity deleted, its new one inserted): what the old rows claimed
+ * is dropped and what the new rows claim is added, if the claims were current before the change. If they were not, they are
+ * dropped and read again on the next resolve.
+ */
+function followEntityChange(
+  db: Database.Database,
+  fingerprintBefore: string,
+  removed: Array<{ id: number; name: string; path: string }>,
+  added: Array<{ id: number; name: string; path: string }>,
+): void {
+  const held = claimsByDb.get(db);
+  if (held === undefined) return;
+  if (held.fingerprint !== fingerprintBefore) {
+    claimsByDb.delete(db);
+    return;
+  }
+  for (const row of removed) for (const key of claimKeysOf(row.name, row.path)) dropClaim(held.byKey, key, row.id);
+  for (const row of added) for (const key of claimKeysOf(row.name, row.path)) addClaim(held.byKey, key, row.id);
+  held.fingerprint = entityFingerprint(db);
 }
 
 /** A note's entity, frontmatter facts and wikilink relations, written again from its parse. Returns the entity's id. */
@@ -270,7 +353,9 @@ function rebuildNoteRows(
   db.prepare(`INSERT INTO note_index_clock (scope, observed_at) VALUES ('global', ?)
     ON CONFLICT(scope) DO UPDATE SET observed_at = MAX(note_index_clock.observed_at, excluded.observed_at)`)
     .run(now);
-  // 10. Extract entities — delete old, insert new
+  // 10. Extract entities — delete old, insert new (the wikilink claims follow the change, see followEntityChange)
+  const fingerprintBefore = entityFingerprint(db);
+  const removedEntities = entityRowsOf(db, filePath);
   db.prepare('DELETE FROM entities WHERE source_note = ?').run(filePath);
 
   const rawAliases = note.frontmatter.aliases;
@@ -296,6 +381,8 @@ function rebuildNoteRows(
     confidence: 1.0,
     updatedAt: now,
   }) as { id: number };
+
+  followEntityChange(db, fingerprintBefore, removedEntities, entityRowsOf(db, filePath));
 
   // 11. Extract facts — delete old, insert new
   db.prepare('DELETE FROM facts WHERE source_path = ?').run(filePath);
@@ -401,7 +488,8 @@ async function storeVectors(
 
       for (let i = 0; i < toEmbed.length; i++) {
         if (embeddings[i]) {
-          vectorIndex.upsert(toEmbed[i].id, embeddings[i]);
+          if (vectorIndex.insertNew) vectorIndex.insertNew(toEmbed[i].id, embeddings[i]);
+          else vectorIndex.upsert(toEmbed[i].id, embeddings[i]);
         }
       }
     }

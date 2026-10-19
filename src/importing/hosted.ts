@@ -14,6 +14,7 @@ import { assertNoUnstorableControls } from '../memory/controls';
 import { SecretRefusedError } from '../extraction/secretGuard';
 import { refusal } from '../toolRefusal';
 import { IMPORT_JOURNAL_DIR } from './forgetImported';
+import { JournalLog, journalLogName, readJournalLog, removeJournalLog } from './journalLog';
 
 // Fits the existing 1 MiB HTTP ceiling even with JSON escaping. Count UTF-8
 // bytes, including paths, before parsing/selection. Refuse rather than slice.
@@ -129,6 +130,10 @@ function journalPath(ctx: MemoryMapContext, batchId: string): string {
   } catch (err) { if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err; }
   return target;
 }
+/** The sidecar log of a batch, beside its manifest (journalLog.ts). */
+function journalLogPath(ctx: MemoryMapContext, batchId: string): string {
+  return path.join(path.dirname(journalPath(ctx, batchId)), journalLogName(batchId));
+}
 function writeJournal(ctx: MemoryMapContext, manifest: Manifest) {
   const target = journalPath(ctx, manifest.batchId);
   const tmp = `${target}.${crypto.randomUUID()}.tmp`;
@@ -141,6 +146,8 @@ function writeJournal(ctx: MemoryMapContext, manifest: Manifest) {
     fs.closeSync(fd);
   }
   fs.renameSync(tmp, target);
+  // A manifest that is no longer applying holds every note, so the batch's log is only a duplicate of it now.
+  if (manifest.state !== 'applying') removeJournalLog(path.join(path.dirname(target), journalLogName(manifest.batchId)));
 }
 function readJournal(ctx: MemoryMapContext, batchId: string): Manifest | undefined {
   try { return JSON.parse(fs.readFileSync(journalPath(ctx, batchId), 'utf8')) as Manifest; }
@@ -228,25 +235,28 @@ export function applyHostedImport(ctx: MemoryMapContext, batchId: string) {
     const manifest: Manifest = { batchId, state: 'applying', created: [], reasserted: [] };
     writeJournal(ctx, manifest);
     state(ctx.db).previews.delete(batchId);
+    // Each note is logged as it is journalled (journalLog.ts); the manifest is rewritten in full once, when the batch ends.
+    const log = new JournalLog(journalLogPath(ctx, batchId));
     try {
       const result = await applyImportPlan(preview.plan, preview.bundle, {
         memoryDir: ctx.memoryDir, dbPath: ctx.db.name, ledgerRelPath: ctx.ledgerRelPath,
         onNoteCreated(note) {
           manifest.created.push({ relPath: note.relPath, hash: note.contentHash });
-          writeJournal(ctx, manifest);
+          log.append({ list: 'created', relPath: note.relPath, hash: note.contentHash });
         },
         onNoteUnchanged(note) {
           manifest.reasserted!.push({ relPath: note.relPath, hash: note.contentHash });
-          writeJournal(ctx, manifest);
+          log.append({ list: 'reasserted', relPath: note.relPath, hash: note.contentHash });
         },
       });
+      log.close();
       manifest.result = result;
       manifest.state = 'applied';
       writeJournal(ctx, manifest);
       return { ok: true, batchId, ...result, recall: ctx.indexOptions.embeddingProvider && result.indexRows.chunksInserted > 0
         ? 'Keyword recall is ready through search_text. The new notes are embedded in the background: search by meaning finds them once memory_status says semantic: true. No structured facts were generated.'
         : 'Keyword recall is ready through search_text; no embeddings or structured facts were generated.' };
-    } catch (err) { manifest.state = 'failed'; writeJournal(ctx, manifest); throw err; }
+    } catch (err) { log.close(); manifest.state = 'failed'; writeJournal(ctx, manifest); throw err; }
   });
 }
 // The owner changed what is on disk since the import, or the secret guard will not move the note (it stays live):
@@ -274,6 +284,18 @@ export function undoHostedImport(ctx: MemoryMapContext, batchId: string) {
   return serial(ctx.db, async () => {
     const manifest = readJournal(ctx, batchId);
     if (!manifest) throw refusal('batch_not_found', 'No applied batch has this batchId: it was only previewed (never applied), or it belongs to another workspace. undo_import only reverses an applied batch.');
+    // A batch that crashed while applying keeps its notes in its log, not its manifest (journalLog.ts). They move into the
+    // manifest before anything is undone, and the batch is then a failed one whose manifest is whole. A batch with no log
+    // is left as it is: an older engine wrote its notes into the manifest itself.
+    if (manifest.state === 'applying') {
+      const logged = readJournalLog(journalLogPath(ctx, batchId));
+      if (logged) {
+        manifest.created = logged.filter(entry => entry.list === 'created').map(({ relPath, hash }) => ({ relPath, hash }));
+        manifest.reasserted = logged.filter(entry => entry.list === 'reasserted').map(({ relPath, hash }) => ({ relPath, hash }));
+        manifest.state = 'failed';
+        writeJournal(ctx, manifest);
+      }
+    }
     const preserved: string[] = [];
     const preservedReasons: Record<string, string> = {};
     let retired = 0;

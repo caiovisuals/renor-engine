@@ -1,9 +1,9 @@
 {
   "schema": 1,
   "benchmark": "renorbench-v2-product",
-  "reason": "Refresh the shared evaluator identity after partial-index filename diagnostics changed run-longmemeval-product.ts; clean commit 95f36468 measures identical stored summary values, with no score or floor changes.",
-  "recordedAt": "2026-10-11T14:26:04.146Z",
-  "gitSha": "95f36468b9b4fa81b7fc211e987926ce54c2b18a",
+  "reason": "Re-record after #645 (reader layout for conversation replies): a conversation's chunks on one date now come as one hit, so the replies cost fewer tokens (mean 6026.9195 to 3086.931, p95 9157 to 4123); no quality metric or verdict rate moved.",
+  "recordedAt": "2026-10-18T21:23:42.858Z",
+  "gitSha": "44192c99cba19c8b97311f4f73dee0db060a52e3",
   "manifest": {
     "benchmark": "renorbench-v2-product",
     "casesSha256": "104079aba16672ec96b866572ce5f2578281cc2b68c5890f929dfceb5e9247c6",
@@ -54,8 +54,8 @@
       "verdictRelevantRate": 1,
       "verdictAbstainRate": 1,
       "verdictMissingCases": 0,
-      "meanReplyTokens": 6026.9195,
-      "p95ReplyTokens": 9157
+      "meanReplyTokens": 3086.931,
+      "p95ReplyTokens": 4123
     },
     "byCategory": {
       "session_detail": {
@@ -72,8 +72,8 @@
         "verdictRelevantRate": 1,
         "verdictAbstainRate": null,
         "verdictMissingCases": 0,
-        "meanReplyTokens": 7699.05,
-        "p95ReplyTokens": 9157
+        "meanReplyTokens": 3592.65,
+        "p95ReplyTokens": 4123
       },
       "knowledge_update": {
         "cases": 27,
@@ -89,8 +89,8 @@
         "verdictRelevantRate": 1,
         "verdictAbstainRate": null,
         "verdictMissingCases": 0,
-        "meanReplyTokens": 3647.4074,
-        "p95ReplyTokens": 6269
+        "meanReplyTokens": 2410.7778,
+        "p95ReplyTokens": 3685
       },
       "abstention": {
         "cases": 20,
@@ -106,8 +106,8 @@
         "verdictRelevantRate": null,
         "verdictAbstainRate": 1,
         "verdictMissingCases": 0,
-        "meanReplyTokens": 5895,
-        "p95ReplyTokens": 9216
+        "meanReplyTokens": 2988.3,
+        "p95ReplyTokens": 4101
       }
     }
   }

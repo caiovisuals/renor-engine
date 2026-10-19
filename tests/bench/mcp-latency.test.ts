@@ -1,6 +1,7 @@
 import fs from 'fs';
+import path from 'path';
 import { describe, it, expect } from 'vitest';
-import { runBench, compare, stat, withBenchEnv, type BenchOptions, type BenchResult } from '../../scripts/bench/mcp-latency';
+import { runBench, compare, stat, withBenchEnv, benchOptionsFromArgs, fixtureFor, LIVE_SHAPE, type BenchOptions, type BenchResult } from '../../scripts/bench/mcp-latency';
 import { tmpPath } from '../helpers/tmpPath';
 
 /**
@@ -137,6 +138,37 @@ describe('mcp latency bench', () => {
       for (const [k, v] of Object.entries(before)) { if (v === undefined) delete process.env[k]; else process.env[k] = v; }
     }
   });
+
+  it('reads a command line into the options, with the live shape as a preset that single flags override', () => {
+    const { options: all, out } = benchOptionsFromArgs([
+      'scripts/bench/mcp-latency.ts', '--sizes', '85,100', '--runs', '3', '--embeddings', 'cache-only', '--embed-cache', '/c.db', '--dir', '/d', '--out', '/o.json',
+      '--label', 'x', '--shape', 'live', '--facts', '12', '--queries', 'wide', '--tools', 'get_context,search_memory', '--calls', ':scoped$', '--evidence', 'off', '--per-call',
+    ]);
+    expect(out).toBe('/o.json');
+    expect(all).toMatchObject({
+      sizes: [85, 100], runs: 3, embeddings: 'cache-only', embedCache: '/c.db', dir: '/d', label: 'x', dims: 768, evidence: 'off', perCall: true, profile: false, queries: 'wide',
+      padSections: LIVE_SHAPE.padSections, facts: 12, factSubjects: LIVE_SHAPE.factSubjects, tools: ['get_context', 'search_memory'],
+    });
+    expect(all.calls).toEqual(/:scoped$/);
+
+    expect(benchOptionsFromArgs([]).options).toMatchObject({ sizes: [100, 1000, 10000], runs: 7, embeddings: 'hash', dims: 768, evidence: 'default', queries: 'default', perCall: false });
+    expect(benchOptionsFromArgs(['--shape', 'live']).options).toMatchObject({ sizes: [LIVE_SHAPE.notes], padSections: 10, facts: 671, factSubjects: 220 });
+    expect(() => benchOptionsFromArgs(['--embeddings', 'local'])).toThrow(/--embeddings must be hash, vertex, cache-only or none/);
+    expect(() => benchOptionsFromArgs(['--profile', '--cpu-profile', 'x.cpuprofile'])).toThrow(/run them separately/);
+  });
+
+  it('measures with the cache-only tier only what exists: it makes no fixture and no cache, and it names what is missing', async () => {
+    const o = options({ dir: tmpPath('bench-cache-only'), embeddings: 'cache-only', dims: 768, runs: 1 });
+    await expect(runBench(o)).rejects.toThrow(/measures a fixture built beforehand/);
+    const { memoryDir, fixture } = fixtureFor(o, 24);
+    expect(path.basename(memoryDir)).toBe('n24-cache-only768');
+    fs.mkdirSync(memoryDir, { recursive: true });
+    fs.writeFileSync(path.join(memoryDir, '.bench-fixture.json'), JSON.stringify(fixture));
+    await expect(runBench(o)).rejects.toThrow(/needs --embed-cache/);
+    const missing = tmpPath('no-such-cache.db');
+    await expect(runBench({ ...o, embedCache: missing })).rejects.toThrow();
+    expect(fs.existsSync(missing)).toBe(false);
+  }, 60_000);
 
   it('summarises with nearest-rank median and p95', () => {
     const s = stat([10, 1, 9, 2, 8, 3, 7, 4, 6, 5]);

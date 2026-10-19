@@ -24,7 +24,7 @@ import { CALIBRATED_BAR, CalibratedIdentityProvider } from '../helpers/calibrate
 const ENV_KEYS = [
   'MVP_MEMORY_DIR', 'MVP_AUTH_STATE_PATH', 'MVP_BASE_URL', 'MVP_OWNER_EMAIL', 'MVP_OWNER_PASSWORD',
   'MVP_EMBEDDING_PROVIDER', 'EMBEDDING_PROVIDER', 'MVP_HISTORY_DIR', 'MVP_LEDGER_REL',
-  'RENOR_SEARCH_HIT_FLOOR', 'RENOR_CONTEXT_RELEVANCE', 'RENOR_CONTEXT_RELEVANCE_MIN', 'RENOR_SEARCH_EVIDENCE', 'RENOR_READ_HONESTY',
+  'RENOR_SEARCH_HIT_FLOOR', 'RENOR_CONTEXT_RELEVANCE', 'RENOR_CONTEXT_RELEVANCE_MIN', 'RENOR_SEARCH_EVIDENCE', 'RENOR_READ_HONESTY', 'RENOR_READER_LAYOUT',
 ];
 const savedEnv = Object.fromEntries(ENV_KEYS.map(key => [key, process.env[key]]));
 const cleanups: Array<() => Promise<void>> = [];
@@ -311,8 +311,11 @@ describe('on the pages the RenorBench dev questions get', () => {
   // most of a page), which a floor must follow to their notes rather than judge.
   for (const suite of ['v1', 'v2'] as const) {
     it(`${suite}: a floor leaves the page at 0 less the hits below it and the statements of a note that lost every match`, async () => {
+      // The floor judges chunks, and the reader layout (readerLayout.ts) merges a session's chunks after it has: this test
+      // compares pages chunk by chunk, so it reads them laid out as the floor leaves them.
       const { populate, questions } = renorBench(suite);
       const { call } = await serve(new CalibratedIdentityProvider(), populate);
+      process.env.RENOR_READER_LAYOUT = '0'; // after serve(), which clears the keys above
       let expansionKept = 0;
       let expansionLeftOut = 0;
       let foundLeftOut = 0;

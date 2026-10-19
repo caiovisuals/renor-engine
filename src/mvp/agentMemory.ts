@@ -28,10 +28,12 @@ import {
   type Provenance,
 } from '../context/readHonesty';
 import { DEFAULT_LEDGER_REL } from '../memory/lifecycle';
+import { writerConflictLines } from '../memory/writerConflicts';
 import { ledgerEventIds } from '../retrieval/ledgerLiveness';
-import { ledgerNoteMatcher } from '../retrieval/ledgerPresentation';
+import { ledgerNoteMatcher, type LedgerRecordCache } from '../retrieval/ledgerPresentation';
 import { atomSequence, atoms, findCurrentFacts, recentCurrentFacts, words, type CurrentFact } from '../memory/factTerms';
 import { namedConflicts } from '../memory/factConflicts';
+import { inReadSnapshot } from '../db/readCache';
 import { prepareOnce } from '../db/statements';
 import { assessQueryRelevance, CALIBRATED_BARS, contextRelevanceEnabled, renderFactForRelevance, resolveRelevanceBar, similaritiesTo, type ContextRelevance } from './contextRelevance';
 import type { RetrievalProbe } from '../retrieval/semantic';
@@ -71,6 +73,8 @@ export interface AgentContextFact {
   untrusted?: true;
   /** Where this fact came from and when it was last verified (LANE 3, flag-gated). */
   provenance?: Provenance;
+  /** Set on a current fact that replaced a value another writer saved, until that writer saves it again (memory/writerConflicts.ts). */
+  writerConflict?: string;
 }
 
 /** Reserved synthetic note path owning lifecycle entities (mirrors lifecycle.ts). */
@@ -224,17 +228,74 @@ export function wordStems(wordList: readonly string[]): string[] {
 }
 
 /**
+ * The words a query looks facts up by, and the same with two neighbouring words joined: where ranking and scoring both
+ * start. Ranking scores every candidate against one query, so the words are worked out once, not once per fact.
+ */
+const FACT_SEARCH_TERMS_MAX = 8;
+const factSearchTermsHeld = new Map<string, string[]>();
+function factSearchTerms(query: string): string[] {
+  const held = factSearchTermsHeld.get(query);
+  if (held) return held;
+  const terms = [...new Set([...factQueryTerms(query), ...joinedWords(query)])];
+  if (factSearchTermsHeld.size >= FACT_SEARCH_TERMS_MAX) factSearchTermsHeld.delete(factSearchTermsHeld.keys().next().value as string);
+  factSearchTermsHeld.set(query, terms);
+  return terms;
+}
+
+/**
+ * Stems of one field of a fact (its subject, predicate, object or saved statement words). The text is the whole input.
+ * A read ranks a few dozen candidates and then scores each of them again, so a field is stemmed once per read, not twice
+ * per fact and word; a subject or predicate that many facts share costs one stemming for all of them. A few hundred
+ * fields are kept: the working set of one read, not of the workspace.
+ */
+const FIELD_STEMS_MAX = 256;
+/** A field longer than this is stemmed again each time rather than held: one long object would take the room of dozens. */
+const FIELD_STEMS_MAX_CHARS = 1024;
+const fieldStems = new Map<string, Set<string>>();
+const statementWordStems = new Map<string, Set<string>>();
+function stemsOfField(text: string): Set<string> {
+  const held = fieldStems.get(text);
+  if (held) return held;
+  const stems = new Set(wordStems(atoms(text)));
+  if (text.length <= FIELD_STEMS_MAX_CHARS) {
+    if (fieldStems.size >= FIELD_STEMS_MAX) fieldStems.delete(fieldStems.keys().next().value as string);
+    fieldStems.set(text, stems);
+  }
+  return stems;
+}
+
+/** The stems of the words a fact's saved statement was stored with (`statementTerms`: atoms joined by one space). */
+function stemsOfStatementWords(statementWords: string | null | undefined): Set<string> {
+  const text = statementWords ?? '';
+  const held = statementWordStems.get(text);
+  if (held) return held;
+  const stems = new Set(wordStems(text ? text.split(' ') : []));
+  if (text.length <= FIELD_STEMS_MAX_CHARS) {
+    if (statementWordStems.size >= FIELD_STEMS_MAX) statementWordStems.delete(statementWordStems.keys().next().value as string);
+    statementWordStems.set(text, stems);
+  }
+  return stems;
+}
+
+/**
  * Score a fact's relevance to the query: matches in subject and predicate weight highest because they define what
  * the fact is about; object matches are normalized by length (BM25 principle: long objects have incidental matches);
  * distinct query term coverage scales the score; and facts matching the request's scope or naming the queried scope are preferred.
  */
 export function scoreFactRelevance(fact: CurrentFact, query: string, requestScope?: string): number {
-  const queryTerms = [...new Set([...factQueryTerms(query), ...joinedWords(query)])];
+  const queryTerms = factSearchTerms(query);
   if (queryTerms.length === 0) return 0;
+  return scoreFactTerms(fact, query, requestScope, queryTerms, queryTerms.map(cachedTermStems));
+}
 
-  const subjStems = new Set(wordStems(atoms(fact.subject)));
-  const predStems = new Set(wordStems(atoms(fact.predicate)));
-  const objStems = new Set(wordStems(atoms(fact.object ?? '')));
+/** `scoreFactRelevance` for a query whose words, and their stems, the caller has already worked out. */
+function scoreFactTerms(
+  fact: CurrentFact, query: string, requestScope: string | undefined,
+  queryTerms: readonly string[], termStemList: ReadonlyArray<readonly string[]>,
+): number {
+  const subjStems = stemsOfField(fact.subject);
+  const predStems = stemsOfField(fact.predicate);
+  const objStems = stemsOfField(fact.object ?? '');
   const objectText = fact.object ?? '';
   const objectWordTokens = objectText.trim() ? objectText.split(/\s+/).length : 0;
 
@@ -243,8 +304,7 @@ export function scoreFactRelevance(fact: CurrentFact, query: string, requestScop
   let objectMatches = 0;
   let distinctMatched = 0;
 
-  for (const term of queryTerms) {
-    const tStems = wordStems([term]);
+  for (const tStems of termStemList) {
     const inSubj = tStems.some(s => subjStems.has(s));
     const inPred = tStems.some(s => predStems.has(s));
     const inObj = tStems.some(s => objStems.has(s));
@@ -281,26 +341,26 @@ export function scoreFactRelevance(fact: CurrentFact, query: string, requestScop
 
 export function rankCandidateFacts(facts: CurrentFact[], query: string, requestScope?: string): CurrentFact[] {
   if (!query.trim() || facts.length <= 1) return facts;
-  const queryTerms = [...new Set([...factQueryTerms(query), ...joinedWords(query)])];
+  const queryTerms = factSearchTerms(query);
+  const termStemList = queryTerms.map(cachedTermStems);
 
   const scored = facts.map(fact => {
-    const subjStems = new Set(wordStems(atoms(fact.subject)));
-    const predStems = new Set(wordStems(atoms(fact.predicate)));
-    const objStems = new Set(wordStems(atoms(fact.object ?? '')));
+    const subjStems = stemsOfField(fact.subject);
+    const predStems = stemsOfField(fact.predicate);
+    const objStems = stemsOfField(fact.object ?? '');
     // The words of the statement the fact was saved with let a fact with a terse object reach the bar that the best fact
     // sets from subject, predicate and object alone (bestDistinct below). A statement never raises that bar: it only
     // admits its own fact. The order (scoreFactRelevance) does not change.
-    const stmtStems = new Set(wordStems(fact.statementWords ? fact.statementWords.split(' ') : []));
+    const stmtStems = stemsOfStatementWords(fact.statementWords);
     let ownMatched = 0;
     let distinctMatched = 0;
-    for (const term of queryTerms) {
-      const tStems = wordStems([term]);
+    for (const tStems of termStemList) {
       if (tStems.some(s => subjStems.has(s) || predStems.has(s) || objStems.has(s))) ownMatched++;
       if (tStems.some(s => subjStems.has(s) || predStems.has(s) || objStems.has(s) || stmtStems.has(s))) distinctMatched++;
     }
     return {
       fact,
-      score: scoreFactRelevance(fact, query, requestScope),
+      score: queryTerms.length === 0 ? 0 : scoreFactTerms(fact, query, requestScope, queryTerms, termStemList),
       ownMatched,
       distinctMatched,
     };
@@ -865,6 +925,23 @@ export function matchBudgetOrder(memories: ReadonlyArray<AgentContextMemory>): n
  * a grocery list) can sit above the bar and would take the reservation, and the session's room, from the session
  * that answers. A question with no word to share (only numbers and single letters, `statementRelevance` counts neither) leaves the bar alone to decide.
  */
+/** First similarity for each hit, keyed the way `isTopHit` compares a memory to a hit. */
+function similarityByMemory(
+  similarities: ReadonlyArray<{ notePath: string; headingPath?: string; text: string; similarity: number }>,
+): (memory: { notePath: string; headingPath?: string; text: string }) => number | undefined {
+  const byNote = new Map<string, Map<string, Map<string, number>>>();
+  for (const hit of similarities) {
+    const heading = hit.headingPath || '';
+    const text = hit.text.trim();
+    let byHeading = byNote.get(hit.notePath);
+    if (!byHeading) byNote.set(hit.notePath, byHeading = new Map());
+    let byText = byHeading.get(heading);
+    if (!byText) byHeading.set(heading, byText = new Map());
+    if (!byText.has(text)) byText.set(text, hit.similarity);
+  }
+  return memory => byNote.get(memory.notePath)?.get(memory.headingPath ?? '')?.get(memory.text.trim());
+}
+
 export function newestMatchAbove(
   memories: ReadonlyArray<AgentContextMemory>,
   similarities: ReadonlyArray<{ notePath: string; headingPath?: string; text: string; similarity: number }>,
@@ -874,11 +951,13 @@ export function newestMatchAbove(
   let newest = -1;
   let newestAt = Number.NEGATIVE_INFINITY;
   const asked = query === undefined ? 0 : questionTerms(query).length;
+  // The cosine rules out almost every memory. Stemming a statement the cosine has already rejected cannot change the pick.
+  const heardAt = similarityByMemory(similarities);
   memories.forEach((memory, i) => {
     if (memory.reason === SESSION_EXPAND_REASON || !memory.session_date) return;
+    const heard = heardAt(memory);
+    if (heard === undefined || !(heard >= bar)) return;
     if (asked > 0 && statementRelevance(memory.text, query!) < NEWEST_ANCHOR_RELEVANCE_FLOOR) return;
-    const heard = similarities.find(hit => isTopHit(hit, memory));
-    if (heard === undefined || !(heard.similarity >= bar)) return;
     const at = sessionDateMs(memory.session_date);
     if (at > newestAt) { newest = i; newestAt = at; }
   });
@@ -902,12 +981,47 @@ function questionTerms(query: string): string[] {
  * of a chat, and "10 pounds" answers "how much" without the number being what a later question shares — so neither
  * is counted.
  */
-export function statementRelevance(text: string, query: string): number {
+/** Stems of a statement text. The text is the whole input, so a later write of a different statement is a different key. */
+const STATEMENT_STEMS_MAX = 4096;
+const statementStems = new Map<string, Set<string>>();
+const TERM_STEMS_MAX = 1024;
+const termStems = new Map<string, string[]>();
+const QUESTION_TERMS_MAX = 64;
+const questionTermCache = new Map<string, string[]>();
+
+function cachedQuestionTerms(query: string): string[] {
+  const held = questionTermCache.get(query);
+  if (held) return held;
   const terms = questionTerms(query);
-  if (terms.length === 0) return 0;
+  if (questionTermCache.size >= QUESTION_TERMS_MAX) questionTermCache.delete(questionTermCache.keys().next().value as string);
+  questionTermCache.set(query, terms);
+  return terms;
+}
+
+function cachedTermStems(term: string): string[] {
+  const held = termStems.get(term);
+  if (held) return held;
+  const stems = wordStems([term]);
+  if (termStems.size >= TERM_STEMS_MAX) termStems.delete(termStems.keys().next().value as string);
+  termStems.set(term, stems);
+  return stems;
+}
+
+function cachedStatementStems(text: string): Set<string> {
+  const held = statementStems.get(text);
+  if (held) return held;
   const stems = new Set(wordStems(atoms(text)));
+  if (statementStems.size >= STATEMENT_STEMS_MAX) statementStems.delete(statementStems.keys().next().value as string);
+  statementStems.set(text, stems);
+  return stems;
+}
+
+export function statementRelevance(text: string, query: string): number {
+  const terms = cachedQuestionTerms(query);
+  if (terms.length === 0) return 0;
+  const stems = cachedStatementStems(text);
   let held = 0;
-  for (const term of terms) if (wordStems([term]).some(stem => stems.has(stem))) held++;
+  for (const term of terms) if (cachedTermStems(term).some(stem => stems.has(stem))) held++;
   return held;
 }
 
@@ -1317,15 +1431,19 @@ export async function buildAgentContext(
       unfinishedEvidence = { state, note };
     }
 
-    for (const variant of keywordVariants(query)) {
-      const keyword = engineSearchText(db, memoryDir, variant, 6, scopeNorm, options.includeHistory === true, options.ledgerRelPath);
-      keywordAvailable = keywordAvailable || keyword.ok;
-      if (!keyword.ok) { keywordFailed = true; continue; }
-      for (const hit of keyword.results as any[]) {
-        const normalized = normalizeMemory(hit, 'fts', options.reader);
-        if (normalized) memories.push(normalized);
+    // The variants find the same chunks of the ledger: each chunk is parsed once for this read.
+    const ledgerRecords: LedgerRecordCache = new Map();
+    inReadSnapshot(db, () => {
+      for (const variant of keywordVariants(query)) {
+        const keyword = engineSearchText(db, memoryDir, variant, 6, scopeNorm, options.includeHistory === true, options.ledgerRelPath, ledgerRecords);
+        keywordAvailable = keywordAvailable || keyword.ok;
+        if (!keyword.ok) { keywordFailed = true; continue; }
+        for (const hit of keyword.results as any[]) {
+          const normalized = normalizeMemory(hit, 'fts', options.reader);
+          if (normalized) memories.push(normalized);
+        }
       }
-    }
+    });
     if (keywordFailed && !keywordAvailable) {
       degraded.push('keyword');
       notice = `${notice ? `${notice.replace('the saved facts and keyword search do not need it and still answer.', 'the saved facts still answer.')} ` : ''}`
@@ -1337,7 +1455,7 @@ export async function buildAgentContext(
   // used (and its query vector, when it ran), when that path is the calibrated (Vertex) model; otherwise, or when it
   // fails, by words alone (permissionMeaning).
   const meaning = query ? await permissionMeaning(db, engine, query, scopeNorm, probe.queryVector) : undefined;
-  const facts = currentFactMatches(db, query, scopeNorm, query ? 12 : 20, meaning);
+  const facts = inReadSnapshot(db, () => currentFactMatches(db, query, scopeNorm, query ? 12 : 20, meaning));
 
   // After the keyword matches, so a statement a keyword search also found is that match, not the added copy.
   const merged = dedupeMemories([...memories, ...added]);
@@ -1358,18 +1476,26 @@ export async function buildAgentContext(
   // home_city) stands in when they found none; otherwise it follows the facts they found, in the room left, unless it is
   // that match: then, like a note chunk that is, the budget makes room for it.
   const judged = query && contextRelevanceEnabled(options.env)
-    ? assessQueryRelevance({
+    ? inReadSnapshot(db, () => assessQueryRelevance({
       db, engine, scope: scopeNorm, probe, env: options.env, components: options.relevanceComponents,
       query, onFile: nameOnFile(db, memoryDir, { scope: scopeNorm, includeHistory: options.includeHistory === true, ledgerRelPath: options.ledgerRelPath }),
-    })
+    }))
     : null;
   const closestFact = judged?.closestFact;
   const shownFacts = facts.length === 0 && closestFact ? [closestFact] : facts;
+  // The values another writer replaced that stay open against a shown fact (memory/writerConflicts.ts): a fact with one
+  // carries its line, and a fact with none is shaped as it always was.
+  const disputes = writerConflictLines(db, shownFacts.map(fact => fact.eventId));
+  const shaped = (fact: CurrentFact): AgentContextFact => {
+    const base = toAgentFact(fact, options.reader);
+    const line = fact.eventId === null ? undefined : disputes.get(fact.eventId);
+    return line === undefined ? base : { ...base, writerConflict: line };
+  };
   const factLaneBudget = hasMemories ? Math.floor(maxTokens * FACTS_BUDGET_SHARE) : maxTokens;
   const maxFactObjectTokens = Math.max(32, Math.floor(factLaneBudget * MAX_FACT_OBJECT_LANE_SHARE));
   // The cap is a crowding rule: it applies only when the facts would not otherwise fit the lane, and never to the
   // top-ranked fact — a long fact that is itself the answer is delivered whole when the lane has room for it.
-  const factCost = (fact: CurrentFact): number => replyTokens(JSON.stringify(toAgentFact(fact, options.reader))) + 1;
+  const factCost = (fact: CurrentFact): number => replyTokens(JSON.stringify(shaped(fact))) + 1;
   const crowding = shownFacts.reduce((sum, fact) => sum + factCost(fact), 0) > factLaneBudget;
   let factObjectCut = false;
   const capFact = (fact: CurrentFact, index: number): AgentContextFact => {
@@ -1380,9 +1506,9 @@ export async function buildAgentContext(
     const leads = index === 0 && shownFacts.length > 1 && STANDING.has(fact);
     if ((crowding && index > 0 || leads) && replyTokens(object) > maxFactObjectTokens) {
       factObjectCut = true;
-      return { ...toAgentFact(fact, options.reader), object: capFactObject(object, maxFactObjectTokens) };
+      return { ...shaped(fact), object: capFactObject(object, maxFactObjectTokens) };
     }
-    return toAgentFact(fact, options.reader);
+    return shaped(fact);
   };
   // The closest fact is the top-ranked one when the words found none (shownFacts is [closestFact]); otherwise it
   // follows the facts they found and is capped with them when the lane is crowded.
@@ -1460,7 +1586,7 @@ export async function buildAgentContext(
         : keywordAvailable
           ? 'keyword'
           : 'facts';
-  const trailer = options.trailer?.() ?? {};
+  const trailer = (options.trailer && inReadSnapshot(db, options.trailer)) ?? {};
   // The facts this read could list: the ones its words found, and the closest one when they did not find it.
   const named = missed ? [...candidateFacts, missed.fact] : candidateFacts;
 

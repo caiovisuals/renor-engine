@@ -5,6 +5,7 @@ import type Database from 'better-sqlite3';
 import { prepareOnce } from '../db/statements';
 import { factLaneRoom, factQueryTerms } from './agentMemory';
 import { resolveLedgerPath } from '../memory/lifecycle';
+import { writerConflictLines } from '../memory/writerConflicts';
 import { findCurrentFacts, newestFactEvent, type CurrentFact, type FactMatch } from '../memory/factTerms';
 import { ledgerEventIds } from '../retrieval/ledgerLiveness';
 import { factText } from '../retrieval/ledgerPresentation';
@@ -34,6 +35,8 @@ export interface FactHit extends AuthorMarker {
   score: number;
   reason: 'fact';
   session_date?: string;
+  /** Set on a current fact that replaced a value another writer saved, until that writer saves it again (memory/writerConflicts.ts). */
+  writerConflict?: string;
 }
 
 /** Where the ledger lives, as the MCP tools know it. */
@@ -56,7 +59,7 @@ function factBlock(row: CurrentFact): string {
  * words the fact holds; a fact named by a caller instead (`withFactHits` `also`) was found by meaning rather than by
  * those words, so it keeps 0 — the convention session-expand hits use.
  */
-function factHit(row: CurrentFact, ledger: LedgerLocation, date?: (at: string) => string | undefined, reader?: string): FactHit {
+function factHit(row: CurrentFact, ledger: LedgerLocation, date?: (at: string) => string | undefined, reader?: string, conflict?: string): FactHit {
   const notePath = path.relative(path.resolve(ledger.memoryDir), resolveLedgerPath(ledger.memoryDir, ledger.ledgerRelPath));
   return {
     notePath,
@@ -67,6 +70,8 @@ function factHit(row: CurrentFact, ledger: LedgerLocation, date?: (at: string) =
     ...(date ? { session_date: date(row.validFrom) } : {}),
     // Who saved it, as get_context's facts show it: another agent's name, and untrusted for an import.
     ...authorMarker(row.author, reader),
+    // The values another writer replaced that stay open against it (memory/writerConflicts.ts), when there are any.
+    ...(conflict !== undefined ? { writerConflict: conflict } : {}),
   };
 }
 
@@ -185,9 +190,11 @@ export function withFactHits<T extends { text: string; headingPath?: string; rea
   // Only as many named facts as the page has room for; a page top_k has already filled takes none of them.
   const named = pending.slice(0, Math.max(0, room));
   const date = args.dated ? ledgerTimeBound(ledger) : undefined;
+  const disputes = writerConflictLines(db, [...words, ...named].map(row => row.eventId));
+  const line = (row: CurrentFact): string | undefined => (row.eventId === null ? undefined : disputes.get(row.eventId));
   const facts = [
-    ...words.slice(0, Math.max(0, room - named.length)).map(row => ({ ...factHit(row, ledger, date, args.reader), score: Math.round((row.shared / terms.length) * 100) / 100 })),
-    ...named.map(row => factHit(row, ledger, date, args.reader)),
+    ...words.slice(0, Math.max(0, room - named.length)).map(row => ({ ...factHit(row, ledger, date, args.reader, line(row)), score: Math.round((row.shared / terms.length) * 100) / 100 })),
+    ...named.map(row => factHit(row, ledger, date, args.reader, line(row))),
   ];
   return [...indexHits.slice(0, lead), ...facts, ...indexHits.slice(lead)];
 }

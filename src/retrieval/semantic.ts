@@ -1,4 +1,5 @@
 import Database from 'better-sqlite3';
+import { inReadSnapshot } from '../db/readCache';
 import { prepareOnce } from '../db/statements';
 import { VectorIndex } from '../embeddings/vectorIndex';
 
@@ -100,11 +101,14 @@ export async function semanticSearch(
         .sort(byScoreThenPlace),
     };
   };
-  if (!scope) return nearest(topK).chunks.slice(0, topK);
-  // Judged before the cut: when fewer than `topK` of the nearest chunks are shown (other chunks are nearer), the nearest
-  // of the shown chunks themselves are read instead, so however many others are nearer, none takes their places.
-  const first = nearest(topK);
-  const shown = first.chunks.filter(scope.shows);
-  if (shown.length >= topK || first.vectors < topK) return shown.slice(0, topK);
-  return nearest(topK, scope.chunkIds()).chunks.slice(0, topK);
+  // The query is embedded: nothing below waits for anything, so the nearest chunks are read in one transaction (inReadSnapshot).
+  return inReadSnapshot(db, () => {
+    if (!scope) return nearest(topK).chunks.slice(0, topK);
+    // Judged before the cut: when fewer than `topK` of the nearest chunks are shown (other chunks are nearer), the nearest
+    // of the shown chunks themselves are read instead, so however many others are nearer, none takes their places.
+    const first = nearest(topK);
+    const shown = first.chunks.filter(scope.shows);
+    if (shown.length >= topK || first.vectors < topK) return shown.slice(0, topK);
+    return nearest(topK, scope.chunkIds()).chunks.slice(0, topK);
+  });
 }

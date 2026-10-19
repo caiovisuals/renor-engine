@@ -211,6 +211,29 @@ describe('renor index/search with RENOR_DIGESTS (spawned CLI, stub model server)
     expect(index.stderr).toContain('[digests] armed without a provider');
   }, 2 * CLI_TIMEOUT_MS);
 
+  it('armed with a digest model but no EMBEDDING_PROVIDER: index, rebuild and search refuse (exit 1) instead of reporting 0 undigested notes', async () => {
+    // Semantic search is off by default; digests are written and read by embedding, so the armed lane must say it cannot run.
+    const stub = await startDigestStub();
+    try {
+      const cache = tmpPath('digests-cli-noembed-cache/digest-cache.db');
+      const env = cliEnv(seedVault('noembed'), tmpPath('digests-cli-noembed-db/index.db'), { ...stubEnv(stub.baseUrl, cache), RENOR_DIGESTS: '1' });
+      delete env.EMBEDDING_PROVIDER;
+      for (const args of [['index'], ['rebuild'], ['search', '--json', QUESTION]]) {
+        const run = await runCli(args, env);
+        expect(run.code, args.join(' ')).toBe(1);
+        expect(run.stderr, args.join(' ')).toContain('[digests] armed without an embedding provider');
+      }
+      // The cache-only lane calls no model but still reads digests by embedding.
+      const cacheOnly = { ...env, RENOR_DIGEST_API_KEY: '', RENOR_DIGEST_API_KEYS: '', RENOR_DIGEST_BASE_URL: '', RENOR_DIGEST_MODEL: 'stub-digest', RENOR_DIGEST_CACHE_ONLY: '1' };
+      const run = await runCli(['index'], cacheOnly);
+      expect(run.code).toBe(1);
+      expect(run.stderr).toContain('[digests] armed without an embedding provider');
+      expect(stub.calls).toHaveLength(0);
+    } finally {
+      await stub.close();
+    }
+  }, 6 * CLI_TIMEOUT_MS);
+
   it('armed with only the evidence provider configured: index refuses (exit 1) and the evidence provider is never called', async () => {
     // The Privacy Policy names one digests processor. Another provider's key and URL being set must not make notes go there.
     const evidence = await startDigestStub();

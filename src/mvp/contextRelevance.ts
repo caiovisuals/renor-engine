@@ -1,9 +1,11 @@
 import type Database from 'better-sqlite3';
+import { readUntilWrite } from '../db/readCache';
 import { prepareOnce } from '../db/statements';
 import type { EmbeddingProvider } from '../embeddings/types';
 import type { Engine } from './engine';
 import type { RetrievalProbe } from '../retrieval/semantic';
 import { currentFactById, type CurrentFact } from '../memory/factTerms';
+import { bestPacked, packLane, type FactSnapshot, type PackedLane } from './factLanePack';
 import { normalizeScope, savedScopeSqlPredicate } from './scope';
 
 /**
@@ -188,7 +190,8 @@ export const SEARCH_RELEVANCE_GUIDANCE =
 /**
  * Most current facts the lane compares per call. A tenant with more is not silently truncated: the lane is
  * reported incomplete, so it can still prove relevance but can never be the basis of "nothing matches".
- * Cost is linear: ~1.6 ms per 500 facts at 768 dims (scripts/eval/relevance-latency.ts).
+ * The fact list is read once until the next write. Each call then dots the query with the unit vectors
+ * already stored for those facts (scripts/eval/relevance-latency.ts measured the uncached list).
  */
 export const FACT_CEILING = 5_000;
 /** Vectors of no-longer-current facts kept before the store is pruned to the live set. */
@@ -205,6 +208,10 @@ interface FactVectorSlot {
   filling: Promise<void> | null;
   /** Epoch ms before which a failed fill is not retried: a failing backend is not hit by every read. */
   retryAfter: number;
+  /** Bumped when `vectors` gains or loses a vector, so a packed lane built earlier is not reused. */
+  epoch: number;
+  /** Packed lanes keyed by scope and ceiling. Invalid once `epoch` or the fact snapshot changes. */
+  packed: Map<string, PackedLane>;
 }
 
 /** Per embedding provider, so two models (or two test engines) never share vectors. */
@@ -212,7 +219,7 @@ const slots = new WeakMap<object, FactVectorSlot>();
 
 function slotFor(provider: object): FactVectorSlot {
   let slot = slots.get(provider);
-  if (!slot) slots.set(provider, slot = { vectors: new Map(), filling: null, retryAfter: 0 });
+  if (!slot) slots.set(provider, slot = { vectors: new Map(), filling: null, retryAfter: 0, epoch: 0, packed: new Map() });
   return slot;
 }
 
@@ -246,6 +253,7 @@ async function fill(provider: EmbeddingProvider, slot: FactVectorSlot, texts: st
       const fresh = await provider.embed(batch);
       if (fresh.length !== batch.length) throw new Error('embedding provider returned a wrong vector count');
       batch.forEach((text, i) => slot.vectors.set(text, unit(fresh[i])));
+      slot.epoch++;
     }
   };
   await Promise.all(Array.from({ length: Math.min(FILL_CONCURRENCY, batches.length) }, worker));
@@ -260,20 +268,12 @@ export interface FactLane {
   bestFactId?: number;
 }
 
-/**
- * Best similarity between the query vector and the current facts (scope-filtered).
- * Never waits on the embedding backend: facts without a vector yet start a background
- * fill and are reported through `complete: false`; what is left is a dot product per fact.
- * `complete` is true only when EVERY in-scope current fact was compared: past `ceiling`
- * facts only the newest are, and the lane says so.
- */
-export function factLane(
-  db: Database.Database,
-  provider: EmbeddingProvider,
-  queryVector: ArrayLike<number>,
-  scope?: string,
-  ceiling = FACT_CEILING,
-): FactLane {
+/** What a lane was asked for (any scope, or one; how many facts at most): the key its snapshot and its pack are kept under. */
+function factLaneKey(scope: string | undefined, ceiling: number): string {
+  return `${scope === undefined ? '*' : normalizeScope(scope)}\0${ceiling}`;
+}
+
+function loadFactSnapshot(db: Database.Database, scope: string | undefined, ceiling: number): FactSnapshot {
   const inScope = scope === undefined ? undefined : savedScopeSqlPredicate(normalizeScope(scope), 'f.scope'); // any spelling of it
   const select = `SELECT f.id AS id, f.predicate AS predicate, f.object_text AS object
      FROM facts f
@@ -293,32 +293,74 @@ export function factLane(
     const seen = newest.get(rendering);
     if (seen === undefined || r.id > seen) newest.set(rendering, r.id);
   }
-  const renderings = [...newest.keys()];
-  const slot = slotFor(provider);
-  const missing = renderings.filter(r => !slot.vectors.has(r));
-  if (missing.length > 0 && !slot.filling && Date.now() >= slot.retryAfter) {
-    // Drop vectors of facts that are no longer current so the store tracks the live set.
-    if (slot.vectors.size > renderings.length + STALE_VECTORS_KEPT) {
-      const live = new Set(renderings);
-      for (const key of slot.vectors.keys()) if (!live.has(key)) slot.vectors.delete(key);
-    }
-    const run = slot.filling = fill(provider, slot, missing)
-      .catch(() => { slot.retryAfter = Date.now() + FILL_RETRY_MS; /* advisory: retried later for what is still missing */ })
-      .finally(() => { if (slot.filling === run) slot.filling = null; });
-  }
-  const q = unit(queryVector);
+  return { pairs: [...newest], truncated };
+}
+
+/** The best fact when there is no matrix to read (vectors of two lengths) or the query is of another length: one lookup and one dot per fact. */
+function bestFromSlot(q: Float32Array, snapshot: FactSnapshot, slot: FactVectorSlot): { score: number; id: number } | null {
   let best: number | null = null;
-  let bestRendering: string | null = null;
-  for (const r of renderings) {
-    const v = slot.vectors.get(r);
+  let id = -1;
+  for (const [rendering, factId] of snapshot.pairs) {
+    const v = slot.vectors.get(rendering);
     if (!v) continue;
     const s = dot(q, v);
-    if (best === null || s > best) { best = s; bestRendering = r; }
+    if (best === null || s > best) { best = s; id = factId; }
   }
+  return best === null ? null : { score: best, id };
+}
+
+/** Drop vectors of facts that are no longer in this snapshot, then embed what is still missing. Same trigger as before. */
+function fillMissing(provider: EmbeddingProvider, slot: FactVectorSlot, snapshot: FactSnapshot, missing: string[]): void {
+  if (missing.length === 0 || slot.filling || Date.now() < slot.retryAfter) return;
+  if (slot.vectors.size > snapshot.pairs.length + STALE_VECTORS_KEPT) {
+    const live = new Set(snapshot.pairs.map(([rendering]) => rendering));
+    let dropped = false;
+    for (const key of slot.vectors.keys()) if (!live.has(key)) { slot.vectors.delete(key); dropped = true; }
+    // Live rows were not dropped, so a lane packed from them is still the same dots.
+    if (dropped) slot.epoch++;
+  }
+  const run = slot.filling = fill(provider, slot, missing)
+    .catch(() => { slot.retryAfter = Date.now() + FILL_RETRY_MS; /* advisory: retried later for what is still missing */ })
+    .finally(() => { if (slot.filling === run) slot.filling = null; });
+}
+
+/**
+ * Best similarity between the query vector and the current facts (scope-filtered).
+ * Never waits on the embedding backend: facts without a vector yet start a background
+ * fill and are reported through `complete: false`; what is left is a dot product per fact.
+ * `complete` is true only when EVERY in-scope current fact was compared: past `ceiling`
+ * facts only the newest are, and the lane says so.
+ */
+export function factLane(
+  db: Database.Database,
+  provider: EmbeddingProvider,
+  queryVector: ArrayLike<number>,
+  scope?: string,
+  ceiling = FACT_CEILING,
+): FactLane {
+  const key = factLaneKey(scope, ceiling);
+  // The rows change only when something is written. Vectors arrive later, from the background fill.
+  const snapshot = readUntilWrite(db, `factLane\0${key}`, () => loadFactSnapshot(db, scope, ceiling));
+  const slot = slotFor(provider);
+  let packed = slot.packed.get(key);
+  if (!packed || packed.snapshot !== snapshot || packed.epoch !== slot.epoch) {
+    packed = packLane(snapshot, slot.vectors, slot.epoch);
+    if (slot.packed.size >= 8) slot.packed.clear();
+    slot.packed.set(key, packed);
+  }
+  fillMissing(provider, slot, snapshot, packed.missing);
+  if (packed.epoch !== slot.epoch) packed.epoch = slot.epoch;
+  const q = unit(queryVector);
+  const found = packed.matrix && q.length === packed.dim
+    ? (() => {
+      const best = bestPacked(q, packed.matrix!, packed.ids.length, packed.dim);
+      return best ? { score: best.score, id: packed.ids[best.index] } : null;
+    })()
+    : bestFromSlot(q, snapshot, slot);
   return {
-    similarity: best,
-    complete: !truncated && missing.length === 0,
-    ...(bestRendering === null ? {} : { bestFactId: newest.get(bestRendering) }),
+    similarity: found ? found.score : null,
+    complete: !snapshot.truncated && packed.missing.length === 0,
+    ...(found ? { bestFactId: found.id } : {}),
   };
 }
 

@@ -3,7 +3,6 @@ import fs from 'fs';
 import fsp from 'fs/promises';
 import os from 'os';
 import path from 'path';
-import net from 'net';
 import crypto from 'crypto';
 import request from 'supertest';
 import type Database from 'better-sqlite3';
@@ -13,7 +12,8 @@ import { openDb } from '../../src/db/client';
 import { runMigrations } from '../../src/db/schema';
 import { indexVault } from '../../src/indexer/pipeline';
 import { loadMvpConfig, DEFAULT_LEDGER_REL, type MvpConfig } from '../../src/mvp/config';
-import { startMvpService, MVP_MCP_PATH, type MvpApp } from '../../src/mvp/server';
+import { MVP_MCP_PATH, type MvpApp } from '../../src/mvp/server';
+import { freePort, startMvpServiceOnFreePort } from '../helpers/mvpPort';
 import {
   attachEngine,
   engineIndex,
@@ -70,6 +70,16 @@ function tmp(prefix: string): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
   tmpDirs.push(dir);
   return dir;
+}
+
+/**
+ * Lets what a test wrote age past a timestamp tick without waiting for the tick: the clock the engine reads moves
+ * forward (the files keep the times the file system gave them) and goes on running. A real wait here was
+ * TIMESTAMP_TICK_MS of idle time in a test that has five seconds. `useRealTimers` puts the clock back.
+ */
+function agePastATick(writtenAt: number): void {
+  vi.useFakeTimers({ toFake: ['Date'], shouldAdvanceTime: true });
+  vi.setSystemTime(Math.max(Date.now(), writtenAt + TIMESTAMP_TICK_MS + 100));
 }
 
 /** The repo's deterministic hash embeddings (no model), counting what they are asked to embed. */
@@ -537,6 +547,10 @@ describe('what a file\'s stamp is made of, and when a scan may trust it', () => 
 });
 
 describe('note-mode save indexes what changed, not the whole vault', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   it('reads the same few files and embeds one text whether the workspace holds 5 notes or 60', async () => {
     const reads: Record<number, string[]> = {};
     const embedded: Record<number, number> = {};
@@ -580,12 +594,10 @@ describe('note-mode save indexes what changed, not the whole vault', () => {
   });
 
   it('the remember tool takes that path: a note save over MCP does not walk the workspace', async () => {
-    const port = await freePort();
     const memoryDir = tmp('note-save-mcp-');
     seedNotes(memoryDir, 40);
     const seeded = Date.now();
-    const config = mcpConfig(memoryDir, port);
-    const started = await startMvpService(config, new StubProvider());
+    const { started, config } = await startMvpServiceOnFreePort((port) => mcpConfig(memoryDir, port), new StubProvider());
     services.push(started);
     const client = await mcpClient(config, await registerAndToken(started.app));
     const log = vi.spyOn(console, 'log').mockImplementation(() => {});
@@ -596,7 +608,7 @@ describe('note-mode save indexes what changed, not the whole vault', () => {
     // as a real workspace's by then: a file changed within a clock tick of a scan is read again by the next. The
     // service's start counts toward that tick (it writes no note), so a start that a busy host slows down is not
     // followed by a whole tick more.
-    await new Promise((resolve) => setTimeout(resolve, Math.max(0, seeded + TIMESTAMP_TICK_MS + 100 - Date.now())));
+    agePastATick(seeded);
     parse(await client.callTool({ name: 'remember', arguments: { statement: 'A first note, to warm the service up.', source: 'test' } }));
     const spy = vi.spyOn(fsp, 'readFile');
     const saved = parse(await client.callTool({
@@ -724,26 +736,30 @@ describe('note-mode save indexes what changed, not the whole vault', () => {
 });
 
 describe('a fact-mode save indexes what changed too, not the whole workspace', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   /**
    * A workspace of 40 notes and a ledger of `events` fact saves, served over MCP; `save(i)` then calls `remember`
    * (fact mode) for real and records what the call embeds, reads and costs.
    */
   async function factWorkspace(events: number) {
-    const port = await freePort();
     const memoryDir = tmp(`fact-save-${events}-`);
     seedNotes(memoryDir, 40);
-    const config = mcpConfig(memoryDir, port);
-    fs.mkdirSync(path.dirname(config.dbPath), { recursive: true });
-    const seedDb = openDb(config.dbPath);
+    // Where the index and the ledger live does not depend on the port the service will take.
+    const seedConfig = mcpConfig(memoryDir, await freePort());
+    fs.mkdirSync(path.dirname(seedConfig.dbPath), { recursive: true });
+    const seedDb = openDb(seedConfig.dbPath);
     runMigrations(seedDb);
     for (let i = 0; i < events; i++) {
-      await remember(seedDb, memoryDir, config.ledgerRelPath, {
+      await remember(seedDb, memoryDir, seedConfig.ledgerRelPath, {
         subject: `Seed ${i % 50}`, predicate: 'status', object: `state ${i}`, statement: `Seeded statement number ${i}.`,
       });
     }
     seedDb.close();
     const provider = new StubProvider();
-    const started = await startMvpService(config, provider);
+    const { started, config } = await startMvpServiceOnFreePort((port) => mcpConfig(memoryDir, port), provider);
     services.push(started);
     const client = await mcpClient(config, await registerAndToken(started.app));
     const log = vi.spyOn(console, 'log').mockImplementation(() => {});
@@ -787,7 +803,7 @@ describe('a fact-mode save indexes what changed too, not the whole workspace', (
     const small = await factWorkspace(100);
     const large = await factWorkspace(1000);
     // Both workspaces are as old as a real one by their first save, which verifies every file once; the next two warm the rest up.
-    await new Promise((resolve) => setTimeout(resolve, TIMESTAMP_TICK_MS + 100));
+    agePastATick(Date.now());
     for (const i of [-1, -2, -3]) {
       for (const ws of [small, large]) expect(await ws.call(i)).toMatchObject({ ok: true, mode: 'fact', action: 'store' });
     }
@@ -812,17 +828,6 @@ describe('a fact-mode save indexes what changed too, not the whole workspace', (
 });
 
 // ------------------------------- MCP plumbing (as engine-tools.test.ts) ---------------------
-
-function freePort(): Promise<number> {
-  return new Promise((resolve, reject) => {
-    const srv = net.createServer();
-    srv.listen(0, '127.0.0.1', () => {
-      const port = (srv.address() as net.AddressInfo).port;
-      srv.close(() => resolve(port));
-    });
-    srv.on('error', reject);
-  });
-}
 
 function mcpConfig(memoryDir: string, port: number): MvpConfig {
   const authRoot = tmp('note-save-auth-');

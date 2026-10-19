@@ -104,6 +104,17 @@ describe('session date helpers', () => {
 });
 
 describe('retrieveContext', () => {
+  it('with no embedding provider, finds a note by its words from the keyword index', async () => {
+    const db = openDb(DB); runMigrations(db);
+    db.prepare("INSERT INTO notes VALUES ('/v/bike.md','Bike','note','h','2026-03-30','{}')").run();
+    db.prepare("INSERT INTO chunks (note_path,heading_path,text,start_line,end_line,token_count,chunk_hash) VALUES (?,?,?,?,?,?,?)")
+      .run('/v/bike.md','','The red bicycle lives in the garage.',0,2,8,'hb');
+    const result = await retrieveContext(db, undefined, undefined, 'bicycle', 5, []);
+    expect(result.hits.map(h => h.notePath)).toEqual(['/v/bike.md']);
+    expect(await retrieveContext(db, undefined, undefined, 'zeppelin', 5, [])).toMatchObject({ hits: [] });
+    db.close();
+  });
+
   it('returns hits with reason field', async () => {
     const db = openDb(DB); runMigrations(db);
     db.prepare("INSERT INTO notes VALUES ('/v/john.md','John Doe','person','h','2026-03-30','{}')").run();

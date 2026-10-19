@@ -23,6 +23,7 @@ import {
   factLane,
   notMentioned,
   renderFactForRelevance,
+  similaritiesTo,
   requestNames,
   resolveRelevanceBar,
   warmFactVectors,
@@ -633,6 +634,35 @@ describe('fact vectors', () => {
     expect(factLane(w.db, provider, atlas, 'scope:atlas').similarity!).toBeGreaterThan(0.99);
     await warmFactVectors(w.db, provider, 'project:other');
     expect(factLane(w.db, provider, atlas, 'project:other')).toEqual({ similarity: null, complete: true });
+  });
+
+  it('scores each fact with the same cosine as a direct dot of its stored unit vector, including a second call', async () => {
+    const provider = new CountingProvider();
+    const w = await workspace(provider);
+    expect(await warmFactVectors(w.db, provider)).toBe(true);
+    const renderings = SEED.facts.map(fact => renderFactForRelevance(fact.predicate, fact.object));
+    const q = await provider.embedQuery(renderings[0]);
+    const lane = factLane(w.db, provider, q);
+    const sims = await similaritiesTo(provider, renderings, q);
+    const scalar = [...sims!.values()];
+    expect(scalar).toContain(lane.similarity);
+    expect(lane.similarity).toBe(Math.max(...scalar));
+    expect(factLane(w.db, provider, q)).toEqual(lane);
+  });
+
+  it('compares a fact saved after the lane has already answered', async () => {
+    const provider = new CountingProvider();
+    const w = await workspace(provider);
+    expect(await warmFactVectors(w.db, provider)).toBe(true);
+    const rendering = renderFactForRelevance('desk_plant', 'Fern');
+    const q = await provider.embedQuery(rendering);
+    expect(factLane(w.db, provider, q).similarity!).toBeLessThan(0.99);
+    await remember(w.db, w.memoryDir, 'System/Memory Events Ledger.md', { subject: 'user', predicate: 'desk_plant', object: 'Fern', source: 'test' });
+    expect(await warmFactVectors(w.db, provider)).toBe(true);
+    const lane = factLane(w.db, provider, q);
+    const sims = await similaritiesTo(provider, [rendering], q);
+    expect(lane.similarity).toBe(sims!.get(rendering));
+    expect(lane.similarity!).toBeGreaterThan(0.99);
   });
 });
 

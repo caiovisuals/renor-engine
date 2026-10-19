@@ -66,6 +66,20 @@ function runCli(command: string, vault: string): Promise<{ code: number; stdout:
   });
 }
 
+function runCliWithEnv(command: string, vault: string, overrides: NodeJS.ProcessEnv): Promise<{ code: number; stdout: string; stderr: string }> {
+  return new Promise((resolve) => {
+    const env = cliEnv(vault);
+    delete env.EMBEDDING_PROVIDER;
+    Object.assign(env, overrides);
+    execFile(TSX, ['src/cli.ts', command], { cwd: REPO_ROOT, env, timeout: 90_000 }, (err, stdout, stderr) => {
+      resolve({
+        code: err && typeof (err as any).code === 'number' ? (err as any).code : (err ? 1 : 0),
+        stdout: String(stdout), stderr: String(stderr),
+      });
+    });
+  });
+}
+
 function currentFacts(vault: string): any[] {
   const db = new Database(path.join(vault, '.semantic-memory', 'index.db'), { readonly: true });
   try {
@@ -83,6 +97,18 @@ afterEach(() => {
 });
 
 describe('B7: CLI startup awaits replay before readiness', () => {
+  it('indexes notes without contacting OpenAI when only an ambient API key is set', async () => {
+    const v = mkvault();
+    fs.writeFileSync(path.join(v, 'private-note.md'), '# Private\nDo not upload this text.\n');
+    const res = await runCliWithEnv('index', v, {
+      OPENAI_API_KEY: 'sk-ambient',
+      EMBEDDING_BASE_URL: 'http://127.0.0.1:1/v1',
+    });
+    expect(res.code).toBe(0);
+    expect(res.stderr).toContain('Semantic search is off; set EMBEDDING_PROVIDER=openai to turn it on.');
+    expect(res.stdout).toContain('Done. 1/1 indexed, 0 errors.');
+  }, 120_000);
+
   it('rebuild replays the ledger after clearing derived tables (lifecycle fact survives)', async () => {
     const v = mkvault();
     const res = await runCli('rebuild', v);

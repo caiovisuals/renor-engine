@@ -39,11 +39,15 @@ export function closedLedgerEvents(db: Database.Database): ClosedLedgerEvents {
  * below its header, the id in its heading path. Empty for anything that is not a ledger event.
  */
 export function ledgerEventIds(hit: { text: string; headingPath?: string }): string[] {
-  const ids = [...hit.text.matchAll(/^## (MEM_[A-Za-z0-9]+) · /gim)].map(m => m[1].toLowerCase());
+  // A text without `mem_` has no `## MEM_… · ` header (NAMES_AN_EVENT, below): most hits, asked about several times each.
+  const ids = NAMES_AN_EVENT.test(hit.text) ? [...hit.text.matchAll(/^## (MEM_[A-Za-z0-9]+) · /gim)].map(m => m[1].toLowerCase()) : [];
   if (ids.length) return ids;
   const fromHeading = hit.headingPath?.match(/\b(MEM_[A-Za-z0-9]+)\b/i)?.[1];
   return fromHeading ? [fromHeading.toLowerCase()] : [];
 }
+
+/** Whether a text can name a ledger event at all: every pattern that reads an event id below starts with `MEM_`, in either case. */
+const NAMES_AN_EVENT = /mem_/i;
 
 /** The line that opens a superseded event shown on request (include_history). */
 export const SUPERSEDED_LABEL = '[Superseded memory event; historical evidence only]';
@@ -58,6 +62,9 @@ export function resolveLedgerHits<T extends { text: string; headingPath?: string
   if (!closed.size) return hits;
   const hidden = closed.hidden;
   return hits.flatMap(hit => {
+    // An event is named by `## MEM_… · ` in the text or by `MEM_…` in the heading path, in either case. A hit with
+    // neither holds no block to close, so it comes back as it is, without the split and the matches below.
+    if (!NAMES_AN_EVENT.test(hit.text) && !(hit.headingPath && NAMES_AN_EVENT.test(hit.headingPath))) return [hit];
     let superseded = false;
     let dropped = false;
     const blocks = hit.text.replace(/\r\n/g, '\n').split(/(?=^## MEM_[A-Za-z0-9]+ · )/im);

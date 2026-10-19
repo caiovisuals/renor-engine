@@ -618,6 +618,24 @@ const migrations: Migration[] = [
     },
   },
 
+  {
+    version: 26,
+    name: '26_fact_writers',
+    up: (db: Database.Database) => {
+      // Who saved each lifecycle fact (memory/writerConflicts.ts): the writer its connection authenticated, and the values
+      // it replaced that their writers have not confirmed yet. Keyed by the fact's event, so retiring and restoring a
+      // fact (which keep the event) keep its row, and a replay of the ledger writes it again. A fact with no row was saved
+      // before this table: its writer is its source and it has no open displacements.
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS fact_writers (
+          event_id TEXT PRIMARY KEY,
+          writer TEXT NOT NULL,
+          displaced TEXT NOT NULL DEFAULT '[]'
+        )
+      `);
+    },
+  },
+
 ];
 
 export function runMigrations(db: Database.Database): void {

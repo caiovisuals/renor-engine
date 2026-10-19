@@ -4,13 +4,17 @@ import { createLedgerEventClock } from './ledgerEventTime';
 import { createDailyEntryClock } from './dailyEntryTime';
 import { dailyNoteDayName } from '../memory/dailyNote';
 import Database from 'better-sqlite3';
-import { prepareOnce } from '../db/statements';
+import { inReadSnapshot } from '../db/readCache';
+import { listStatement, paddedList, prepareOnce } from '../db/statements';
 import { VectorIndex } from '../embeddings/vectorIndex';
 import { byScoreThenPlace, semanticSearch, type ChunkFilter, type ChunkScope, type RetrievalProbe } from './semantic';
 import { lookupEntity } from './entityLookup';
 import { factsFirstHits } from './factsFirst';
 import { isConversationShaped } from './conversationShape';
 import { CALIBRATED_BARS, embeddingModelKey } from '../mvp/contextRelevance';
+import { keywordSearch } from './keyword';
+import { quoteFtsQuery, shownPage } from './queryHelpers';
+import { keywordLedgerHits } from './ledgerPresentation';
 
 export interface RetrievalHit {
   notePath: string;
@@ -292,20 +296,46 @@ export function createNoteDater(db: Database.Database): (notePath: string) => st
  * `score`: highest first.
  */
 export function orderHits<T extends { score: number; session_date?: string }>(hits: T[], by: HitOrder): T[] {
-  return [...hits].sort(by === 'score'
-    ? (a, b) => b.score - a.score
-    : (a, b) => {
-        const delta = sessionDateMs(b.session_date) - sessionDateMs(a.session_date);
-        return delta !== 0 && !Number.isNaN(delta) ? delta : b.score - a.score; // NaN: both undated
-      });
+  if (by === 'score') return [...hits].sort((a, b) => b.score - a.score);
+  // A date is read once for each hit, not once for each comparison the sort makes (a few hundred for a window).
+  return hits.map(hit => ({ hit, ms: sessionDateMs(hit.session_date) })).sort((a, b) => {
+    const delta = b.ms - a.ms;
+    return delta !== 0 && !Number.isNaN(delta) ? delta : b.hit.score - a.hit.score; // NaN: both undated
+  }).map(entry => entry.hit);
 }
 
 interface ProviderLike { embed(texts: string[]): Promise<number[][]>; dimensions?: number; identity?: { kind: string; model: string } }
 
+/**
+ * The visible text of each hit text the current read has met. A read asks it of the same text several times: whether the
+ * hit is a stub, the key that drops a repeat, the boost for a hit with something to say, and again for a hit the session
+ * expansion brings back. The text is the whole input, so the answer is kept until the read ends (`retrieveContext`
+ * forgets it as it ends and again as the next one starts, which also covers a read that failed) and no longer: nothing
+ * outlives the read it was worked out for. A text over the size limit, or a read that meets more texts than the count
+ * limit, is simply worked out again.
+ */
+const CONTENTFUL_HELD_MAX = 256;
+const CONTENTFUL_HELD_MAX_CHARS = 8 * 1024;
+const contentfulHeld = new Map<string, string>();
+
 /** Visible text after markdown/speaker-label strip — used to bury transcript stubs. */
 export function contentfulText(text: string): string {
-  let t = (text ?? '').replace(/\r/g, '');
-  t = t.replace(/\*+/g, '');
+  const raw = text ?? '';
+  const held = contentfulHeld.get(raw);
+  if (held !== undefined) return held;
+  const visible = stripToContentful(raw);
+  if (raw.length <= CONTENTFUL_HELD_MAX_CHARS) {
+    if (contentfulHeld.size >= CONTENTFUL_HELD_MAX) contentfulHeld.delete(contentfulHeld.keys().next().value as string);
+    contentfulHeld.set(raw, visible);
+  }
+  return visible;
+}
+
+function stripToContentful(raw: string): string {
+  // Each pass below but the heading rule can only change a text that holds the character it looks for, and most hit texts hold
+  // few of them, so a pass whose character is absent is not run (a replace that finds nothing still reads the whole text).
+  let t = raw.includes('\r') ? raw.replace(/\r/g, '') : raw;
+  if (t.includes('*')) t = t.replace(/\*+/g, '');
   // Whole ATX heading line is structure, not answer text (chunker prefixes
   // section buffers with the heading — Kimi R-O1).
   t = t.replace(/^#{1,6}\s+.*$/gm, '');
@@ -313,9 +343,9 @@ export function contentfulText(text: string): string {
   // either colon. Cue detection was Latin-1 only (`[A-Za-zÀ-ÿ]`), so labels in
   // non-Latin scripts were counted as content by contentfulText, which feeds both
   // contentBoost and dedupeHits.
-  t = t.replace(/^[\s>*-]*[\p{L}\p{M}][\p{L}\p{M} .'-]{0,40}[:：]\s*$/gmu, '');
-  t = t.replace(/\n{2,}/g, '\n').trim();
-  return t;
+  if (t.includes(':') || t.includes('：')) t = t.replace(/^[\s>*-]*[\p{L}\p{M}][\p{L}\p{M} .'-]{0,40}[:：]\s*$/gmu, '');
+  if (t.includes('\n\n')) t = t.replace(/\n{2,}/g, '\n');
+  return t.trim();
 }
 
 export function isSpeakerStub(text: string): boolean {
@@ -611,9 +641,9 @@ function sessionExpansionHits(
   const paths = notes.map(hit => hit.notePath);
   // What a note is shaped like decides its limit: every heading path of its chunks, not only the statements'.
   const headings = new Map<string, string[]>();
-  for (const row of db.prepare(
-    `SELECT note_path AS notePath, heading_path AS headingPath FROM chunks WHERE note_path IN (${paths.map(() => '?').join(',')})`,
-  ).all(...paths) as Array<{ notePath: string; headingPath: string }>) {
+  for (const row of listStatement(
+    db, paths.length, marks => `SELECT note_path AS notePath, heading_path AS headingPath FROM chunks WHERE note_path IN (${marks})`,
+  ).all(...paddedList(paths)) as Array<{ notePath: string; headingPath: string }>) {
     const list = headings.get(row.notePath) ?? [];
     list.push(row.headingPath);
     headings.set(row.notePath, list);
@@ -684,71 +714,97 @@ function onceStatement(db: Database.Database, sql: string): () => Database.State
 
 function getEntityIdsForNotes(db: Database.Database, notePaths: string[]): Array<{ id: number; notePath: string }> {
   if (notePaths.length === 0) return [];
-  const placeholders = notePaths.map(() => '?').join(',');
-  return (db.prepare(
-    `SELECT id, source_note as notePath FROM entities WHERE source_note IN (${placeholders})`
-  ).all(...notePaths) as any[]).map(r => ({ id: r.id, notePath: r.notePath }));
+  return (listStatement(
+    db, notePaths.length, marks => `SELECT id, source_note as notePath FROM entities WHERE source_note IN (${marks})`
+  ).all(...paddedList(notePaths)) as any[]).map(r => ({ id: r.id, notePath: r.notePath }));
 }
 
 function getRelatedEntityIds(db: Database.Database, entityIds: Array<{ id: number }>): number[] {
   if (entityIds.length === 0) return [];
   const ids = entityIds.map(e => e.id);
-  const placeholders = ids.map(() => '?').join(',');
-  const rows = db.prepare(
-    `SELECT DISTINCT target_entity_id as id FROM relations WHERE source_entity_id IN (${placeholders})
+  const rows = listStatement(
+    db, ids.length, marks => `SELECT DISTINCT target_entity_id as id FROM relations WHERE source_entity_id IN (${marks})
      UNION
-     SELECT DISTINCT source_entity_id as id FROM relations WHERE target_entity_id IN (${placeholders})`
-  ).all(...ids, ...ids) as any[];
+     SELECT DISTINCT source_entity_id as id FROM relations WHERE target_entity_id IN (${marks})`
+  ).all(...paddedList(ids), ...paddedList(ids)) as any[];
   const existing = new Set(ids);
   return rows.map(r => r.id).filter(id => !existing.has(id));
 }
 
 function getNotesForEntities(db: Database.Database, entityIds: number[]): string[] {
   if (entityIds.length === 0) return [];
-  const placeholders = entityIds.map(() => '?').join(',');
-  return (db.prepare(
-    `SELECT DISTINCT source_note FROM entities WHERE id IN (${placeholders})`
-  ).all(...entityIds) as any[]).map(r => r.source_note);
+  return (listStatement(
+    db, entityIds.length, marks => `SELECT DISTINCT source_note FROM entities WHERE id IN (${marks})`
+  ).all(...paddedList(entityIds)) as any[]).map(r => r.source_note);
 }
 
 function getBestChunksForNotes(db: Database.Database, notePaths: string[], limit: number, keep?: ChunkFilter): Array<{
   notePath: string; chunkId: number; headingPath: string; text: string; startLine: number; endLine: number
 }> {
   if (notePaths.length === 0) return [];
-  const placeholders = notePaths.map(() => '?').join(',');
   // The longest chunk of each note, the first of equally long ones; the notes in path order. Neither is left to row
   // order, which follows the order indexing wrote the notes in.
-  const chunks = db.prepare(
-    `SELECT chunkId, notePath, headingPath, text, startLine, endLine FROM (
+  const chunks = listStatement(
+    db, notePaths.length, marks => `SELECT chunkId, notePath, headingPath, text, startLine, endLine FROM (
        SELECT id as chunkId, note_path as notePath, heading_path as headingPath, text, start_line as startLine, end_line as endLine,
          ROW_NUMBER() OVER (PARTITION BY note_path ORDER BY token_count DESC, id) as rn
-       FROM chunks WHERE note_path IN (${placeholders})
+       FROM chunks WHERE note_path IN (${marks})
      ) WHERE rn = 1
      ORDER BY notePath
      LIMIT ?`
-  ).all(...notePaths, keep ? -1 : limit) as any[];
+  ).all(...paddedList(notePaths), keep ? -1 : limit) as any[];
   // Given `keep`, the chunks it shows are judged before the limit (LIMIT -1 is none).
   return keep ? chunks.filter(keep).slice(0, limit) : chunks;
 }
 
+interface RetrieveOptions {
+  includeHistory?: boolean; probe?: RetrievalProbe; isLedgerNote?: IsLedgerNote;
+  /**
+   * A read that shows only some chunks (a scoped read): every candidate is judged by it before any cut, so the window
+   * holds the best of what the read shows, and never fewer because chunks it does not show ranked above them.
+   */
+  scope?: ChunkScope;
+  /** Default cap for this read when the environment is unset/empty. get_context passes 0; searches use 2. */
+  noteCapWhenUnset?: number;
+}
+
 export async function retrieveContext(
-  db: Database.Database, vectorIndex: VectorIndex, provider: ProviderLike,
+  db: Database.Database, vectorIndex: VectorIndex | undefined, provider: ProviderLike | undefined,
   query: string, topK = 20, priorityPaths: string[] = [],
   clock: { nowMs?: number } = {},
-  opts: {
-    includeHistory?: boolean; probe?: RetrievalProbe; isLedgerNote?: IsLedgerNote;
-    /**
-     * A read that shows only some chunks (a scoped read): every candidate is judged by it before any cut, so the window
-     * holds the best of what the read shows, and never fewer because chunks it does not show ranked above them.
-     */
-    scope?: ChunkScope;
-    /** Default cap for this read when the environment is unset/empty. get_context passes 0; searches use 2. */
-    noteCapWhenUnset?: number;
-  } = {},
+  opts: RetrieveOptions = {},
 ): Promise<RetrievalResult> {
+  contentfulHeld.clear(); // what another read worked out is not this read's
   const factHits = factsFirstHits(db, query, Math.min(3, topK), opts.scope?.shows);
   const queryProbe: RetrievalProbe = opts.probe ?? {}; // the query vector, for the expansion's ranking
-  const semanticHits = await semanticSearch(db, vectorIndex, provider, query, Math.min(40, topK * 4), queryProbe, opts.scope);
+  const candidateLimit = Math.min(40, topK * 4);
+  const semanticHits = vectorIndex && provider
+    ? await semanticSearch(db, vectorIndex, provider, query, candidateLimit, queryProbe, opts.scope)
+    : (() => {
+        const match = quoteFtsQuery(query);
+        if (!match) return [];
+        // No embedding provider: the keyword index stands in for the semantic lane. Its rows are judged (ledger
+        // header and events the words are not in, then the scope) before the page is cut, as every keyword reader does.
+        return shownPage(
+          rows => keywordSearch(db, match, rows),
+          rows => {
+            const live = keywordLedgerHits(rows.map(r => ({ ...r, score: 1 / (1 + Math.abs(r.score)) })), opts.isLedgerNote, query);
+            return opts.scope ? live.filter(hit => opts.scope!.shows(hit)) : live;
+          },
+          candidateLimit,
+        );
+      })();
+  // The window is ranked without waiting for anything, so it is read in one transaction (inReadSnapshot).
+  const window = inReadSnapshot(db, () => rankWindow({ db, query, topK, priorityPaths, clock, opts, factHits, semanticHits }));
+  return finishContext({ db, vectorIndex, provider, query, queryProbe, window });
+}
+
+/** The window of hits of a read: scored, with the graph of its notes, their facts and dates, live and capped per note. Waits for nothing. */
+function rankWindow(read: {
+  db: Database.Database; query: string; topK: number; priorityPaths: string[]; clock: { nowMs?: number }; opts: RetrieveOptions;
+  factHits: ReturnType<typeof factsFirstHits>; semanticHits: Omit<Awaited<ReturnType<typeof semanticSearch>>[number], 'startLine' | 'endLine'>[];
+}) {
+  const { db, query, topK, priorityPaths, clock, opts, factHits, semanticHits } = read;
   // Raw cosines, kept only for a caller that asked to see them (get_context's relevance signal).
   const cosineByChunk = opts.probe ? new Map(semanticHits.map(h => [h.chunkId, h.score])) : null;
   const entityHit = lookupEntity(db, query.trim());
@@ -841,10 +897,9 @@ export async function retrieveContext(
   if (temporal) {
     // Frontmatter historical flags for all hit notes (one batched query).
     if (hitNotePaths.length > 0) {
-      const placeholders = hitNotePaths.map(() => '?').join(',');
-      const noteRows = db.prepare(
-        `SELECT path, frontmatter_json FROM notes WHERE path IN (${placeholders})`
-      ).all(...hitNotePaths) as any[];
+      const noteRows = listStatement(
+        db, hitNotePaths.length, marks => `SELECT path, frontmatter_json FROM notes WHERE path IN (${marks})`
+      ).all(...paddedList(hitNotePaths)) as any[];
       for (const row of noteRows) {
         if (frontmatterMarksHistorical(row.frontmatter_json)) historicalNotes.add(row.path);
       }
@@ -854,19 +909,18 @@ export async function retrieveContext(
     // MCP facts would never match corpus hits.
     if (hitEntityIds.length > 0) {
       const ids = hitEntityIds.map(e => e.id);
-      const nameRows = db.prepare(
-        `SELECT DISTINCT canonical_name FROM entities WHERE id IN (${ids.map(() => '?').join(',')})`
-      ).all(...ids) as any[];
+      const nameRows = listStatement(
+        db, ids.length, marks => `SELECT DISTINCT canonical_name FROM entities WHERE id IN (${marks})`
+      ).all(...paddedList(ids)) as any[];
       const names = nameRows.map(r => String(r.canonical_name)).filter(Boolean);
       if (names.length > 0) {
-        const namePlaceholders = names.map(() => '?').join(',');
-        const entityRows = db.prepare(
-          `SELECT id, canonical_name, source_note FROM entities WHERE canonical_name COLLATE NOCASE IN (${namePlaceholders})`
-        ).all(...names) as any[];
+        const entityRows = listStatement(
+          db, names.length, marks => `SELECT id, canonical_name, source_note FROM entities WHERE canonical_name COLLATE NOCASE IN (${marks})`
+        ).all(...paddedList(names)) as any[];
         const nameByEntityId = new Map(entityRows.map(r => [r.id, String(r.canonical_name).toLowerCase()]));
-        const factRows = db.prepare(
-          `SELECT subject_entity_id, predicate, object_text, valid_to FROM facts WHERE subject_entity_id IN (${entityRows.map(() => '?').join(',')})`
-        ).all(...entityRows.map(r => r.id)) as any[];
+        const factRows = listStatement(
+          db, entityRows.length, marks => `SELECT subject_entity_id, predicate, object_text, valid_to FROM facts WHERE subject_entity_id IN (${marks})`
+        ).all(...paddedList(entityRows.map(r => r.id))) as any[];
         for (const hitEntity of hitEntityIds) {
           const ownName = nameByEntityId.get(hitEntity.id);
           if (ownName === undefined) continue;
@@ -1021,6 +1075,17 @@ export async function retrieveContext(
     // A fact an identity question read names its author, so the reader's view can mark it (mvp/factMarkers.ts).
     ...('author' in h && h.author !== undefined ? { author: h.author } : {}),
   }));
+  return { hits, noteRow, temporal, pastIntent, asofPast };
+}
+
+/** The hits dated, joined by the statements of their sessions and laid out. The first wait is for the date of an entry of a daily note. */
+async function finishContext(read: {
+  db: Database.Database; vectorIndex: VectorIndex | undefined; provider: ProviderLike | undefined; query: string; queryProbe: RetrievalProbe;
+  window: ReturnType<typeof rankWindow>;
+}): Promise<RetrievalResult> {
+  const { db, vectorIndex, provider, query, queryProbe, window } = read;
+  const { noteRow, temporal, pastIntent, asofPast } = window;
+  let { hits } = window;
   // A hit that is a ledger event is dated by the event, and one that is an entry of a daily note by the entry: each
   // is one note, so the note's date is one date for every event, or every entry of the day, in it. Decided on the
   // text a hit still has after liveness filtering, and only for the hits that are returned. Everything else keeps its
@@ -1028,21 +1093,22 @@ export async function retrieveContext(
   // override the indexed file's write-time bound, even on already indexed notes.
   const eventTime = createLedgerEventClock(db);
   const entryTime = createDailyEntryClock();
-  hits = await Promise.all(hits.map(async h => {
+  // The dates of events are read as the hits are mapped, before any of them waits: in one transaction (inReadSnapshot).
+  hits = await Promise.all(inReadSnapshot(db, () => hits.map(async h => {
     const derived = eventTime(h) ?? await entryTime(h);
     if (derived === undefined) return h;
     const session_date = clampSessionDate(derived, noteRow(h.notePath)?.modified_at);
     return { ...h, session_date };
-  }));
+  })));
   // RENOR_SESSION_EXPAND (default 5 notes, 0 is off): the short statements of the best notes in the window join it,
   // under a token budget. The window itself is not touched; see sessionExpansionHits.
   const expansion = resolveSessionExpand();
   // Ranking by cosine is armed only for an embedding model the product has calibrated (CALIBRATED_BARS): the order
   // of cosines was measured for that model. Any other provider (the lexical eval stub, an unmeasured model) keeps the
   // former expansion.
-  const rankedExpansion = provider.identity && embeddingModelKey(provider.identity.kind, provider.identity.model, provider.dimensions) in CALIBRATED_BARS
+  const rankedExpansion = provider?.identity && embeddingModelKey(provider.identity.kind, provider.identity.model, provider.dimensions) in CALIBRATED_BARS
     ? resolveRankedExpansion() : null;
-  if (expansion) hits = [...hits, ...sessionExpansionHits(db, hits, expansion, rankedExpansion && queryProbe.queryVector ? { vectorIndex, queryVector: queryProbe.queryVector, ranked: rankedExpansion } : undefined)];
+  if (expansion) hits = [...hits, ...inReadSnapshot(db, () => sessionExpansionHits(db, hits, expansion, rankedExpansion && queryProbe.queryVector && vectorIndex ? { vectorIndex, queryVector: queryProbe.queryVector, ranked: rankedExpansion } : undefined))];
   // Default-on (S0 78.4%): lay the already-selected window out newest-session-first.
   // Does not replace scoring or change which chunks enter top-K. Opt out: RENOR_NEWEST_FIRST=0.
   // An explicit past-intent query overrides this presentation rerank — "what was
@@ -1053,5 +1119,6 @@ export async function retrieveContext(
   // choice the agent cannot see from the hits alone, and hits[0] is not "the answer" unless that key is score.
   const newestFirst = newestFirstEnabled() && !(temporal && pastIntent) && !asofPast;
   const rankedBy: HitOrder = newestFirst ? 'session_date' : 'score';
+  contentfulHeld.clear(); // nothing outlives the read it was worked out for
   return { query, hits: orderHits(hits, rankedBy), rankedBy };
 }

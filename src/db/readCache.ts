@@ -30,17 +30,57 @@ const kept = new WeakMap<Database.Database, Map<string, Kept>>();
 /** Values kept per connection. A key may carry what a caller sent (a scope), so the oldest goes when the room is used. */
 const MAX_KEPT = 64;
 
+/** The connections inside a snapshot (`inReadSnapshot`). */
+const snapshots = new WeakSet<Database.Database>();
+
 /**
  * What the database has been through: changes this connection committed (`total_changes()`, which counts every row an
  * INSERT, UPDATE or DELETE touched, triggers and virtual tables included) and changes any other connection committed
  * (`PRAGMA data_version`, which a connection's own writes do not move). Both only ever go up, so two equal stamps are
- * the same data. Null inside a transaction: it can still be rolled back, and its changes would be counted for good.
+ * the same data. Null inside a transaction: it can still be rolled back, and its changes would be counted for good. A
+ * snapshot is the exception: it is ended with a COMMIT and never rolled back, so what it has counted stays counted.
  */
 function stampOf(db: Database.Database): string | null {
-  if (db.inTransaction) return null;
+  if (db.inTransaction && !snapshots.has(db)) return null;
   const version = prepareOnce(db, 'PRAGMA data_version').pluck().get();
   const changes = prepareOnce(db, 'SELECT total_changes()').pluck().get();
   return `${version}:${changes}`;
+}
+
+/**
+ * Runs `read` in ONE transaction. A statement that runs on its own begins a read transaction and ends it again, and in WAL
+ * mode that is two locks on the shared-memory index and a file-size call: about 5 microseconds for a lookup that takes 1.5,
+ * and a `get_context` runs a hundred of them. Inside a transaction the lock is taken once, and every statement after the first
+ * pays for what it reads. The reads see the database as it was when the first of them began; a commit by another process
+ * meanwhile is in the next read, not in a mix of the two.
+ *
+ * `read` is for a stretch of reads that holds no `await` and writes nothing: nothing else of this process can run in a
+ * stretch that does not yield, and a write inside it would not be durable until the transaction ended. When a transaction is
+ * open already (a write transaction, or a snapshot outside this one) `read` just runs in it. The stamps (`databaseStamp`,
+ * `readUntilWrite`) hold for a snapshot, which is committed and never rolled back.
+ */
+export function inReadSnapshot<T>(db: Database.Database, read: () => T): T {
+  if (db.inTransaction) return read();
+  prepareOnce(db, 'BEGIN').run();
+  snapshots.add(db);
+  let done = false;
+  try {
+    const result = read();
+    done = true;
+    return result;
+  } finally {
+    snapshots.delete(db);
+    try {
+      prepareOnce(db, 'COMMIT').run();
+    } catch (err) {
+      if (done) throw err; // the read failed first: that is the error to report
+    }
+  }
+}
+
+/** The stamp `readUntilWrite` keeps a value under. Null inside a transaction, which can still roll back. */
+export function databaseStamp(db: Database.Database): string | null {
+  return stampOf(db);
 }
 
 /**

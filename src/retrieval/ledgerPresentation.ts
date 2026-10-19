@@ -61,12 +61,12 @@ export function dropLedgerPreamble<T extends LedgerHit>(hits: T[], isLedger: IsL
  * word of the question is in what the event says. The search matched the record's markup too ("kind", "store", "ledger",
  * a year), and a hit that way is no match for the question.
  */
-export function keywordLedgerHits<T extends LedgerHit>(hits: T[], isLedger: IsLedgerNote | undefined, query: string): T[] {
+export function keywordLedgerHits<T extends LedgerHit>(hits: T[], isLedger: IsLedgerNote | undefined, query: string, held?: LedgerRecordCache): T[] {
   if (isLedger === undefined) return hits;
   const words = wordsOf(query);
   return dropLedgerPreamble(hits, isLedger).filter(hit => {
     if (!isLedger(hit.notePath) || words.length === 0) return true;
-    const events = parseEvents(hit.text);
+    const events = parseEvents(hit.text, held);
     return events.length === 0 || events.some(event => {
       const said = says(event);
       return words.some(word => said.has(word));
@@ -75,11 +75,11 @@ export function keywordLedgerHits<T extends LedgerHit>(hits: T[], isLedger: IsLe
 }
 
 /** The hits as a client is shown them: no header of the ledger, and each event of it as the user's words (or the fact). */
-export function presentLedgerEvents<T extends LedgerHit>(hits: T[], isLedger: IsLedgerNote | undefined): T[] {
+export function presentLedgerEvents<T extends LedgerHit>(hits: T[], isLedger: IsLedgerNote | undefined, held?: LedgerRecordCache): T[] {
   if (isLedger === undefined) return hits;
   return dropLedgerPreamble(hits, isLedger).flatMap(hit => {
     if (!isLedger(hit.notePath)) return [hit];
-    const text = presentEvents(hit.text);
+    const text = presentEvents(hit.text, held);
     // An event is one chunk that opens with its own header line (the chunker cuts at every `##` heading and never inside
     // a paragraph, and a record has no blank line), so a ledger text with no record in it is one already presented.
     if (text === null) return [hit];
@@ -102,14 +102,34 @@ const EVENT_HEADER = /^## MEM_[A-Za-z0-9]+ · /i;
 // A field value is the rest of its physical line (dotAll: U+2028/U+2029 and a lone \r belong to a value, as in the ledger parser).
 const FIELD = /^- ([A-Za-z][\w-]*): (.*)$/s;
 
-interface LedgerRecord {
+export interface LedgerRecord {
   fields: Map<string, string>;
   /** The history label came just before this event's header. */
   superseded: boolean;
+  /** The words the event says (`says`), worked out the first time they are asked for. */
+  said?: Set<string>;
 }
 
+/**
+ * The records parsed from the chunk texts of one read, by text. A keyword read asks about the same chunk of the ledger
+ * once for each variant of the question that finds it, and again to show it; the records are a function of the text alone,
+ * so the read parses a text once and hands the records round. The caller makes one for its read and lets it go with the read;
+ * a read without one parses each time, as it always did. Nothing that is given the records changes them.
+ */
+export type LedgerRecordCache = Map<string, LedgerRecord[]>;
+const RECORDS_HELD_MAX = 256;
+const RECORDS_HELD_MAX_CHARS = 8 * 1024;
+
 /** The events in a chunk's text, as the lines of their records say. Tolerant: it only reads, and never throws. */
-function parseEvents(text: string): LedgerRecord[] {
+function parseEvents(text: string, held?: LedgerRecordCache): LedgerRecord[] {
+  const kept = held?.get(text);
+  if (kept !== undefined) return kept;
+  const events = readEvents(text);
+  if (held && held.size < RECORDS_HELD_MAX && text.length <= RECORDS_HELD_MAX_CHARS) held.set(text, events);
+  return events;
+}
+
+function readEvents(text: string): LedgerRecord[] {
   const events: LedgerRecord[] = [];
   let labelled = false;
   for (const line of text.replace(/\r\n/g, '\n').split('\n')) {
@@ -132,8 +152,8 @@ function parseEvents(text: string): LedgerRecord[] {
  * object`. A superseded event (shown only on request) keeps the label that says so. Null when the text holds no event,
  * so a text that is already presented is left as it is.
  */
-export function presentEvents(text: string): string | null {
-  const events = parseEvents(text);
+export function presentEvents(text: string, held?: LedgerRecordCache): string | null {
+  const events = parseEvents(text, held);
   return events.length ? events.map(show).filter(Boolean).join('\n\n') : null;
 }
 
@@ -162,9 +182,10 @@ function statementOf(raw: string | undefined): string | undefined {
   }
 }
 
-/** The words of what an event says: the statement and the fact, without the record's markup. */
-function says({ fields }: LedgerRecord): Set<string> {
-  return new Set(wordsOf([statementOf(fields.get('statement')), fields.get('subject'), fields.get('predicate'), fields.get('object')]
+/** The words of what an event says: the statement and the fact, without the record's markup. Worked out once for a record. */
+function says(record: LedgerRecord): Set<string> {
+  const { fields } = record;
+  return record.said ??= new Set(wordsOf([statementOf(fields.get('statement')), fields.get('subject'), fields.get('predicate'), fields.get('object')]
     .filter(Boolean)
     .join(' ')));
 }

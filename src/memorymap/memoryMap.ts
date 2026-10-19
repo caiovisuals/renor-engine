@@ -8,6 +8,7 @@ import { parseNote } from '../indexer/parser';
 import { isIgnoredByVault } from '../indexer/walker';
 import { indexFile, type IndexOptions } from '../indexer/pipeline';
 import { factEventId, listRetiredFacts, resolveLedgerPath, restoreFact, retireFact, type FactRetirementReceipt } from '../memory/lifecycle';
+import { writerConflictLines } from '../memory/writerConflicts';
 import { DAILY_FILE_RE, ENTRY_LINE_RE, decodeEntryLine, engineDailyHeader, entryInstant, isEmptyEngineDailyNote, parseEntryHeader, type EntryHeader } from '../memory/dailyNote';
 import { withDailyFileLock } from '../memory/writer';
 import { notePathMatchesScope, savedScopeMatches, type NormalizedScope } from '../mvp/scope';
@@ -151,6 +152,8 @@ export interface MapFact {
   scope: string;
   /** The event that saved it: `fact:` and this is what retire_memory takes. Null for a fact saved before the ledger. */
   eventId: string | null;
+  /** Set on a current fact that replaced a value another writer saved, until that writer saves it again (memory/writerConflicts.ts). */
+  writerConflict?: string;
 }
 
 export type MapLinkKind = 'tag' | 'mention' | 'wikilink' | 'fact';
@@ -968,8 +971,12 @@ export async function buildMemoryMap(ctx: MemoryMapContext, options: MemoryMapOp
     object: f.object ?? '', validFrom: f.valid_from, validTo: f.valid_to, scope: f.scope, eventId: f.event_id,
   }));
   // A fact's object is shown as an excerpt (the link search below reads the whole object): a map is for browsing, and
-  // get_context returns the fact in full.
-  const facts = allFacts.slice(0, cap).map((f) => ({ ...f, object: collapse(f.object, EXCERPT_CHARS) }));
+  // get_context returns the fact in full. A current fact that replaced another writer's value carries its conflict line.
+  const disputes = writerConflictLines(db, allFacts.slice(0, cap).map((f) => (f.validTo === null ? f.eventId : null)));
+  const facts: MapFact[] = allFacts.slice(0, cap).map((f) => {
+    const line = f.validTo === null && f.eventId !== null ? disputes.get(f.eventId) : undefined;
+    return { ...f, object: collapse(f.object, EXCERPT_CHARS), ...(line === undefined ? {} : { writerConflict: line }) };
+  });
   const truncatedFacts = factRows.length > MAX_FACTS || allFacts.length > cap;
 
   // Links over the whole map, then only those between what the reply lists (no link points at a missing node). Each kind

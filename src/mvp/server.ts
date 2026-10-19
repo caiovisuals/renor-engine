@@ -17,6 +17,7 @@ import { clearReindexPending, removeRowsOutsideRoot, reindexPending } from '../i
 import { remember, replayLedger, factsFor, listLifecycleSubjects, resolveLedgerPath, scopeFilterFor, LIFECYCLE_NOTE_PATH, LifecycleInputError, FIELD_LIMITS } from '../memory/lifecycle';
 import { ensureFactTerms } from '../memory/factTerms';
 import { namedConflicts, possibleDuplicates } from '../memory/factConflicts';
+import { writerConflictLines } from '../memory/writerConflicts';
 import { MAX_STATEMENT_LENGTH } from '../memory/limits';
 import { cleanSource, headerSource, hiveIdentity, isImportSource, productFromUserAgent } from '../memory/sourceName';
 import { assertStorable, secretGuardEnabled } from '../extraction/secretGuard';
@@ -24,6 +25,7 @@ import { readWhatsNew } from '../memory/whatsNew';
 import { askAgent, askAgentPerHour, answerRequest, closeRequest, listRequestsPage, noteKnownAgent } from '../memory/requests';
 import { searchHistory, HistoryUnavailableError, HISTORY_DISCLAIMER } from './history';
 import { identityLine } from './identity';
+import { SERVER_NAME, SERVER_VERSION } from './serverCard';
 import { mapInvalidParams } from '../mcp/requestErrors';
 import { OwnerOAuthProvider, ownerLoginRouter } from './auth';
 import {
@@ -62,6 +64,7 @@ import { withHitDates } from './hitDates';
 import { assertReplaceable, recordReplacement, replacementIndex, withReplacements } from '../memorymap/replacements';
 import { CONTEXT_BUDGET_KEEPS_NEWEST, CONTEXT_RELEVANCE_GUIDANCE, CONTEXT_RELEVANCE_KEEPS_MATCH, SEARCH_RELEVANCE_GUIDANCE, contextRelevanceArmed } from './contextRelevance';
 import { applyHitFloor, searchHitFloor } from './hitFloor';
+import { readerLayoutEnabled, readerLayoutOf } from '../retrieval/readerLayout';
 import type { RetrievalProbe } from '../retrieval/semantic';
 import { readBuildIdentity } from '../buildIdentity';
 import { hostHeaderValidation } from '@modelcontextprotocol/sdk/server/middleware/hostHeaderValidation.js';
@@ -355,11 +358,48 @@ function isDashboardCall(headers: Record<string, unknown> | undefined, config: M
   return Boolean(config.gatewaySecret) && headerText(headers, DASHBOARD_HEADER) === '1';
 }
 
+/**
+ * The gateway's mark on a call from a directory client: a claude.ai or chatgpt.com connector, whose token the gateway marks
+ * (oauth.ts DIRECTORY_TOKEN_MARK). Like DASHBOARD_HEADER it is trusted only behind the gateway, and it only narrows the tools
+ * listed (no hive tool); it changes nothing a call may do.
+ */
+export const DIRECTORY_HEADER = 'x-renor-directory';
+function isDirectoryCall(headers: Record<string, unknown> | undefined, config: MvpConfig): boolean {
+  return Boolean(config.gatewaySecret) && headerText(headers, DIRECTORY_HEADER) === '1';
+}
+
+/**
+ * What a directory client is told about the memory. It says nothing about call order or behaviour: the directory rules forbid
+ * that for other tools. Named agent keys keep the instructions built below.
+ */
+const DIRECTORY_INSTRUCTIONS = 'Renor single-owner memory: the owner\'s own saved memory, kept in their private workspace. get_context returns the current facts and the saved memories that match a request. remember saves one statement, and save_memory saves a value with its subject, predicate and object.';
+
+/**
+ * The one tool only the dashboard may list or run: it erases retired memories for good. Its registerTool call below spells the name
+ * as a literal, because the docs binding and the hosted-tool tests read the registry off the literal call sites; if the two ever
+ * differ, registeredToolEntry throws when an agent's server is built.
+ */
+const OWNER_ONLY_TOOL = 'delete_retired_memory';
+
+/** The tools agents use to reach each other. A directory client is offered none of them; registeredToolEntry throws if one is renamed. */
+const HIVE_TOOLS = ['whats_new', 'ask_agent', 'list_requests', 'answer_request', 'close_request'];
+
+/**
+ * The entry the SDK lists and runs a tool from. It is the object registerTool returned unless something replaced it:
+ * @posthog/mcp, which wraps every server of a workspace that has RENOR_POSTHOG_KEY (posthogMcp.ts), swaps the registry for a
+ * proxy that stores a COPY of each tool, and from then on the returned handle's disable() and `enabled` change nothing the SDK reads.
+ */
+function registeredToolEntry(server: McpServer, name: string): { enabled: boolean } {
+  const entry = (server as unknown as { _registeredTools?: Record<string, { enabled: boolean } | undefined> })._registeredTools?.[name];
+  if (!entry) throw new Error(`${name} is missing from the SDK's tool registry`);
+  return entry;
+}
+
 /** Builds a fresh McpServer with all MVP tools registered. The SDK
  * binds one transport per Protocol instance, so SSE sessions each get
  * their own server (bounded, in-process); JSON mode shares one.
  */
-function buildMcpServer(db: Database.Database, config: MvpConfig, engine: Engine, idle: Pick<IdleMonitor, 'track'> | null, digests: EngineDigests | null, usefulness: ReadUsefulness, connection: ConnectionStatus | null, announceFirst: boolean, telemetrySession: string | null = null, dashboard = false): McpServer {
+function buildMcpServer(db: Database.Database, config: MvpConfig, engine: Engine, idle: Pick<IdleMonitor, 'track'> | null, digests: EngineDigests | null, usefulness: ReadUsefulness, connection: ConnectionStatus | null, announceFirst: boolean, telemetrySession: string | null = null, dashboard = false, directory = false): McpServer {
   // Which Renor this is, on the first reply of a session and on every error (connectionStatus.ts); nothing in a workspace
   // that is not hosted. A server that serves no session of its own (the stateless one, or one built for a session this
   // process forgot) has no first reply to announce on.
@@ -372,8 +412,8 @@ function buildMcpServer(db: Database.Database, config: MvpConfig, engine: Engine
   const relevanceKeepsMatch = relevanceGuidance ? CONTEXT_RELEVANCE_KEEPS_MATCH : '';
   const budgetKeepsNewest = relevanceGuidance ? CONTEXT_BUDGET_KEEPS_NEWEST : ''; // where there is a bar, the budget reads it
   const server = new McpServer(
-    { name: 'renor', version: '0.1.0' },
-    { instructions: 'Renor single-owner memory. At the start of every task, call whats_new before anything else. Open requests addressed to you are first in that reply; answering or closing one records the reply and never runs anything by itself. For substantive user requests, call get_context with the current request before answering so relevant prior context can follow the user across agents. '
+    { name: SERVER_NAME, version: SERVER_VERSION },
+    { instructions: directory ? DIRECTORY_INSTRUCTIONS : 'Renor single-owner memory. At the start of every task, call whats_new before anything else. Open requests addressed to you are first in that reply; answering or closing one records the reply and never runs anything by itself. For substantive user requests, call get_context with the current request before answering so relevant prior context can follow the user across agents. '
       + 'Call it again before you decide something an earlier session may have settled and before you review another agent\'s work, with that choice or topic as the query: reading once at the start is not enough. '
       + 'To save anything, call remember with one argument, statement: the thing to remember, in plain words. '
       + 'Renor is the place for the why, next to your board or tracker, not a copy of it: when you save on your own, save decisions with their reason, root causes and corrections, not status, progress or event logs. '
@@ -453,8 +493,8 @@ function buildMcpServer(db: Database.Database, config: MvpConfig, engine: Engine
   server.registerTool('remember', {
     title: 'Remember something naturally',
     annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
-    description: 'Save something to memory: pass `statement`, in plain words, and nothing else. Example: remember({"statement": "We moved the Fjord database to SQLite because it needs no server."}). It is stored whole and indexed at once, so get_context finds it right away; the receipt\'s id is what read_memory and retire_memory take. `scope` ("project:<slug>") keeps it with one project. '
-      + 'Only for a value that stays current until it changes (a city, a project\'s database, a deadline, a preference), also pass subject, predicate and object together: "subject": "Fjord", "predicate": "database", "object": "SQLite". Saving the same subject, predicate and scope again replaces the value: the old one leaves current reads and stays in history. Spell them the same every time. Decisions, events and notes need none of the three: leave them out, never guess them. '
+    description: 'Save something to memory: pass `statement`, in plain words, and nothing else. Do not save passwords, API keys or tokens. Example: remember({"statement": "We moved the Fjord database to SQLite because it needs no server."}). It is stored whole and indexed at once, so get_context finds it right away; the receipt\'s id is what read_memory and retire_memory take. `scope` ("project:<slug>") keeps it with one project. '
+      + 'Only for a value that stays current until it changes (a city, a project\'s database, a deadline, a preference), also pass subject, predicate and object together: "subject": "Fjord", "predicate": "database", "object": "SQLite". Saving the same subject, predicate and scope again replaces the value: the old one leaves current reads and stays in history. A save by a different agent than the one that saved the current value is shown in reads as a CONFLICT line until that agent saves it again (see save_memory). Spell them the same every time. Decisions, events and notes need none of the three: leave them out, never guess them. '
       + `The same statement for the same fact again changes nothing. A statement over ${MAX_STATEMENT_LENGTH} characters is refused, never cut, in either form. Saved on its own as a note, one that is not valid Unicode or holds a control character (U+0000 to U+001F except tab, newline and carriage return, or U+007F) is refused and nothing is written; with subject, predicate and object it is saved as a fact with its control characters escaped in the ledger, and only those three fields refuse them. A fact receipt may list possibleDuplicates (the same predicate under a name one word longer or shorter, or in another scope): nothing is merged; to correct one, save again with its subject and scope. A save is compared within the scope it names.`
       + ' To correct one specific earlier note or log entry (not a fact), also pass `replaces`, its id (from memory_map with a query, or an earlier save\'s receipt): that memory is then marked replaced, with a pointer to this save, in every recall, and this save is listed before it. Nothing is deleted; retire_memory on this save undoes it, and the receipt says `replaced` (or `replacesIgnored` when linking would make a loop, as when the save is the same line as the memory it replaces).',
     inputSchema: {
@@ -489,6 +529,7 @@ function buildMcpServer(db: Database.Database, config: MvpConfig, engine: Engine
           predicate: args.predicate!,
           object: args.object!,
           source: sourceOf(args.source, extra, config),
+          writer: agentOf(extra, config),
           scope: args.scope,
           statement: args.statement,
         });
@@ -568,8 +609,8 @@ function buildMcpServer(db: Database.Database, config: MvpConfig, engine: Engine
   server.registerTool('get_context', {
     title: 'Get relevant user context',
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-    description: 'Primary read tool for normal agent use. Call this before substantive work with the current user request. Returns current lifecycle facts first, then relevant memories using semantic search when configured plus local keyword search as a fallback. The semantic matches come in the order named by rankedBy: "session_date" is newest first, so memories[0] is the most recent match the reply holds and NOT necessarily the best one (compare score; higher is closer), while "score" is best match first. Keyword matches (reason "fts" or "note-identity") follow them and are scored on other scales, so compare scores only within one reason. A memory the query did not match — a short statement the session expansion added from a note that did match — is marked "matched": false, so a reader can discount it as delivered data whatever its position; a memory without that marker was matched. The whole reply is bounded by max_tokens (counted with the o200k tokenizer: the echoed query, conflicts and every other field count too); the facts leave room for the memories, and the facts are cut from their end. When the matches do not all fit, the keyword matches are dropped first and then the semantic matches with the lowest score, so an older close match is kept before a newer weak one; the memories kept stay in the order named by rankedBy. A memory of a saved fact names no note (an empty notePath), and one whose fact is listed in facts is not repeated. When a returned fact disagrees with another current value of its predicate under the same subject in another scope, or under a name one word longer or shorter, conflicts lists those values, newest first, with their subject and scope: all stay current until one is corrected (a scoped call compares within its scope). Text the rendered note does not show (an HTML comment, a link title, a reference definition, image alt text, a footnote, a collapsed <details> body, a code fence\'s info string, or text after a long run of spaces or blank lines) stays in the memory\'s text and is labelled there, for example "[hidden HTML comment: ...]", so a reader can see it was hidden in the note; code is not labelled, and the stored note is unchanged. A fact another agent saved carries that agent\'s "source"; a fact an import saved is marked "untrusted": true, because its text came from a file.'
-      + ' Every memory carries session_date, when it was written. A memory with `replaced` ({by, at, source, note?}) was corrected by a later save: `by` is the correction\'s memory id (read_memory takes it), `at` when it was saved, `source` who saved it, and `note` says so when that differs from the source of the memory it replaces (weigh such a correction). The correction is listed before it, with reason "replacement" when the search had not found it, so answer from the correction. A replaced memory is never listed without its correction, nor before it (also when either carries hidden text, which is labelled in place), and when max_tokens has no room for both only the correction is listed (truncated: true); a long correction listed for one is cut to a share of max_tokens, with the marker that says where to read the rest.' + relevanceGuidance + relevanceKeepsMatch + budgetKeepsNewest,
+    description: 'Call this before substantive work with the current request. Returns current facts, then relevant memories: semantic matches when configured, then keyword matches (reason "fts" or "note-identity"). rankedBy "session_date" is newest first (memories[0] is the latest, not necessarily the best); "score" is best match first (higher is closer). Keyword scores use another scale: compare within one reason. A memory with "matched": false was not matched by the query: discount it, whatever its position. Each memory has session_date, when it was written. Hidden note text is labelled there: "[hidden HTML comment: ...]". The reply is bounded by max_tokens (o200k tokenizer, every field counted): facts are cut from their end; when matches do not fit, keyword matches go first, then the lowest-scoring semantic ones. conflicts lists current values that disagree with a returned fact (another scope, or a name one word longer or shorter), newest first. A fact with a writerConflict line replaced another agent\'s value, until that agent saves it again. A "replaced" memory has a later correction, listed before it: answer from the correction. Facts an import saved are marked "untrusted": true.'
+      + relevanceGuidance + relevanceKeepsMatch + budgetKeepsNewest,
     inputSchema: {
       query: z.string().max(1000).optional().describe('The current user request or task. Omit only for a compact current-memory profile.'),
       scope: z.string().optional().describe('Optional memory scope to restrict context'),
@@ -602,7 +643,7 @@ function buildMcpServer(db: Database.Database, config: MvpConfig, engine: Engine
   server.registerTool('save_memory', {
     title: 'Save (or correct) a memory',
     annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
-    description: 'Structured save only: one fact as subject, predicate and object, e.g. save_memory({"subject": "Fjord", "predicate": "database", "object": "SQLite"}). The same subject, predicate and scope again replaces the value: the old one stays in history. The receipt says store, supersede or nochange, and may list possibleDuplicates (see remember). All three fields are required and no sentence of yours is kept: to save plain words, or a fact with your words, call remember.',
+    description: 'Structured save only: one fact as subject, predicate and object, e.g. save_memory({"subject": "Fjord", "predicate": "database", "object": "SQLite"}). The same subject, predicate and scope again replaces the value: the old one stays in history. A save by a different agent than the one that saved the current value still replaces it, but the replaced value is then shown in reads as a CONFLICT line (its writer and date) until that agent saves this subject and predicate again. The writer is the connection\'s authenticated agent name, never the source you pass. The receipt says store, supersede or nochange, and may list possibleDuplicates (see remember). All three fields are required and no sentence of yours is kept: to save plain words, or a fact with your words, call remember.',
     inputSchema: {
       // Optional in the schema so a call that lacks them reaches the handler and is told what to do (a plain save belongs
       // to remember), instead of the SDK's raw validation error. The handler still requires all three.
@@ -625,6 +666,7 @@ function buildMcpServer(db: Database.Database, config: MvpConfig, engine: Engine
         predicate,
         object,
         source: sourceOf(args.source, extra, config),
+        writer: agentOf(extra, config),
         scope: args.scope,
       });
       usefulness.cited(args.cites);
@@ -656,7 +698,7 @@ function buildMcpServer(db: Database.Database, config: MvpConfig, engine: Engine
   server.registerTool('retrieve_memory', {
     title: 'Retrieve memories',
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-    description: 'Returns the current value(s) for a subject. Optionally filter by predicate, or include the full superseded history (include_history) or a point-in-time view (as_of). Every fact says whether it is the live value (current:true) or a superseded one, so a history read still shows which value is current, and which scope it belongs to. conflicts, when present, names current values that disagree, as get_context does. An empty result says whether the subject exists: known:false means no such subject (closestSubjects lists near matches), known:true means it exists but the predicate or as_of matched nothing. Calling without a subject returns an error that lists the known subjects. With a scope, subjects, suggestions and existence are all judged within that scope only: a subject saved only in another scope is unknown here.',
+    description: 'Returns the current value(s) for a subject. Optionally filter by predicate, or include the full superseded history (include_history) or a point-in-time view (as_of). Every fact says whether it is the live value (current:true) or a superseded one, so a history read still shows which value is current, and which scope it belongs to. conflicts, when present, names current values that disagree, as get_context does. A current value that replaced a value another agent saved carries a writerConflict line: the replaced value, its writer and date, which stays until that agent saves this subject and predicate again; read it as an open disagreement, not as the settled answer. An empty result says whether the subject exists: known:false means no such subject (closestSubjects lists near matches), known:true means it exists but the predicate or as_of matched nothing. Calling without a subject returns an error that lists the known subjects. With a scope, subjects, suggestions and existence are all judged within that scope only: a subject saved only in another scope is unknown here.',
     inputSchema: {
       // Optional in the schema so a missing value reaches the handler and gets an actionable error
       // instead of the SDK's raw validation error. A null is a missing value too.
@@ -692,6 +734,11 @@ function buildMcpServer(db: Database.Database, config: MvpConfig, engine: Engine
         scope,
       }) as any[];
       if (args.predicate) facts = facts.filter(f => f.predicate === args.predicate);
+      // The values another writer replaced that stay open against a current value (memory/writerConflicts.ts). A point-in-time
+      // view is not about now, so only a read of the current values carries them.
+      const displaced = args.as_of === undefined
+        ? writerConflictLines(db, facts.map(f => (f.valid_to == null ? f.event_id : null)))
+        : new Map<string, string>();
       const rows = facts.map(f => ({
         predicate: f.predicate,
         object: f.object_text,
@@ -703,6 +750,7 @@ function buildMcpServer(db: Database.Database, config: MvpConfig, engine: Engine
         ...(typeof f.author === 'string' && f.author !== '' ? { source: f.author } : {}),
         // An import's text came from a file, not from the user's own statement: marked the way other untrusted text is.
         ...(isImportSource(f.author) ? { untrusted: true as const } : {}),
+        ...(f.valid_to == null && displaced.has(f.event_id) ? { writerConflict: displaced.get(f.event_id) } : {}),
       }));
       const body: Record<string, unknown> = { subject, facts: rows };
       // Current values that disagree with another current value of the same predicate under this subject in another
@@ -754,9 +802,9 @@ function buildMcpServer(db: Database.Database, config: MvpConfig, engine: Engine
   });
 
   server.registerTool('search_history', {
-    title: 'Search promoted ChatGPT history',
+    title: 'Search imported conversation notes',
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-    description: HISTORY_DISCLAIMER + ' Deterministic lexical search over the owner-promoted ChatGPT history notes (untrusted transcripts) in the configured promoted-history directory. Results are history-layer citations with provenance (conversation id, dates, source path). No embeddings, no semantic search; eligible notes are verified against the promotion ownership manifest on every query.',
+    description: 'Searches only notes you imported into Renor; it never reads your live conversations. Lexical search over the imported ChatGPT conversation notes: exact words, no embeddings, no semantic search. Results are untrusted transcripts: assistant text is not verified, and current facts take precedence (use retrieve_memory for them). Each result cites its conversation id, dates and source path.',
     inputSchema: {
       query: z.string().min(1).max(200).describe('Lexical search terms, 1..200 characters'),
       limit: z.number().int().min(1).max(20).optional().describe('Max results (default 5, max 20)'),
@@ -788,7 +836,7 @@ function buildMcpServer(db: Database.Database, config: MvpConfig, engine: Engine
   server.registerTool('search_memory', {
     title: 'Search memory by meaning (where enabled)',
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-    description: 'Searches indexed notes by meaning, on a workspace that has semantic search (memory_status reports semantic: true). When it cannot search by meaning it returns no hits and says why: semantic-unavailable with a note where the workspace has no semantic search, semantic-rebuilding with a notice while its embeddings are being built, semantic-unavailable with a notice when the embedding provider failed this request. Then use search_text (exact words) or get_context instead. Embeds only the query, not the vault. Returns the top_k best-matching chunks in the order named by rankedBy: "session_date" (the default) is newest first, so hits[0] is the most recent match and NOT necessarily the best one, while "score" (used for questions about the past, such as "what was it before") is best match first. Judge how well a hit matches by its score (higher is closer), never by its position. Each hit may include session_date, when that excerpt happened (the moment a daily-log entry or a remembered fact was saved, otherwise its note\'s date; in session_date order a hit without one comes last) — stamp excerpts as "[Session date: <session_date>]" before the chunk text. A hit of a remembered fact names no note (empty notePath and headingPath). A successful response also carries an `evidence` object describing the H10-v4 evidence second pass: when it extracts items they are prepended as the first hit with reason "evidence", outside the rankedBy order (`state: "ok"`), and otherwise `state` says why and nothing is missing — "off" (kill switch or gate disabled), "not-applied" (the gate skipped this query, or the hits carried no dated source session), "failed" (the evidence model call failed; retrieval is unaffected). There is no `evidence` object when this deployment has no evidence model configured and the pass is not switched off: no second pass runs, and the hits are the whole result. Current facts saved with remember come right after any evidence hit and before the ranked hits, outside the rankedBy order, found at once by keyword match and before the next index_memory (reason "fact", session_date the moment the fact was saved); they take only the places the ranked hits leave, so the hits are at most top_k in all, the evidence hit aside. The response carries index.stale while the semantic index is behind the saved facts, and while saved notes in the scope the search names are still waiting for their embedding: index.unembeddedNotes gives their count, and search_text or a retry finds them meanwhile. A hit with `replaced` ({by, at, source, note?}) was corrected by a later save: the correction (memory id `by`, saved by `source`; a `note` when that differs from the replaced memory\'s source) is listed before it, reason "replacement" when the search had not found it, and the replaced hit stays listed for the record. An added correction takes the place of the last hit, so the page is never longer than top_k; a top_k too small for the pair lists the correction alone.' + (evidence?.options.background ? EVIDENCE_WAIT_STATES : '') + (evidence?.options.dailyCap !== undefined ? EVIDENCE_DAILY_CAP_STATE : '') + (digests ? DIGEST_HITS : '') + (relevanceGuidance ? SEARCH_RELEVANCE_GUIDANCE : ''),
+    description: 'Searches notes by meaning when memory_status reports semantic: true; otherwise it returns no hits and says why (semantic-unavailable or semantic-rebuilding), so use search_text or get_context. rankedBy "session_date" (the default) is newest first, so hits[0] is the latest, not necessarily the best; "score" is best match first. Judge hits by score (higher is closer), not position. One conversation\'s hits on one date come as one hit, opening with its date; a time phrase in it is resolved below, counted from that session. A hit without session_date comes last; a fact\'s hit has no notePath. There is no `evidence` object when this deployment has no evidence model configured and the pass is not switched off: no second pass runs, and the hits are the whole result. When there is one, its items come first, outside rankedBy, with reason "evidence", and its state is "ok", "off", "not-applied" or "failed". Facts saved with remember are added outside rankedBy, within top_k; a writerConflict line on one means it replaced another agent\'s value. index.stale: the semantic index lags the saved facts. A "replaced" hit\'s correction is listed before it (by: its id, source: who saved it).' + (evidence?.options.background ? EVIDENCE_WAIT_STATES : '') + (evidence?.options.dailyCap !== undefined ? EVIDENCE_DAILY_CAP_STATE : '') + (digests ? DIGEST_HITS : '') + (relevanceGuidance ? SEARCH_RELEVANCE_GUIDANCE : ''),
     inputSchema: {
       query: z.string().min(1).max(500).describe('Natural language query'),
       top_k: z.number().int().min(1).max(50).optional().describe('Max matches (default 20), not counting the short statements the session expansion adds to them'),
@@ -800,7 +848,7 @@ function buildMcpServer(db: Database.Database, config: MvpConfig, engine: Engine
       const topK = args.top_k ?? 20;
       const floor = searchHitFloor(engine.modelKey);
       const probe: RetrievalProbe = {};
-      const body = await engineSearchMemory(db, engine, config.memoryDir, args.query, topK, args.scope, evidence, args.include_history === true, config.ledgerRelPath, probe, digests, undefined, floor > 0);
+      const body = await engineSearchMemory(db, engine, config.memoryDir, args.query, topK, args.scope, evidence, args.include_history === true, config.ledgerRelPath, probe, digests, undefined, floor > 0, readerLayoutEnabled());
       let result: Record<string, unknown> = body;
       if (body.ok) {
         // Who saved each fact among the hits, marked before anything reads them (the verdict, the page, the floor).
@@ -837,7 +885,7 @@ function buildMcpServer(db: Database.Database, config: MvpConfig, engine: Engine
         // The event of a fact is read from the ledger's heading, which is taken off below.
         result = {
           ...body,
-          hits: (await withReplacements(mapContext(), withoutLedgerMetadata(page, ledgerNoteMatcher(config)), { limit: Math.max(page.length, topK) })).map(labelMemoryText),
+          hits: readerLayoutOf(body.rankedBy, (await withReplacements(mapContext(), withoutLedgerMetadata(page, ledgerNoteMatcher(config)), { limit: Math.max(page.length, topK) })).map(labelMemoryText), ledgerNoteMatcher(config)),
           ...indexNotice(db, true, config, args.scope),
           ...(shownVerdict.relevance ? { relevance: shownVerdict.relevance } : {}),
           ...(floored ? { floor: { similarity: floor, withheld: floored.withheld } } : {}),
@@ -852,7 +900,7 @@ function buildMcpServer(db: Database.Database, config: MvpConfig, engine: Engine
   server.registerTool('search_text', {
     title: 'Search memory by keywords',
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-    description: 'BM25/FTS keyword search over indexed note chunks: the query is matched as one exact phrase, and OR, AND, NEAR and * are plain words, not operators. Does not call Voyage or any embedding API. When the term appears in no chunk text it is matched against note paths and frontmatter too, so a task id, slug or file name finds the note that carries it (reason: "note-identity"). Current facts saved with remember are found at once, before the next index_memory (reason: "fact"), in the places the other hits leave under top_k. A hit of a remembered fact names no note (empty notePath and headingPath). Every hit carries session_date, when that excerpt was written (the moment a daily-log entry or a remembered fact was saved, otherwise its note\'s date), the same date search_memory and get_context give it: read it before trusting an old hit. A hit with `replaced` ({by, at, source, note?}) was corrected by a later save: the correction is listed before it, and `source` says who saved it.',
+    description: 'BM25/FTS keyword search over indexed note chunks: the query is matched as one exact phrase, and OR, AND, NEAR and * are plain words, not operators. Makes no call to an embedding service. When the term appears in no chunk text it is matched against note paths and frontmatter too, so a task id, slug or file name finds the note that carries it (reason: "note-identity"). Current facts saved with remember are found at once, before the next index_memory (reason: "fact"), in the places the other hits leave under top_k. A fact hit with a writerConflict line replaced a value another agent saved, and the line stays until that agent saves the subject and predicate again (see get_context). A hit of a remembered fact names no note (empty notePath and headingPath). Every hit carries session_date, when that excerpt was written (the moment a daily-log entry or a remembered fact was saved, otherwise its note\'s date), the same date search_memory and get_context give it: read it before trusting an old hit. A hit with `replaced` ({by, at, source, note?}) was corrected by a later save: the correction is listed before it, and `source` says who saved it.',
     inputSchema: {
       // A control character (NUL above all) has no place in words to search for: SQLite answers it with its own error text.
       query: z.string().min(1).max(200).superRefine((query, ctx) => {
@@ -902,8 +950,8 @@ function buildMcpServer(db: Database.Database, config: MvpConfig, engine: Engine
 
   server.registerTool('remember_note', {
     title: 'Append a daily note',
-    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
-    description: 'Appends one line to a day\'s log: `text` is the line, e.g. remember_note({"text": "Ran the nightly build; two flaky tests in the importer."}). Timestamped, filed under today or `date`, and indexed at once, so search finds it before any index_memory (the receipt\'s indexed says whether that worked; if not, the line is still saved and keyword search finds it). '
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
+    description: 'Appends one line to a day\'s log: `text` is the line, e.g. remember_note({"text": "Ran the nightly build; two flaky tests in the importer."}). Do not save passwords, API keys or tokens. Timestamped, filed under today or `date`, and indexed at once, so search finds it before any index_memory (the receipt\'s indexed says whether that worked; if not, the line is still saved and keyword search finds it). '
       + 'The receipt\'s id is what read_memory, retire_memory and restore_memory take. A line over 4,000 characters, one that is not valid Unicode, or one holding a control character (U+0000 to U+001F except tab, newline and carriage return, or U+007F) is refused, never cut, and nothing is written. `remember` saves a statement on its own the same way and is the default; use this when the line belongs to another day. `replaces` (the id of an earlier note or entry this line corrects) works as in remember.',
     inputSchema: {
       text: z.string().min(1).max(MAX_STATEMENT_LENGTH).describe('The line to log, in plain words.'),
@@ -936,7 +984,7 @@ function buildMcpServer(db: Database.Database, config: MvpConfig, engine: Engine
   server.registerTool('index_memory', {
     title: 'Index the memory folder',
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-    description: 'Walks MVP_MEMORY_DIR markdown notes into the SQLite index (chunks, FTS, entities). If an embedding provider is configured, stamps NEW/changed notes with that provider — must match existing index dimensions. Run it when search_memory or get_context report index.stale; saved facts are searchable by keyword without it. It does not wait for a slow or refusing embedding service: such files are reported (warning "index-unfinished") and finished in the background. Owner-only; this is the single writer after cutover (ADR-0003 option A).',
+    description: 'Walks the workspace\'s Markdown notes into the search index (chunks, keyword index, entities). If an embedding provider is configured, stamps new and changed notes with it; the provider must match the existing index dimensions. Run it when search_memory or get_context report index.stale; saved facts are keyword-searchable without it. It does not wait for a slow or refusing embedding service: such files are reported (warning "index-unfinished") and finished in the background.',
     inputSchema: {},
   }, async () => {
     try {
@@ -980,7 +1028,7 @@ function buildMcpServer(db: Database.Database, config: MvpConfig, engine: Engine
 
   server.registerTool('preview_import', {
     title: 'Preview a Markdown vault batch',
-    annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
     description: 'Dry run for an agent-led import of notes into Imported/<label>/. The server cannot read your disk: read each file yourself and send its text as files: [{ relativePath, markdown }], relativePath being the path inside the folder you import (notes/idea.md: / separators, no leading / or ./ or ..). Only .md files: save a ChatGPT or Claude memory list, JSON or other text as Markdown first and leave attachments out. Names starting with "." are skipped. Returns counts, conflicts (a different file already at the destination is kept, not overwritten; use a new label to import a changed copy), skipped files with reasons, and an expiring batchId; writes no memory. Max 100 files, 64 KiB/file and 128 KiB per call including paths; for more, call again per group. Up to 8 previews can wait at once: apply one, or wait 15 minutes. Refuses unsafe or oversize inputs. Selection: include/exclude path prefixes. stage: false only checks (no batchId, nothing held). Show preview before apply_import.',
     inputSchema: importPreviewSchema,
   }, async (args) => {
@@ -1016,7 +1064,7 @@ function buildMcpServer(db: Database.Database, config: MvpConfig, engine: Engine
   server.registerTool('memory_map', {
     title: 'Map everything this workspace holds',
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-    description: 'Read-only overview for browsing, not for answering questions: every memory (notes and daily-log entries), the things lifecycle facts are about, topics (tags), lifecycle facts with their full history, grounded links between them (tag, wikilink, literal name mention, fact naming another thing), recent write events, and retired memories. For context while working, use get_context instead. '
+    description: 'Read-only overview for browsing, not for answering questions: every memory (notes and daily-log entries), the things lifecycle facts are about, topics (tags), lifecycle facts with their full history, grounded links between them (tag, wikilink, literal name mention, fact naming another thing), recent write events, and retired memories. A current fact with a writerConflict line replaced a value another agent saved, and the line stays until that agent saves the subject and predicate again. For context while working, use get_context instead. '
       + `The limit bounds every list (memories, things, facts, links, events, retired), newest first (things by their newest fact; links shared out across tag, wikilink, mention and fact): default ${DEFAULT_MAP_LIMIT}, at most ${MAX_LOOKUP_LIMIT}. total gives how many each list holds, and truncated says which lists were cut; to see more, raise limit, or pass query to find one memory. `
       + 'To find one memory to read, retire or restore, pass query (words it contains, e.g. "landlord"), and scope to look in one scope only: only the memories and retired memories that have one of them are returned, those with the rarest of the words first, then the newest, up to limit. A note save (remember without a fact, remember_note) returns the id of what it saved, so forgetting it needs no lookup.',
     inputSchema: {
@@ -1086,10 +1134,17 @@ function buildMcpServer(db: Database.Database, config: MvpConfig, engine: Engine
     }
   });
 
-  // Only for the owner, from the dashboard: hidden from every agent's tools/list, and refused on any call not marked as the
-  // dashboard's (the gateway refuses it for an agent's key before it gets here, too). Irreversible, so an agent never
-  // holds it: retire_memory is how an agent forgets, and the owner decides what is erased.
-  const deleteRetired = server.registerTool('delete_retired_memory', {
+  // Only for the owner, from the dashboard. Irreversible, so an agent never holds it: retire_memory is how an agent forgets, and
+  // the owner decides what is erased. Only the gateway can set the mark this reads, and it sets it only for the dashboard's own
+  // short-lived read key; it strips a client-sent copy (apps/gateway/src/dashboard-mark.ts). Three layers, none relying on another:
+  //   1. tools/list (installed once every tool is registered) drops the tool from its answer unless the request being answered carries
+  //      the mark. An SSE session keeps one server, so what was decided when it was built would keep listing the tool after the mark was gone;
+  //   2. a server built without the mark has the tool disabled in the SDK's registry, so a call is refused before it reaches the handler;
+  //   3. the handler below refuses a call whose own request carries no mark, which is what a session built with the mark answers.
+  // (1) and (2) act on the registry's entry and on the answer, never on the handle registerTool returns: in a workspace that reports to
+  // PostHog (RENOR_POSTHOG_KEY), @posthog/mcp stores a copy of the tool and that handle no longer reaches the SDK
+  // (tests/review/delete-retired-instrumented.test.ts).
+  server.registerTool('delete_retired_memory', {
     title: 'Permanently delete retired memories (owner only)',
     annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
     description: 'Permanently deletes a retired note or daily-log entry (id: retired:<id> from memory_map.retired), or every retired note and entry (id: "all"; with ids, only those retirement ids). Cannot be undone. A live memory is retired first; a retired fact is kept in the fact ledger.',
@@ -1107,7 +1162,7 @@ function buildMcpServer(db: Database.Database, config: MvpConfig, engine: Engine
       return toolError(err);
     }
   });
-  if (!dashboard) deleteRetired.disable();
+  if (!dashboard) registeredToolEntry(server, OWNER_ONLY_TOOL).enabled = false;
 
   server.registerTool('whats_new', {
     title: "What's new for me",
@@ -1139,7 +1194,7 @@ function buildMcpServer(db: Database.Database, config: MvpConfig, engine: Engine
   server.registerTool('ask_agent', {
     title: 'Ask another agent',
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
-    description: 'Records a request for another agent in this workspace. It does not run a tool, write a memory, or wake that agent. They see it at the start of their next task, in whats_new, and they answer only if their own rules say to. `to` must be the name on a connection key that has connected to this workspace; unnamed cannot be asked. One connection can record 30 requests per hour (RENOR_ASK_AGENT_PER_HOUR); past that it is refused with the time it can ask again.',
+    description: 'Records a request for another agent in this workspace. It does not run a tool, write a memory, or wake that agent. They see it at the start of their next task, in whats_new, and they answer only if their own rules say to. `to` must be the name on a connection key that has connected to this workspace; unnamed cannot be asked. One connection can record 30 requests an hour by default; past that it is refused with the time it can ask again.',
     inputSchema: {
       to: z.string().min(1).max(80).describe('The agent the request is for, the name on their connection key.'),
       request: z.string().min(1).max(MAX_STATEMENT_LENGTH).describe('What you are asking, in plain words.'),
@@ -1214,6 +1269,11 @@ function buildMcpServer(db: Database.Database, config: MvpConfig, engine: Engine
     }
   });
 
+  // A directory client is offered no hive tool: disabled in the SDK's registry, so neither listed nor run, and dropped from tools/list
+  // below. As for delete_retired_memory, never through the handles registerTool returns, which the PostHog wrapper leaves behind
+  // (tests/review/directory-surface-instrumented.test.ts).
+  if (directory) for (const name of HIVE_TOOLS) registeredToolEntry(server, name).enabled = false;
+
   server.registerTool('memory_status', {
     title: 'Index statistics',
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
@@ -1231,6 +1291,25 @@ function buildMcpServer(db: Database.Database, config: MvpConfig, engine: Engine
 
   // Every tool is registered above; the SDK's own handlers (initialize included) are mapped in the same pass.
   mapInvalidParams(server.server);
+  // Layer 1 above: the owner-only tool is in the answer only when this request carries the mark. It is decided on the answer, after the
+  // SDK and whatever wraps it have built the list: a flag flipped around this call would be put back before PostHog's listing wrapper,
+  // which awaits first, reached the SDK. The hive tools leave the answer the same way for a directory client.
+  const listHandlers = (server.server as unknown as {
+    _requestHandlers: Map<string, (request: unknown, extra: CallExtra) => unknown>;
+  })._requestHandlers;
+  const listTools = listHandlers.get('tools/list');
+  if (!listTools) throw new Error('tools/list handler missing');
+  listHandlers.set('tools/list', async (request, extra) => {
+    const answer = await listTools(request, extra) as { tools?: Array<{ name?: unknown }> };
+    const headers = extra?.requestInfo?.headers;
+    const hidden = new Set<unknown>();
+    if (!isDashboardCall(headers, config)) hidden.add(OWNER_ONLY_TOOL);
+    if (directory || isDirectoryCall(headers, config)) for (const name of HIVE_TOOLS) hidden.add(name);
+    if (hidden.size === 0) return answer;
+    // An answer this cannot read is not passed on unfiltered.
+    if (!Array.isArray(answer?.tools)) throw new Error('tools/list answered without a tools array');
+    return { ...answer, tools: answer.tools.filter((tool) => !hidden.has(tool.name)) };
+  });
   return server;
 }
 
@@ -1468,6 +1547,13 @@ export function createMvpApp(config: MvpConfig, engineOverride?: EmbeddingProvid
     lastActivity: number;
     /** Responses of this session still open: its standalone stream, or a POST still being answered. */
     open: number;
+    /**
+     * Whether the session was opened by a directory client (the gateway's x-renor-directory mark). Its tool surface is
+     * built once, so a request whose mark differs is refused as an unknown session and the client opens a new one with
+     * the right surface, instead of keeping the hive tools after signing in again as a directory client (or losing them
+     * the other way round).
+     */
+    directory: boolean;
   };
   const sseSessions = new Map<string, SseSession>();
   // Ids a client ended with DELETE. The spec answers a terminated session with 404, so a POST that names one is refused
@@ -1565,7 +1651,7 @@ export function createMvpApp(config: MvpConfig, engineOverride?: EmbeddingProvid
       return null;
     }
     const entry = sseSessions.get(sid);
-    if (!entry) {
+    if (!entry || entry.directory !== isDirectoryCall(req.headers, config)) {
       res.status(404).json({
         jsonrpc: '2.0', error: { code: -32001, message: 'Session not found' }, id: null,
       });
@@ -1585,7 +1671,7 @@ export function createMvpApp(config: MvpConfig, engineOverride?: EmbeddingProvid
       sessionIdGenerator: undefined, // stateless: this transport serves this one request
       enableJsonResponse: false,
     });
-    const sessionServer = buildMcpServer(db, config, engine, activity, digests, usefulness, connection, false, null, isDashboardCall(req.headers, config));
+    const sessionServer = buildMcpServer(db, config, engine, activity, digests, usefulness, connection, false, null, isDashboardCall(req.headers, config), isDirectoryCall(req.headers, config));
     res.once('close', () => { void transport.close(); void sessionServer.close(); });
     await sessionServer.connect(transport);
     await transport.handleRequest(req, res, req.body);
@@ -1639,7 +1725,8 @@ export function createMvpApp(config: MvpConfig, engineOverride?: EmbeddingProvid
       });
       return;
     }
-    noteConnectionName(agentOf({ authInfo, requestInfo: { headers: req.headers } }, config));
+    // A directory client is not a known agent: nothing can ask it, so its name is not recorded.
+    if (!isDirectoryCall(req.headers, config)) noteConnectionName(agentOf({ authInfo, requestInfo: { headers: req.headers } }, config));
     try {
       if (config.mcpJsonResponse) {
         // Stateless streamable HTTP: one transport and one McpServer per request. The SDK binds a server to one
@@ -1648,7 +1735,7 @@ export function createMvpApp(config: MvpConfig, engineOverride?: EmbeddingProvid
           sessionIdGenerator: undefined, // stateless: one transport per request
           enableJsonResponse: true,
         });
-        const requestServer = buildMcpServer(db, config, engine, activity, digests, usefulness, connection, false, null, isDashboardCall(req.headers, config));
+        const requestServer = buildMcpServer(db, config, engine, activity, digests, usefulness, connection, false, null, isDashboardCall(req.headers, config), isDirectoryCall(req.headers, config));
         res.on('close', () => { void transport.close(); void requestServer.close(); });
         await requestServer.connect(transport);
         await transport.handleRequest(req, res, req.body);
@@ -1659,6 +1746,14 @@ export function createMvpApp(config: MvpConfig, engineOverride?: EmbeddingProvid
       evictExpiredSseSessions(now);
       const sid = req.headers['mcp-session-id'];
       const known = typeof sid === 'string' ? sseSessions.get(sid) : undefined;
+      // A session opened under the other surface (see SseSession.directory) is unknown to this request: a 404 makes the
+      // client start a new session, whose tools match the token it now holds.
+      if (known && known.directory !== isDirectoryCall(req.headers, config)) {
+        res.status(404).json({
+          jsonrpc: '2.0', error: { code: -32001, message: 'Session not found' }, id: null,
+        });
+        return;
+      }
       if (known) {
         known.lastActivity = now;
         holdOpen(known, res);
@@ -1693,13 +1788,13 @@ export function createMvpApp(config: MvpConfig, engineOverride?: EmbeddingProvid
       // calls, isPlatformInitialize) gets no id: it still counts as a connection, but it writes no first call and its mcp_init
       // carries no id for the recall share to join, so the share counts agents only.
       const telemetrySession = isPlatformInitialize(req.body) ? null : crypto.randomBytes(8).toString('hex');
-      const sessionServer = buildMcpServer(db, config, engine, activity, digests, usefulness, connection, true, telemetrySession, isDashboardCall(req.headers, config));
+      const sessionServer = buildMcpServer(db, config, engine, activity, digests, usefulness, connection, true, telemetrySession, isDashboardCall(req.headers, config), isDirectoryCall(req.headers, config));
       transport.onclose = () => {
         sseSessions.delete(sessionId);
         emitTelemetry({ event: 'session', kind: 'mcp_close' });
         void sessionServer.close();
       };
-      const minted: SseSession = { transport, lastActivity: now, open: 0 };
+      const minted: SseSession = { transport, lastActivity: now, open: 0, directory: isDirectoryCall(req.headers, config) };
       sseSessions.set(sessionId, minted);
       holdOpen(minted, res);
       emitTelemetry({ event: 'session', kind: 'mcp_init', ...(telemetrySession ? { session: telemetrySession } : {}) });

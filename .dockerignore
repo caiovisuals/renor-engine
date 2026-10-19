@@ -1,0 +1,16 @@
+node_modules
+dist
+.git
+.smoke
+tests
+
+# Local secrets, keys and runtime state stay out of the build context too, at any depth.
+**/.env*
+**/*.pem
+**/*.key
+**/credentials*.json
+**/service-account*.json
+**/*.db
+**/*.db-*
+**/*.sqlite*
+**/.semantic-memory

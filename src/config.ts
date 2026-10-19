@@ -1,7 +1,7 @@
 export interface Config {
   vaultPath: string;
   dbPath: string;
-  embeddingProvider: 'openai' | 'local' | 'eval-hash';
+  embeddingProvider: 'none' | 'openai' | 'local' | 'eval-hash';
   openaiApiKey?: string;
   embeddingModel?: string;
   embeddingBaseURL?: string;
@@ -19,14 +19,14 @@ export function loadConfig(): Config {
   const vaultPath = process.env.VAULT_PATH;
   if (!vaultPath) throw new Error('VAULT_PATH environment variable is required');
 
-  const rawProvider = process.env.EMBEDDING_PROVIDER ?? 'openai';
-  if (rawProvider !== 'openai' && rawProvider !== 'local' && rawProvider !== 'eval-hash') {
-    throw new Error(`Invalid EMBEDDING_PROVIDER "${rawProvider}": must be "openai", "local", or "eval-hash"`);
+  const rawProvider = process.env.EMBEDDING_PROVIDER ?? 'none';
+  if (rawProvider !== 'none' && rawProvider !== 'openai' && rawProvider !== 'local' && rawProvider !== 'eval-hash') {
+    throw new Error(`Invalid EMBEDDING_PROVIDER "${rawProvider}": must be "none", "openai", "local", or "eval-hash"`);
   }
   // eval-hash: deterministic lexical embeddings for evaluation smoke/contract
   // runs through the public CLI surface (offline, no model download, no
   // semantic-quality claim). Same provider CI already uses for RenorBench smoke.
-  const embeddingProvider = rawProvider as 'openai' | 'local' | 'eval-hash';
+  const embeddingProvider = rawProvider as Config['embeddingProvider'];
 
   if (embeddingProvider === 'openai') {
     const key = process.env.OPENAI_API_KEY;

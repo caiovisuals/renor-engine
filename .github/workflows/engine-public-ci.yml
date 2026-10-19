@@ -5,7 +5,8 @@ name: engine-public-ci
 # subdirectory, no gateway app, and no platform schema.
 #
 # The private monorepo proves the same steps from .github/workflows/engine-public-ci.yml
-# with a `working-directory` of engine. The exclude list is the same in both files.
+# with a `working-directory` of engine, on ubuntu with Node 22 only. This file runs them
+# on three legs (below). The exclude list is the same in both files.
 # No secrets, no second install, no paid model, no LongMemEval, no agent gate.
 
 on:
@@ -22,14 +23,31 @@ concurrency:
 permissions:
   contents: read
 
-env:
-  NODE_VERSION: '22'
-
 jobs:
   public-engine:
-    name: public-engine
-    runs-on: ubuntu-latest
+    # One check per leg. The ubuntu / Node 22 leg keeps the name `public-engine`, so a branch rule
+    # that requires it still matches. fail-fast is off: one leg failing must not hide what the
+    # others say.
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # What package.json supports.
+          - name: public-engine
+            os: ubuntu-latest
+            node: '22'
+          # People clone the repository on a Mac, where /var is a symlink to private/var.
+          - name: public-engine-macos
+            os: macos-latest
+            node: '22'
+          # package.json says >=22 <23. This leg is the evidence for widening that range; it
+          # changes nothing by itself.
+          - name: public-engine-node24
+            os: ubuntu-latest
+            node: '24'
     steps:
       # RenorBench baseline tests compare the committed baseline with origin/main.
       # A shallow checkout does not have that ref.
@@ -45,7 +63,7 @@ jobs:
 
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
-          node-version: ${{ env.NODE_VERSION }}
+          node-version: ${{ matrix.node }}
           cache: npm
           cache-dependency-path: package-lock.json
 

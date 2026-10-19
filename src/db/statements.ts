@@ -30,6 +30,40 @@ export function prepareOnce(db: Database.Database, sql: string): Database.Statem
 }
 
 /**
+ * The most values a list is padded to a power of two for. A longer list is prepared as it is and not kept: the padding would
+ * double it, and a list that long is not the usual one (SQLite takes 32,766 values in a statement).
+ */
+const MAX_PADDED_LIST = 256;
+
+/** The number of values a list of `count` is padded to: the next power of two, and at least four. */
+function paddedSize(count: number): number {
+  return count <= 4 ? 4 : 2 ** (32 - Math.clz32(count - 1));
+}
+
+/**
+ * A statement over an `IN (?, ?, ...)` list whose length follows the question (the notes a read hit, the entities of those
+ * notes). The text of such a statement changes with the length, so `prepareOnce` would keep one for every length and fill its
+ * room (see the third rule above), and preparing it on every call was about a tenth of a `get_context`'s statement time (ten
+ * statements prepared again on each call). Here the list is made a power of two long, at least four, and the values are padded
+ * with `paddedList`: a NULL in an IN list matches no row, so the rows are the rows of the list itself. A connection prepares
+ * one statement for each size, a few in all, and the next call finds them ready. `build` makes the SQL from the placeholders.
+ * A list over MAX_PADDED_LIST is prepared as it is, for this call only. Use it where the list is the whole of an IN: not
+ * under NOT IN, where a NULL in the list would make the whole test unknown.
+ */
+export function listStatement(db: Database.Database, count: number, build: (placeholders: string) => string): Database.Statement {
+  if (count > MAX_PADDED_LIST) return db.prepare(build('?,'.repeat(count - 1) + '?'));
+  return prepareOnce(db, build('?,'.repeat(paddedSize(count) - 1) + '?'));
+}
+
+/** The values of a list as `listStatement` binds them: padded with NULL to the size it was prepared for. */
+export function paddedList<T>(values: readonly T[]): Array<T | null> {
+  const padded: Array<T | null> = values.slice();
+  if (values.length > MAX_PADDED_LIST) return padded;
+  for (let size = paddedSize(values.length); padded.length < size;) padded.push(null);
+  return padded;
+}
+
+/**
  * One transaction wrapper per connection and body, for a transaction a replay runs once per ledger event.
  *
  * `db.transaction(fn)` builds the wrapper's four variants (default, deferred, immediate, exclusive) every time it is called, which

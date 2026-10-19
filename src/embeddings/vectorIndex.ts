@@ -1,4 +1,5 @@
 import Database from 'better-sqlite3';
+import { SimdRows, SIMD_MIN_BYTES } from './simdScan';
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const sqliteVec = require('sqlite-vec') as { load: (db: Database.Database) => void };
 
@@ -6,6 +7,193 @@ export interface VectorSearchResult { chunkId: number; score: number }
 
 /** sqlite-vec's ceiling on `k` in one nearest-neighbour query. */
 export const KNN_MAX_K = 4096;
+
+/**
+ * Above this many bytes of vectors the process keeps asking sqlite-vec, instead of keeping a second copy of every
+ * vector. 64 MiB is about 21,000 vectors at the 768 dimensions a hosted workspace uses, and the measured fixture
+ * (about 10,000) fits under it.
+ */
+const MIRROR_MAX_BYTES = 64 * 1024 * 1024;
+
+/**
+ * How far past the k-th scan distance a vector is still rescored exactly. The scan is ordinary f64 arithmetic and is
+ * not sqlite-vec's distance: on 768-d unit vectors, hash and dense, the largest gap seen against `vec_distance_l2`
+ * was under 1e-6, and 1e-3 still added only a few extra rows. A wider gap is slower, not wrong. A row whose exact
+ * distance then disagrees by more than half of this is a broken bound, and that one query uses the KNN path.
+ */
+const MIRROR_SLACK = 1e-3;
+
+/** Past this many exact distances, one KNN query is the cheaper exact answer (a tie across the whole index). */
+const MIRROR_EXACT_LIMIT = 256;
+
+/** The most nearest vectors a search takes the k-th distance of with a heap; a larger k sorts a copy. */
+const KTH_HEAP_MAX = 64;
+const kthHeap = new Float64Array(KTH_HEAP_MAX);
+
+/**
+ * The k-th smallest of `values[0..n)` (1 <= k <= n): what sorting a copy and reading index k - 1 gives, without the
+ * copy and the sort (about 0.8 ms for 9,661 distances, against 0.03 ms for this). A sorted copy puts a NaN (a stored
+ * vector that is not a number, or a query that is not) after every number, so a NaN is never among the k smallest, and
+ * the k-th is a NaN only when fewer than k of the values are numbers; the heap skips NaNs and answers the same.
+ */
+export function kthSmallest(values: Float64Array, n: number, k: number): number {
+  if (k > KTH_HEAP_MAX) {
+    const sorted = values.slice(0, n);
+    sorted.sort();
+    return sorted[k - 1];
+  }
+  const heap = kthHeap; // the k smallest numbers seen so far, the largest of them at heap[0]
+  let size = 0;
+  for (let i = 0; i < n; i++) {
+    const v = values[i];
+    if (v !== v) continue; // NaN
+    if (size < k) {
+      let at = size++;
+      while (at > 0) {
+        const parent = (at - 1) >> 1;
+        if (heap[parent] >= v) break;
+        heap[at] = heap[parent];
+        at = parent;
+      }
+      heap[at] = v;
+    } else if (v < heap[0]) {
+      let at = 0;
+      for (;;) {
+        let child = 2 * at + 1;
+        if (child >= k) break;
+        if (child + 1 < k && heap[child + 1] > heap[child]) child++;
+        if (heap[child] <= v) break;
+        heap[at] = heap[child];
+        at = child;
+      }
+      heap[at] = v;
+    }
+  }
+  return size < k ? Number.NaN : heap[0];
+}
+
+/**
+ * The scan is built at load, not written as a function the caller can inline. Inlined into `searchMirror`, it
+ * deoptimizes with that method: a scoped search and an unscoped one disagree about the shape of the slot list, the
+ * method bails out, and the scan then runs in the interpreter. On the 9,661 × 768 fixture that is about 40ms instead
+ * of about 7ms, on some calls and not others, which is what puts the median on the slow ones. The distances only
+ * choose the rows to rescore; the score is still `vec_distance_l2`.
+ */
+function compileScan(params: string, body: string): (...args: never[]) => void {
+  return new Function(...params.split(','), `'use strict';\n${body}`) as (...args: never[]) => void;
+}
+
+export const scanPackedL2 = compileScan('data,count,dims,q,out', `
+  let i = 0;
+  if ((dims & 7) === 0) {
+    // Four rows at a time, each summed from the first dimension up in its own chain: the query is read once for the four,
+    // and the four chains do not wait on one another (about a fifth less time than one row at a time).
+    for (; i + 3 < count; i += 4) {
+      const b0 = i * dims, b1 = b0 + dims, b2 = b1 + dims, b3 = b2 + dims;
+      let s0 = 0, s1 = 0, s2 = 0, s3 = 0;
+      for (let d = 0; d < dims; d += 2) {
+        const qd = q[d], qe = q[d + 1];
+        const x0 = data[b0 + d] - qd, x1 = data[b1 + d] - qd, x2 = data[b2 + d] - qd, x3 = data[b3 + d] - qd;
+        const y0 = data[b0 + d + 1] - qe, y1 = data[b1 + d + 1] - qe, y2 = data[b2 + d + 1] - qe, y3 = data[b3 + d + 1] - qe;
+        s0 += x0 * x0; s1 += x1 * x1; s2 += x2 * x2; s3 += x3 * x3;
+        s0 += y0 * y0; s1 += y1 * y1; s2 += y2 * y2; s3 += y3 * y3;
+      }
+      out[i] = Math.sqrt(s0); out[i + 1] = Math.sqrt(s1); out[i + 2] = Math.sqrt(s2); out[i + 3] = Math.sqrt(s3);
+    }
+    for (; i < count; i++) {
+      const base = i * dims;
+      let sum = 0;
+      for (let d = 0; d < dims; d += 8) {
+        const a0 = data[base + d] - q[d];
+        const a1 = data[base + d + 1] - q[d + 1];
+        const a2 = data[base + d + 2] - q[d + 2];
+        const a3 = data[base + d + 3] - q[d + 3];
+        const a4 = data[base + d + 4] - q[d + 4];
+        const a5 = data[base + d + 5] - q[d + 5];
+        const a6 = data[base + d + 6] - q[d + 6];
+        const a7 = data[base + d + 7] - q[d + 7];
+        sum += a0 * a0 + a1 * a1 + a2 * a2 + a3 * a3 + a4 * a4 + a5 * a5 + a6 * a6 + a7 * a7;
+      }
+      out[i] = Math.sqrt(sum);
+    }
+    return;
+  }
+  for (; i < count; i++) {
+    const base = i * dims;
+    let sum = 0;
+    for (let d = 0; d < dims; d++) {
+      const diff = data[base + d] - q[d];
+      sum += diff * diff;
+    }
+    out[i] = Math.sqrt(sum);
+  }
+`) as (data: Float32Array, count: number, dims: number, q: Float32Array, out: Float64Array) => void;
+
+/** Same scan over an arbitrary slot list (a scope), not the packed prefix. */
+export const scanSlotsL2 = compileScan('data,slots,dims,q,out', `
+  const n = slots.length;
+  let i = 0;
+  if ((dims & 7) === 0) {
+    for (; i + 3 < n; i += 4) {
+      const b0 = slots[i] * dims, b1 = slots[i + 1] * dims, b2 = slots[i + 2] * dims, b3 = slots[i + 3] * dims;
+      let s0 = 0, s1 = 0, s2 = 0, s3 = 0;
+      for (let d = 0; d < dims; d += 2) {
+        const qd = q[d], qe = q[d + 1];
+        const x0 = data[b0 + d] - qd, x1 = data[b1 + d] - qd, x2 = data[b2 + d] - qd, x3 = data[b3 + d] - qd;
+        const y0 = data[b0 + d + 1] - qe, y1 = data[b1 + d + 1] - qe, y2 = data[b2 + d + 1] - qe, y3 = data[b3 + d + 1] - qe;
+        s0 += x0 * x0; s1 += x1 * x1; s2 += x2 * x2; s3 += x3 * x3;
+        s0 += y0 * y0; s1 += y1 * y1; s2 += y2 * y2; s3 += y3 * y3;
+      }
+      out[i] = Math.sqrt(s0); out[i + 1] = Math.sqrt(s1); out[i + 2] = Math.sqrt(s2); out[i + 3] = Math.sqrt(s3);
+    }
+    for (; i < n; i++) {
+      const base = slots[i] * dims;
+      let sum = 0;
+      for (let d = 0; d < dims; d += 8) {
+        const a0 = data[base + d] - q[d];
+        const a1 = data[base + d + 1] - q[d + 1];
+        const a2 = data[base + d + 2] - q[d + 2];
+        const a3 = data[base + d + 3] - q[d + 3];
+        const a4 = data[base + d + 4] - q[d + 4];
+        const a5 = data[base + d + 5] - q[d + 5];
+        const a6 = data[base + d + 6] - q[d + 6];
+        const a7 = data[base + d + 7] - q[d + 7];
+        sum += a0 * a0 + a1 * a1 + a2 * a2 + a3 * a3 + a4 * a4 + a5 * a5 + a6 * a6 + a7 * a7;
+      }
+      out[i] = Math.sqrt(sum);
+    }
+    return;
+  }
+  for (; i < n; i++) {
+    const base = slots[i] * dims;
+    let sum = 0;
+    for (let d = 0; d < dims; d++) {
+      const diff = data[base + d] - q[d];
+      sum += diff * diff;
+    }
+    out[i] = Math.sqrt(sum);
+  }
+`) as (data: Float32Array, slots: readonly number[], dims: number, q: Float32Array, out: Float64Array) => void;
+
+interface VecMirror {
+  ids: number[];
+  slot: Map<number, number>;
+  /** The vectors, row-major. A view of `rows`' memory when there is one (a new object whenever `rows` grows), else its own array. */
+  data: Float32Array;
+  /** The SIMD scan over `data`, for a mirror whose live vectors are large enough to want it (simdScan.ts); null scans in JavaScript. */
+  rows: SimdRows | null;
+  /** Whether a memory for the SIMD scan was asked for when the live vectors reached the minimum: it is asked once per mirror. */
+  simdTried: boolean;
+  count: number;
+  /** Slots `data` can hold. `count` of them are live. Never more than {@link MIRROR_MAX_BYTES}. */
+  cap: number;
+  /**
+   * `PRAGMA data_version` when this copy was read. Another connection's commit changes it, including a
+   * replace that leaves the row count the same. This connection's own writes do not, and those update the
+   * copy in place.
+   */
+  version: number;
+}
 
 /**
  * For a writer that gives the chunks it writes no vector (a process with no embedding provider, or an import): when the
@@ -23,10 +211,19 @@ export function markVectorsUnfinished(db: Database.Database): boolean {
   ).run().changes > 0;
 }
 
+/** The insert found a vector already stored under this chunk id: the only constraint the insert can hit. */
+function storedAlready(err: unknown): boolean {
+  return err instanceof Error && /UNIQUE constraint failed/.test(err.message);
+}
+
 export class VectorIndex {
   private db: Database.Database;
   private dimensions: number;
   private statements = new Map<string, Database.Statement>();
+  /** Exact float32 copy of the stored vectors, or null when this process has not built one (or the index is past the cap). */
+  private mirror: VecMirror | null = null;
+  /** The scan's distances for one search, kept for the next so a search allocates nothing for them. */
+  private scanned = new Float64Array(0);
 
   constructor(db: Database.Database, dimensions: number) {
     this.db = db;
@@ -93,6 +290,7 @@ export class VectorIndex {
       this.setSpace(space);
       this.stmt("INSERT INTO chunk_embedding_meta(key, value) VALUES('rebuilding', '1') ON CONFLICT(key) DO NOTHING").run();
     })();
+    this.mirror = { ids: [], slot: new Map(), data: new Float32Array(0), rows: null, simdTried: false, count: 0, cap: 0, version: this.dataVersion() };
   }
 
   /** Every vector the rebuild had to write is written: the index is whole again. */
@@ -121,10 +319,30 @@ export class VectorIndex {
   }
 
   upsert(chunkId: number, embedding: number[]): void {
-    const normalized = this.normalize(embedding);
-    const buf = Buffer.from(new Float32Array(normalized).buffer);
+    const floats = new Float32Array(this.normalize(embedding));
+    const buf = Buffer.from(floats.buffer);
     this.stmt('DELETE FROM chunk_embeddings WHERE rowid = ?').run(BigInt(chunkId));
     this.stmt('INSERT INTO chunk_embeddings(rowid, embedding) VALUES(?, ?)').run(BigInt(chunkId), buf);
+    this.remember(chunkId, floats);
+  }
+
+  /**
+   * The vector of a chunk this pass has just written. Chunk ids are never reused (AUTOINCREMENT), so such a chunk usually
+   * has no vector to replace, and the delete `upsert` runs first would find nothing: this skips it. A background job
+   * (rebuild.ts takes no lock) can store a vector for the chunk while the pass is embedding. The insert then finds the row,
+   * and the chunk is upserted, as it was before this method existed, so the rows are the same in every case.
+   */
+  insertNew(chunkId: number, embedding: number[]): void {
+    const floats = new Float32Array(this.normalize(embedding));
+    const buf = Buffer.from(floats.buffer);
+    try {
+      this.stmt('INSERT INTO chunk_embeddings(rowid, embedding) VALUES(?, ?)').run(BigInt(chunkId), buf);
+    } catch (err) {
+      if (!storedAlready(err)) throw err;
+      this.upsert(chunkId, embedding);
+      return;
+    }
+    this.remember(chunkId, floats);
   }
 
   /**
@@ -133,10 +351,25 @@ export class VectorIndex {
    */
   copy(fromId: number, toId: number): boolean {
     if (fromId === toId) return this.get(fromId) !== null;
+    const dims = this.dimensions;
+    const src = this.mirror?.slot.get(fromId);
+    const floats = src === undefined || !this.mirror
+      ? null
+      : this.mirror.data.slice(src * dims, (src + 1) * dims);
     this.stmt('DELETE FROM chunk_embeddings WHERE rowid = ?').run(BigInt(toId));
-    return this.stmt(
+    const copied = this.stmt(
       'INSERT INTO chunk_embeddings(rowid, embedding) SELECT ?, embedding FROM chunk_embeddings WHERE rowid = ?'
     ).run(BigInt(toId), BigInt(fromId)).changes > 0;
+    if (this.mirror) {
+      // Replacing an existing vector does not change the row count, so the copy has to be written into the mirror.
+      // A source this mirror does not hold means it has already drifted: drop it and let the next search reload.
+      if (copied && floats) {
+        this.forget(toId);
+        this.remember(toId, floats);
+      } else if (!copied) this.forget(toId);
+      else this.mirror = null;
+    }
+    return copied;
   }
 
   /**
@@ -161,17 +394,285 @@ export class VectorIndex {
    * The `topK` nearest vectors, nearest first, and with them every other vector exactly as near as the farthest of
    * those. Of several equally near vectors a nearest-neighbour query picks by where they are stored, and vectors are
    * stored in the order indexing wrote them, which concurrent indexing does not fix; so a tie at the edge is returned
-   * whole, for the caller to cut by what the chunks are (semanticSearch). Asking for one more than `topK` shows
-   * whether the edge is tied, and only then is the query widened until the tie ends. A tie wider than one query may
-   * return (KNN_MAX_K) is read whole by computing every stored vector's distance.
+   * whole, for the caller to cut by what the chunks are (semanticSearch). Scores are sqlite-vec's own distances
+   * (`1 - d²/2`), never the in-process scan's, so a reply is the one the KNN query would have built.
    *
-   * Given `among` (chunk ids), only those vectors are read: the nearest of them, by the same rule. sqlite-vec filters a
-   * nearest-neighbour query by row id, so a read among a few costs what a read among all does, not more.
+   * Given `among` (chunk ids), only those vectors are candidates: the nearest of them, by the same rule.
    */
   search(query: number[], topK: number, among?: number[]): VectorSearchResult[] {
     if (topK < 1) return [];
-    const normalized = this.normalize(query);
-    const buf = Buffer.from(new Float32Array(normalized).buffer);
+    const qf = new Float32Array(this.normalize(query));
+    const buf = Buffer.from(qf.buffer, qf.byteOffset, qf.byteLength);
+    if (this.mirrorReady()) {
+      const fast = this.searchMirror(qf, buf, topK, among);
+      if (fast !== null) return fast;
+    }
+    return this.searchStored(buf, topK, among);
+  }
+
+  delete(chunkId: number): void {
+    this.stmt('DELETE FROM chunk_embeddings WHERE rowid = ?').run(BigInt(chunkId));
+    this.forget(chunkId);
+  }
+
+  /** `PRAGMA data_version`. Another connection's commit changes it; this connection's own writes do not. */
+  private dataVersion(): number {
+    return Number(this.stmt('PRAGMA data_version').pluck().get());
+  }
+
+  /** Dimensions the vec0 table was created with, or null when it has not been created. */
+  private tableDims(): number | null {
+    const row = this.stmt(
+      `SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'chunk_embeddings'`
+    ).get() as { sql: string } | undefined;
+    const found = row?.sql.match(/FLOAT\[(\d+)\]/i);
+    return found ? Number(found[1]) : null;
+  }
+
+  /**
+   * The stored vectors, copied once from sqlite-vec's packed shadow blobs (one blob per chunk of vectors, not one row
+   * per vector). The copy is dropped when the row count changes without this class writing it, or when another
+   * connection commits (`PRAGMA data_version`): a replace there keeps the count and would otherwise stay invisible.
+   * Past {@link MIRROR_MAX_BYTES} there is no copy. A table declared at a different dimension is not copied, so the
+   * sqlite-vec query throws its dimension error instead of this copy answering with a slice of the blob.
+   */
+  private mirrorReady(): boolean {
+    let n: number;
+    let version: number;
+    try {
+      n = (this.stmt('SELECT COUNT(*) AS n FROM chunk_embeddings_rowids').get() as { n: number }).n;
+      version = this.dataVersion();
+    } catch {
+      this.mirror = null;
+      return false;
+    }
+    if (this.mirror && this.mirror.count === n && this.mirror.version === version) return true;
+    if (n === 0) {
+      this.mirror = { ids: [], slot: new Map(), data: new Float32Array(0), rows: null, simdTried: false, count: 0, cap: 0, version };
+      return true;
+    }
+    if (n * this.dimensions * 4 > MIRROR_MAX_BYTES) {
+      this.mirror = null;
+      return false;
+    }
+    this.mirror = this.loadMirror(n, version);
+    return this.mirror !== null;
+  }
+
+  private loadMirror(n: number, version: number): VecMirror | null {
+    const declared = this.tableDims();
+    if (declared !== null && declared !== this.dimensions) return null;
+    let chunks: Array<{ rowid: number | bigint; vectors: Buffer }>;
+    let rows: Array<{ rowid: number | bigint; chunk_id: number | bigint; chunk_offset: number | bigint }>;
+    try {
+      chunks = this.stmt('SELECT rowid, vectors FROM chunk_embeddings_vector_chunks00').all() as typeof chunks;
+      rows = this.stmt('SELECT rowid, chunk_id, chunk_offset FROM chunk_embeddings_rowids').all() as typeof rows;
+    } catch {
+      return null;
+    }
+    // A commit landed while the blobs were being copied. This search uses the KNN path; the next one copies again.
+    if (rows.length !== n || this.dataVersion() !== version) return null;
+    const blobs = new Map<number, Buffer>();
+    for (const chunk of chunks) blobs.set(Number(chunk.rowid), chunk.vectors);
+    const dims = this.dimensions;
+    // A reload (another connection committed) replaces this mirror, so its linear memory is taken over, not reserved again,
+    // when the vectors it now holds still want one.
+    const wantsRows = this.wantsRows(n);
+    const held = this.mirror?.rows;
+    const simd = !wantsRows ? null : held && held.capRows >= n ? held : SimdRows.create(dims, n);
+    const data = simd ? simd.data : new Float32Array(n * dims);
+    const ids = new Array<number>(n);
+    const slot = new Map<number, number>();
+    try {
+      for (let i = 0; i < n; i++) {
+        const blob = blobs.get(Number(rows[i].chunk_id));
+        const off = Number(rows[i].chunk_offset) * dims;
+        if (!blob || (blob.byteOffset + off * 4) % 4 !== 0 || off * 4 + dims * 4 > blob.length) return null;
+        data.set(new Float32Array(blob.buffer, blob.byteOffset + off * 4, dims), i * dims);
+        const id = Number(rows[i].rowid);
+        ids[i] = id;
+        slot.set(id, i);
+      }
+    } catch {
+      return null;
+    }
+    return { ids, slot, data, rows: simd, simdTried: wantsRows, count: n, cap: simd ? simd.capRows : n, version };
+  }
+
+  /**
+   * Whether `live` vectors want a memory the SIMD scan reads. Their bytes decide, never the room the mirror keeps for more:
+   * the capacity doubles ahead of the vectors, and a mirror that holds 4.3 MB must not get the 10 GiB reservation because
+   * it has room for 8.6.
+   */
+  private wantsRows(live: number): boolean {
+    return live * this.dimensions * 4 >= SIMD_MIN_BYTES;
+  }
+
+  /** The live vectors have reached the minimum: move them, once, to a memory the SIMD scan reads (the JavaScript copy stays if it cannot). */
+  private moveToRows(m: VecMirror): void {
+    m.simdTried = true;
+    const simd = SimdRows.create(this.dimensions, m.cap);
+    if (!simd) return;
+    simd.data.set(m.data.subarray(0, m.count * this.dimensions));
+    m.data = simd.data;
+    m.rows = simd;
+  }
+
+  private remember(chunkId: number, floats: Float32Array): void {
+    const m = this.mirror;
+    if (!m) return;
+    const dims = this.dimensions;
+    const have = m.slot.get(chunkId);
+    if (have !== undefined) {
+      m.data.set(floats, have * dims);
+      return;
+    }
+    if ((m.count + 1) * dims * 4 > MIRROR_MAX_BYTES) {
+      this.mirror = null;
+      return;
+    }
+    if (m.count === m.cap) {
+      // Doubling can jump past the byte cap while the next single vector still fits (16,384 → 32,768 at 768 dims).
+      const maxCap = Math.floor(MIRROR_MAX_BYTES / (dims * 4));
+      let cap = Math.max(m.cap * 2, m.cap + 16, 16);
+      if (cap > maxCap) cap = maxCap;
+      if (cap < m.count + 1) {
+        this.mirror = null;
+        return;
+      }
+      if (m.rows) {
+        if (!m.rows.grow(cap)) {
+          this.mirror = null;
+          return;
+        }
+        m.data = m.rows.data;
+      } else {
+        const data = new Float32Array(cap * dims);
+        data.set(m.data.subarray(0, m.count * dims));
+        m.data = data;
+      }
+      m.cap = cap;
+    }
+    const i = m.count;
+    m.data.set(floats, i * dims);
+    m.ids[i] = chunkId;
+    m.slot.set(chunkId, i);
+    m.count++;
+    if (!m.rows && !m.simdTried && this.wantsRows(m.count)) this.moveToRows(m);
+  }
+
+  private forget(chunkId: number): void {
+    const m = this.mirror;
+    if (!m) return;
+    const i = m.slot.get(chunkId);
+    if (i === undefined) return;
+    const dims = this.dimensions;
+    const last = m.count - 1;
+    if (i !== last) {
+      m.data.copyWithin(i * dims, last * dims, (last + 1) * dims);
+      const moved = m.ids[last];
+      m.ids[i] = moved;
+      m.slot.set(moved, i);
+    }
+    m.slot.delete(chunkId);
+    m.ids.pop();
+    m.count--;
+  }
+
+  /** sqlite-vec's own distance for one stored vector. It is the KNN distance: the same C function, so the bits match. */
+  private l2(slot: number, query: Buffer): number {
+    const m = this.mirror!;
+    const bytes = this.dimensions * 4;
+    const blob = Buffer.from(m.data.buffer, m.data.byteOffset + slot * bytes, bytes);
+    const row = this.stmt('SELECT vec_distance_l2(?, ?) AS distance').get(blob, query) as { distance: number };
+    return row.distance;
+  }
+
+  /** The distance from `qf` to each of the `n` vectors (the packed ones, or those at `slots`) to `approx`, by the SIMD scan where the mirror has one. */
+  private scanMirror(m: VecMirror, qf: Float32Array, slots: number[] | null, n: number, approx: Float64Array): void {
+    const dims = this.dimensions;
+    if (m.rows && qf.length === dims) {
+      try {
+        m.rows.stage(qf);
+        if (slots) for (let i = 0; i < n; i++) approx[i] = m.rows.distance(slots[i]);
+        else m.rows.distances(0, n, approx, 0);
+        return;
+      } catch {
+        // the scan only chooses candidates: the same search in JavaScript is the same answer
+      }
+    }
+    if (slots) scanSlotsL2(m.data, slots, dims, qf, approx);
+    else scanPackedL2(m.data, n, dims, qf, approx);
+  }
+
+  private scanBuffer(n: number): Float64Array {
+    if (this.scanned.length < n) this.scanned = new Float64Array(Math.max(n, this.scanned.length * 2));
+    return this.scanned;
+  }
+
+  private rankExact(slots: number[], query: Buffer, topK: number): VectorSearchResult[] {
+    const rows = slots.map(slot => ({ chunkId: this.mirror!.ids[slot], distance: this.l2(slot, query) }));
+    rows.sort((a, b) => a.distance - b.distance || a.chunkId - b.chunkId);
+    const edge = rows.length > topK ? rows[topK - 1].distance : Number.POSITIVE_INFINITY;
+    const out: VectorSearchResult[] = [];
+    for (let i = 0; i < rows.length; i++) {
+      if (i >= topK && rows[i].distance !== edge) break;
+      out.push({ chunkId: rows[i].chunkId, score: 1 - (rows[i].distance * rows[i].distance) / 2 });
+    }
+    return out;
+  }
+
+  /**
+   * Same rows as {@link searchStored}. Null means this query is cheaper, or only correct, on the KNN path: the
+   * candidate band is most of the index, or the scan disagreed with `vec_distance_l2` by more than the slack allows.
+   */
+  private searchMirror(qf: Float32Array, query: Buffer, topK: number, among?: number[]): VectorSearchResult[] | null {
+    const m = this.mirror!;
+    const dims = this.dimensions;
+    let slots: number[] | null = null;
+    if (among) {
+      const seen = new Set<number>();
+      slots = [];
+      for (const id of among) {
+        if (seen.has(id)) continue;
+        seen.add(id);
+        const slot = m.slot.get(id);
+        if (slot !== undefined) slots.push(slot);
+      }
+    }
+    const n = slots ? slots.length : m.count;
+    if (n === 0) return [];
+    if (n <= MIRROR_EXACT_LIMIT) return this.rankExact(slots ?? Array.from({ length: n }, (_, i) => i), query, topK);
+
+    const approx = this.scanBuffer(n);
+    this.scanMirror(m, qf, slots, n, approx);
+    const limit = kthSmallest(approx, n, Math.min(topK, n)) + MIRROR_SLACK;
+    const picked: number[] = [];
+    for (let i = 0; i < n; i++) if (approx[i] <= limit) picked.push(i);
+    if (picked.length > MIRROR_EXACT_LIMIT) return null;
+
+    const chosen = picked.map(i => (slots ? slots[i] : i));
+    const distances = chosen.map(slot => this.l2(slot, query));
+    let worst = 0;
+    for (let i = 0; i < picked.length; i++) {
+      const err = Math.abs(distances[i] - approx[picked[i]]);
+      if (err > worst) worst = err;
+    }
+    if (worst > MIRROR_SLACK / 2) return null;
+
+    const rows = chosen.map((slot, i) => ({ chunkId: m.ids[slot], distance: distances[i] }));
+    rows.sort((a, b) => a.distance - b.distance || a.chunkId - b.chunkId);
+    const edge = rows.length > topK ? rows[topK - 1].distance : Number.POSITIVE_INFINITY;
+    const out: VectorSearchResult[] = [];
+    for (let i = 0; i < rows.length; i++) {
+      if (i >= topK && rows[i].distance !== edge) break;
+      out.push({ chunkId: rows[i].chunkId, score: 1 - (rows[i].distance * rows[i].distance) / 2 });
+    }
+    return out;
+  }
+
+  /** The KNN query, widened until a tie at the cut is whole. The answer `search` used before the in-process scan. */
+  private searchStored(buf: Buffer, topK: number, among?: number[]): VectorSearchResult[] {
     const ids = among === undefined ? null : JSON.stringify(among);
     const nearest = (k: number) => (ids === null
       ? this.stmt('SELECT rowid, distance FROM chunk_embeddings WHERE embedding MATCH ? AND k = ? ORDER BY distance').all(buf, k)
@@ -180,7 +681,6 @@ export class VectorIndex {
       ).all(buf, k, ids)) as Array<{ rowid: number | bigint; distance: number }>;
     let k = Math.min(topK + 1, KNN_MAX_K);
     let rows = nearest(k);
-    // The farthest vector read is as near as the edge (the topK-th), so more may be: read further.
     while (rows.length === k && k > topK && rows[k - 1].distance === rows[topK - 1].distance) {
       if (k === KNN_MAX_K) {
         rows = ((ids === null
@@ -199,9 +699,5 @@ export class VectorIndex {
       chunkId: Number(r.rowid),
       score: 1 - (r.distance * r.distance) / 2
     }));
-  }
-
-  delete(chunkId: number): void {
-    this.stmt('DELETE FROM chunk_embeddings WHERE rowid = ?').run(BigInt(chunkId));
   }
 }

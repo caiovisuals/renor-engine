@@ -495,41 +495,43 @@ describe('the tokenizer is loaded on first use', () => {
     vi.resetModules();
   });
 
-  it('does not require gpt-tokenizer at import time, and does on the first count', async () => {
-    // The measurement this protects: requiring gpt-tokenizer costs ~344 ms on Node 22, of which
-    // ~205 ms is the o200k_base table, and nothing before the engine is Listening counts a token.
+  it('does not build the token vocabulary at import time, builds it on the first count, and never loads gpt-tokenizer', async () => {
+    // The measurement this protects: the o200k_base table cost ~205 ms of a cold start (and ~45 MiB of resident memory for
+    // ever after) when it was gpt-tokenizer's Map, and nothing before the engine is Listening counts a token. The counter
+    // that replaced it (src/indexer/o200k.ts) keeps the vocabulary in ~4 MiB of typed arrays and builds them on the first
+    // count; gpt-tokenizer is only the test oracle, so it must not be in a running engine's module graph at all.
     //
     // Run in a child process against require.cache, because the property is about what a FRESH
     // module graph contains: this test file has already loaded plenty, and an in-process check
     // could only ever observe this process's cache, not whether importing the module loads the
     // tokenizer.
     const script = `
-      const loaded = () => Object.keys(require.cache).filter((k) => k.includes('gpt-tokenizer')).length;
-      const before = loaded();
+      const gpt = () => Object.keys(require.cache).filter((k) => k.includes('gpt-tokenizer')).length;
+      const packed = () => Object.keys(require.cache).filter((k) => k.endsWith('o200k.json')).length;
+      const before = { gpt: gpt(), packed: packed() };
       const mod = require(${JSON.stringify(path.resolve(__dirname, '../../dist/indexer/tokenizer.js'))});
-      const afterImport = loaded();
-      const reportedAfterImport = mod.tokenizerLoaded();
+      const afterImport = { gpt: gpt(), packed: packed(), reported: mod.tokenizerLoaded() };
       const count = mod.encodeTokens('a short note about cold starts');
       process.stdout.write(JSON.stringify({
-        before, afterImport, reportedAfterImport,
-        afterFirstCount: loaded(), reportedAfterCount: mod.tokenizerLoaded(), count,
+        before, afterImport, afterFirstCount: { gpt: gpt(), packed: packed(), reported: mod.tokenizerLoaded() }, count,
       }));
     `;
     const res = spawnSync(process.execPath, ['-e', script], { encoding: 'utf8', timeout: 30_000 });
     if (res.status !== 0) throw new Error(`child failed (${res.status}): ${(res.stderr || '').slice(0, 500)}`);
     const out = JSON.parse(res.stdout) as {
-      before: number; afterImport: number; reportedAfterImport: boolean;
-      afterFirstCount: number; reportedAfterCount: boolean; count: number;
+      before: { gpt: number; packed: number };
+      afterImport: { gpt: number; packed: number; reported: boolean };
+      afterFirstCount: { gpt: number; packed: number; reported: boolean };
+      count: number;
     };
 
     // Nothing loaded it before this test, so a non-zero here would be leakage from elsewhere.
-    expect(out.before).toBe(0);
-    expect(out.afterImport).toBe(0);
-    expect(out.reportedAfterImport).toBe(false);
+    expect(out.before).toEqual({ gpt: 0, packed: 0 });
+    expect(out.afterImport).toEqual({ gpt: 0, packed: 0, reported: false });
 
-    // The work is DEFERRED, not skipped: the first count loads it and returns a real count.
-    expect(out.afterFirstCount).toBeGreaterThan(0);
-    expect(out.reportedAfterCount).toBe(true);
+    // The work is DEFERRED, not skipped: the first count builds the vocabulary and returns a real count. The packed file
+    // is read once and not kept in the module cache (its 1.4 MB string would stay resident for the life of the process).
+    expect(out.afterFirstCount).toEqual({ gpt: 0, packed: 0, reported: true });
     expect(out.count).toBeGreaterThan(0);
   });
 

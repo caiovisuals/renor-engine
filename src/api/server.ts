@@ -18,8 +18,8 @@ interface ProviderLike { embed(texts: string[]): Promise<number[][]>; dimensions
 
 export function createServer(
   db: Database.Database,
-  vectorIndex: VectorIndex,
-  provider: ProviderLike,
+  vectorIndex: VectorIndex | undefined,
+  provider: ProviderLike | undefined,
   vaultPath: string,
   priorityPaths?: string[],
   memoryDir?: string,

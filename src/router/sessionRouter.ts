@@ -1,7 +1,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import type Database from 'better-sqlite3';
-import { encode } from 'gpt-tokenizer';
+import { countO200k } from '../indexer/o200k';
 import { parseNote, type ParsedNote } from '../indexer/parser';
 import { chunkNote } from '../indexer/chunker';
 import { noteContentHash } from '../indexer/dailyEntries';
@@ -637,7 +637,7 @@ export function noteStatements(note: ParsedNote): string[] {
   return statements;
 }
 
-const tokensOf = (text: string) => encode(text, { disallowedSpecial: new Set() }).length;
+const tokensOf = (text: string) => countO200k(text);
 
 interface Delivered {
   note: RouterNote;

@@ -22,7 +22,11 @@ import { hiveIdentity } from '../memory/sourceName';
  * Hard requirements implemented here:
  *  - explicit private path, validated OUTSIDE the memory/history trees at
  *    config time; the store directory ("root") must be 0700/no group or
- *    other bits, owned by the running uid, with no symlinked components;
+ *    other bits, owned by the running uid, a real directory rather than a
+ *    symlink, and reached through no symlink except a root-owned one that
+ *    group and other cannot write (macOS's /var -> private/var), and then
+ *    only on a path where every directory belongs to root or the running
+ *    uid and group and other cannot write it;
  *  - store file must be a regular, non-symlink, owner-only (0600) file;
  *  - versioned, strictly validated schema — corrupt, unreadable, or
  *    schema-violating existing state FAILS CLOSED (startup error), never
@@ -74,6 +78,95 @@ function currentUid(): number {
   return uid;
 }
 
+const ROOT_UID = 0;
+const GROUP_OR_OTHER_WRITE = 0o022;
+const STICKY = 0o1000;
+
+/** Linux follows at most 40 symlinks in one path lookup, macOS 32. */
+const MAX_PATH_SYMLINKS = 40;
+
+const SYMLINK_RULE = 'store directory must not contain symlinks, except root-owned ones that group and other cannot write, '
+  + 'on a path that only root and the service user can change';
+
+/** Why the symlink at `here`, which `found` describes, may not be followed, or null when it may. */
+function linkRefusal(here: string, found: fs.Stats): string | null {
+  if (found.uid !== ROOT_UID) return 'a symlink on its path is not owned by root';
+  if (found.mode & GROUP_OR_OTHER_WRITE) return 'a symlink on its path is writable by group or other';
+  const leadsTo = fs.lstatSync(fs.realpathSync(here));
+  if (leadsTo.uid !== ROOT_UID) return 'a symlink on its path leads to a directory that is not owned by root';
+  if (leadsTo.mode & GROUP_OR_OTHER_WRITE) return 'a symlink on its path leads to a directory that is writable by group or other';
+  return null;
+}
+
+/**
+ * Why `dir`, which the path searches for the entry `found`, may not be on it, or null when it may. Whoever can write a
+ * directory can rename or replace the entries in it, so it is root's or the service user's and closed to group and
+ * other. A directory they can write is accepted only when it is sticky and root's, for an entry root owns, because
+ * then only root may rename or remove that entry (/tmp is drwxrwxrwt).
+ */
+function directoryRefusal(dir: fs.Stats, found: fs.Stats): string | null {
+  if (dir.uid !== ROOT_UID && dir.uid !== currentUid()) return 'a directory on its path is not owned by root or the service user';
+  if ((dir.mode & GROUP_OR_OTHER_WRITE) === 0) return null;
+  if ((dir.mode & STICKY) !== 0 && dir.uid === ROOT_UID && found.uid === ROOT_UID) return null;
+  return 'a directory on its path is writable by group or other';
+}
+
+/**
+ * Why the path to `dir` may not be used, or null when it may. These messages reach the /register response, so none
+ * names a path.
+ *
+ * A path without a symlink is judged as it always was: by the store directory itself, in validateStoreRoot. A symlink on
+ * the path is refused unless root owns it and group and other cannot write it, and the same holds for the directory it
+ * leads to: macOS reaches its per-user temp directory through /var, a symlink to private/var. Linux reports every link
+ * as lrwxrwxrwx, so there this still refuses all of them.
+ *
+ * A link is only as safe as the directory it sits in, and its target only as safe as every directory on the way to it:
+ * whoever can write one of those can rename or replace what was just checked, and a path that was refused outright
+ * before would be accepted. So the walk follows the path as the kernel does, one component at a time, and judges each
+ * link and every directory a name is looked up in, those a link leads through included (/private is in no path an
+ * operator writes, only in the target of /var). What nobody else can change nobody else can swap between this check and
+ * the write that follows, which is why the write needs no descriptor of the directory (Node has no openat). Every
+ * directory above the store is walked, and the walk must end where realpath does, or the path is not trusted.
+ *
+ * Owner and mode are all this sees. A bind mount looks like the directory it mounts and is judged as that directory,
+ * but lstat and realpath cannot tell whether a mount sits on the path. Mounting over a directory takes root or owning
+ * it, and every directory accepted here belongs to root or the service user, so the mount layout is the operator's to
+ * protect, as root's own links are.
+ */
+function symlinkRefusal(dir: string): string | null {
+  const real = fs.realpathSync(dir);
+  if (real === path.resolve(dir)) return null;
+  // At least one symlink is on the way. Follow the path as the kernel does, one component at a time.
+  let at: string = path.sep;
+  const absolute = path.isAbsolute(dir) ? dir : `${process.cwd()}${path.sep}${dir}`;
+  let rest = absolute.split(path.sep);
+  let links = 0;
+  while (rest.length > 0) {
+    const name = rest.shift() as string;
+    if (name === '' || name === '.') continue;
+    if (name === '..') {
+      at = path.dirname(at);
+      continue;
+    }
+    const here = path.join(at, name);
+    const found = fs.lstatSync(here);
+    const isLink = found.isSymbolicLink();
+    if (isLink && ++links > MAX_PATH_SYMLINKS) return `${SYMLINK_RULE}; its path crosses too many symlinks`;
+    const unsafe = (isLink ? linkRefusal(here, found) : null) ?? directoryRefusal(fs.lstatSync(at), found);
+    if (unsafe !== null) return `${SYMLINK_RULE}; ${unsafe}`;
+    if (!isLink) {
+      at = here;
+      continue;
+    }
+    const target = fs.readlinkSync(here);
+    if (path.isAbsolute(target)) at = path.sep;
+    rest = [...target.split(path.sep), ...rest];
+  }
+  // The walk judged what it went through and the kernel says where the path really goes. If the two differ, the walk did
+  // not see what the kernel saw (a link changed under it, or a case it does not model), and that is not a path to trust.
+  return at === real ? null : 'store directory could not be resolved consistently';
+}
+
 function validateStoreRoot(dir: string): void {
   let dirStat: fs.Stats;
   try {
@@ -85,11 +178,15 @@ function validateStoreRoot(dir: string): void {
   if (!dirStat.isDirectory()) failClosed('store path parent is not a directory');
   if (dirStat.uid !== currentUid()) failClosed('store directory is not owned by the service user');
   if (dirStat.mode & 0o077) failClosed('store directory must be owner-only (0700)');
+  // The directory itself is a real, owner-only directory of the service user. What is left is the path to it. The
+  // refusal is judged outside the try, so its reason cannot be replaced by the one for a failed lookup.
+  let refusal: string | null;
   try {
-    if (fs.realpathSync(dir) !== path.resolve(dir)) failClosed('store directory must not contain symlinks');
-  } catch {
-    failClosed('store directory could not be resolved');
+    refusal = symlinkRefusal(dir);
+  } catch (err) {
+    failClosed(`store directory could not be resolved (${(err as NodeJS.ErrnoException).code ?? 'io-error'})`);
   }
+  if (refusal !== null) failClosed(refusal);
 }
 
 function validateStoreFile(filePath: string): void {

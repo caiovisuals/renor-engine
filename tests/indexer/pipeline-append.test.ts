@@ -3,14 +3,13 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import type Database from 'better-sqlite3';
-import { openDb } from '../../src/db/client';
-import { runMigrations } from '../../src/db/schema';
 import { indexFile, type IndexOptions } from '../../src/indexer/pipeline';
 import * as chunker from '../../src/indexer/chunker';
 import { walkVaultStats } from '../../src/indexer/walker';
 import { VectorIndex } from '../../src/embeddings/vectorIndex';
 import { EvalHashEmbeddingProvider } from '../../src/eval/hashEmbedding';
 import { embeddingSpace } from '../../src/embeddings/space';
+import { openMigratedDb } from '../helpers/migratedDb';
 
 /**
  * A note that only grows at its end is indexed by what was appended (pipeline.ts, indexAppend). The ledger gains one
@@ -56,9 +55,9 @@ interface Index {
 function newIndex(provider: CountingProvider = new CountingProvider()): Index {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'append-db-'));
   tmpDirs.push(dir);
-  const db = openDb(path.join(dir, 'index.db'));
+  // Every comparison below builds a database to hold what a fresh index of the same bytes would: a copy of a migrated one.
+  const db = openMigratedDb(path.join(dir, 'index.db'));
   dbs.push(db);
-  runMigrations(db);
   const vectors = new VectorIndex(db, provider.dimensions);
   vectors.initTable();
   return { db, provider, vectors, options: { embeddingProvider: provider, vectorIndex: vectors } };

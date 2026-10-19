@@ -1,4 +1,5 @@
 import type Database from 'better-sqlite3';
+import { databaseStamp } from '../db/readCache';
 import { prepareOnce } from '../db/statements';
 import { byPlace } from './semantic';
 
@@ -14,6 +15,21 @@ export interface KeywordHit {
 const ROWS = 'SELECT c.id AS chunkId, c.note_path AS notePath, c.heading_path AS headingPath, c.text, f.score AS score';
 
 /**
+ * get_context's first keyword window is `topK * 10` (60 for the 6 it asks) and the next read, when that window is
+ * turned away, is four times that (240). A wider page is a walk toward every match; keeping its text is not worth it.
+ */
+const CACHED_PAGE_LIMIT = 256;
+/** Distinct pages kept per connection. The oldest goes when another is kept. */
+const CACHED_PAGE_COUNT = 256;
+
+interface CachedPage { stamp: string; hits: KeywordHit[] }
+const cachedPages = new WeakMap<Database.Database, Map<string, CachedPage>>();
+
+function copyHits(hits: KeywordHit[]): KeywordHit[] {
+  return hits.map(hit => ({ chunkId: hit.chunkId, notePath: hit.notePath, headingPath: hit.headingPath, text: hit.text, score: hit.score }));
+}
+
+/**
  * The `limit` chunks that best match an FTS5 `match` expression, best first, and of equal scores by place (byPlace).
  * BM25 ties often (one sentence in several notes, one word once in chunks of one length), and FTS5 gives ties in
  * row-id order, which is the order indexing wrote the notes in: concurrent indexing does not fix it.
@@ -22,9 +38,30 @@ const ROWS = 'SELECT c.id AS chunkId, c.note_path AS notePath, c.heading_path AS
  * the cut would read the text of every matching chunk (thousands, for a common word) to keep a few. Only when that
  * extra row scores like the last one does the page end inside a tie; then every chunk with that score is read, so the
  * tie is cut by place too.
+ *
+ * The same page is kept until this connection or another writes. The stamp is taken before the ranking and the page is
+ * kept only when that stamp is still current: a write during the ranking is stored under neither stamp, and nothing is
+ * kept inside a transaction. Callers may change the hits they are given, so both the kept page and a hit are copies.
  */
 export function keywordSearch(db: Database.Database, match: string, limit: number): KeywordHit[] {
   if (limit < 1) return [];
+  const key = `${limit}\0${match}`;
+  const before = limit <= CACHED_PAGE_LIMIT ? databaseStamp(db) : null;
+  if (before !== null) {
+    const held = cachedPages.get(db)?.get(key);
+    if (held && held.stamp === before) return copyHits(held.hits);
+  }
+  const rows = rankKeywordHits(db, match, limit);
+  if (before !== null && databaseStamp(db) === before) {
+    let pages = cachedPages.get(db);
+    if (!pages) cachedPages.set(db, pages = new Map());
+    if (!pages.has(key) && pages.size >= CACHED_PAGE_COUNT) pages.delete(pages.keys().next().value as string);
+    pages.set(key, { stamp: before, hits: copyHits(rows) });
+  }
+  return rows;
+}
+
+function rankKeywordHits(db: Database.Database, match: string, limit: number): KeywordHit[] {
   // The page is the `limit` best rows, read with one more ranked row that is not returned: its score (`next`) says whether
   // the page ends inside a tie. The ranking is read once, and the extra row costs no chunk text and no row of its own.
   const paged = prepareOnce(

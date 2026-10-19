@@ -595,3 +595,347 @@ describe('CLIENT-PERSISTENCE: disk-first registration and I/O failure', () => {
     expectStartupFails(missing, tmpdir0700('mvp-cp-memory-'));
   });
 });
+
+
+describe('CLIENT-PERSISTENCE: the path to the store directory may cross a root-owned symlink only where nobody but root and the service user can change it', () => {
+  // macOS reaches its per-user temp directory through /var, a symlink to private/var that root owns, so a store kept
+  // there is reached through a symlink. A test cannot make a file that root owns, so `lstatReports` has lstat say what
+  // the platform says for the paths a test names; the symlinks, the directories and the writes through them are real.
+  // `rootChain` does the same for the directories above a fixture, so no test depends on what the machine under test
+  // keeps in /tmp or /dev/shm. The one test that needs no pretence runs on macOS only.
+  const realLstat = fs.lstatSync;
+  const SERVICE_UID = process.getuid?.() ?? 0; // the uid the registry runs as
+  const STRANGER_UID = SERVICE_UID === 4242 ? 4243 : 4242; // neither root nor the service user
+  const LINK = fs.constants.S_IFLNK;
+  const DIR = fs.constants.S_IFDIR;
+  type Report = { uid: number; mode: number };
+  const ROOT_LINK: Report = { uid: 0, mode: LINK | 0o755 }; // ls -l /var on macOS: lrwxr-xr-x, root
+  const ROOT_DIR: Report = { uid: 0, mode: DIR | 0o755 }; // ls -ld /private/var on macOS: drwxr-xr-x, root
+  const GROUP_WRITABLE = DIR | 0o775;
+  const OTHER_WRITABLE = DIR | 0o757;
+  const STICKY_WORLD_WRITABLE = DIR | 0o1777; // ls -ld /tmp: drwxrwxrwt
+  const RULE = 'store directory must not contain symlinks';
+  const NOT_TRUSTED = 'a directory on its path is not owned by root or the service user';
+  const WRITABLE = 'a directory on its path is writable by group or other';
+
+  /** `dir` and every directory above it, as root's and closed to group and other. */
+  function rootChain(dir: string): Record<string, Report> {
+    const chain: Record<string, Report> = {};
+    for (let at = dir; ; at = path.dirname(at)) {
+      chain[at] = ROOT_DIR;
+      if (at === path.dirname(at)) break;
+    }
+    return chain;
+  }
+
+  /** <base>/real/auth is the store directory (0700) and <base>/link leads to <base>/real. All of it is a real path. */
+  function linkedStore(kind: 'relative' | 'absolute' | 'climbing' = 'relative') {
+    const base = fs.realpathSync(tmpdir0700('mvp-cp-link-'));
+    const target = path.join(base, 'real');
+    fs.mkdirSync(path.join(target, 'auth'), { recursive: true });
+    fs.chmodSync(path.join(target, 'auth'), 0o700);
+    const holder = kind === 'climbing' ? path.join(base, 'sub') : base;
+    fs.mkdirSync(holder, { recursive: true });
+    const link = path.join(holder, 'link');
+    // macOS: /var -> private/var, a relative target
+    fs.symlinkSync({ relative: 'real', absolute: target, climbing: path.join('..', 'real') }[kind], link);
+    // Root's, as on a platform where root made the link and the directories it leads through.
+    const chain = { ...rootChain(holder), [target]: ROOT_DIR };
+    return { base, target, link, chain, storePath: path.join(link, 'auth', 'clients.json') };
+  }
+
+  function lstatReports(reports: Record<string, Report>): void {
+    vi.spyOn(fs, 'lstatSync').mockImplementation(((target: fs.PathLike) => {
+      const stat = realLstat(target);
+      const report = reports[String(target)];
+      return report ? Object.assign(Object.create(Object.getPrototypeOf(stat)), stat, report) : stat;
+    }) as unknown as typeof fs.lstatSync);
+  }
+
+  function refusal(storePath: string): ClientRegistryError {
+    try {
+      new ClientRegistry(storePath);
+    } catch (err) {
+      expect(err).toBeInstanceOf(ClientRegistryError);
+      return err as ClientRegistryError;
+    }
+    throw new Error('the registry opened a store it must refuse');
+  }
+
+  function newClient(id: string): any {
+    return { ...syntheticClientRecord(id), client_id_issued_at: Math.floor(Date.now() / 1000) };
+  }
+
+  it('says that a symlink is the reason, and not that the directory "could not be resolved"', () => {
+    const { base, chain, storePath } = linkedStore();
+    lstatReports(chain); // the link itself is the real one: lrwxrwxrwx on Linux, and not root's wherever a test makes it
+    const error = refusal(storePath);
+    expect(error.message).toContain(RULE);
+    expect(error.message).toContain('a symlink on its path');
+    expect(error.message).not.toContain('could not be resolved');
+    // The message reaches the /register response, so it names no path.
+    expect(error.message).not.toContain(base);
+  });
+
+  it.each(['relative', 'absolute', 'climbing'] as const)('opens a store behind a root-owned symlink with a %s target, to a root-owned directory that group and other cannot write: the macOS /var shape', (kind) => {
+    const { target, link, chain, storePath } = linkedStore(kind);
+    lstatReports({ ...chain, [link]: ROOT_LINK });
+    const registry = new ClientRegistry(storePath);
+    registry.add(newClient('behind-link'));
+    // The write went through the link into the real directory, and a restart reads it back through the link.
+    const stored = JSON.parse(fs.readFileSync(path.join(target, 'auth', 'clients.json'), 'utf-8'));
+    expect(stored.clients.map((client: { client_id: string }) => client.client_id)).toEqual(['behind-link']);
+    expect(new ClientRegistry(storePath).get('behind-link')?.client_id).toBe('behind-link');
+  });
+
+  it.each<[string, { link: Report; target: Report }, string]>([
+    ['a symlink another user owns', { link: { ...ROOT_LINK, uid: STRANGER_UID }, target: ROOT_DIR },
+      'a symlink on its path is not owned by root'],
+    ['a root-owned symlink that group and other can write (Linux reports every link as lrwxrwxrwx)',
+      { link: { ...ROOT_LINK, mode: LINK | 0o777 }, target: ROOT_DIR }, 'a symlink on its path is writable by group or other'],
+    ['a root-owned symlink to a directory another user owns',
+      { link: ROOT_LINK, target: { ...ROOT_DIR, uid: STRANGER_UID } }, 'leads to a directory that is not owned by root'],
+    ['a root-owned symlink to a directory group can write',
+      { link: ROOT_LINK, target: { ...ROOT_DIR, mode: GROUP_WRITABLE } }, 'leads to a directory that is writable by group or other'],
+    ['a root-owned symlink to a sticky directory other can write (/tmp on macOS is drwxrwxrwt)',
+      { link: ROOT_LINK, target: { ...ROOT_DIR, mode: STICKY_WORLD_WRITABLE } }, 'leads to a directory that is writable by group or other'],
+  ])('refuses %s, and says which', (_name, reports, reason) => {
+    const { base, target, link, chain, storePath } = linkedStore();
+    lstatReports({ ...chain, [link]: reports.link, [target]: reports.target });
+    const error = refusal(storePath);
+    expect(error.message).toContain(RULE);
+    expect(error.message).toContain(reason);
+    expect(error.message).not.toContain(base);
+    expect(fs.existsSync(path.join(target, 'auth', 'clients.json'))).toBe(false);
+  });
+
+  it('judges every link on the way, not only the first: one that leads through a link it does not trust is refused', () => {
+    const { base, link, chain } = linkedStore(); // <base>/link -> real
+    const first = path.join(base, 'first');
+    fs.symlinkSync('link', first); // <base>/first -> link -> real
+    const storePath = path.join(first, 'auth', 'clients.json');
+    lstatReports({ ...chain, [first]: ROOT_LINK, [link]: { ...ROOT_LINK, uid: STRANGER_UID } });
+    expect(refusal(storePath).message).toContain('a symlink on its path is not owned by root');
+    lstatReports({ ...chain, [first]: ROOT_LINK, [link]: ROOT_LINK });
+    expect(new ClientRegistry(storePath).size).toBe(0);
+  });
+
+  it('still holds the store directory itself to 0700 and to its owner, however it is reached', () => {
+    const { target, link, chain, storePath } = linkedStore();
+    lstatReports({ ...chain, [link]: ROOT_LINK });
+    fs.chmodSync(path.join(target, 'auth'), 0o755);
+    expect(refusal(storePath).message).toContain('store directory must be owner-only (0700)');
+    fs.chmodSync(path.join(target, 'auth'), 0o700);
+    vi.spyOn(process, 'getuid').mockReturnValue((process.getuid?.() ?? 0) + 1);
+    expect(refusal(storePath).message).toContain('store directory is not owned by the service user');
+  });
+
+  it('refuses a store directory that is itself a symlink, even one root owns', () => {
+    const { target, link } = linkedStore();
+    fs.symlinkSync('auth', path.join(target, 'store-link'));
+    const store = path.join(link, 'store-link');
+    lstatReports({ [link]: ROOT_LINK, [target]: ROOT_DIR, [store]: ROOT_LINK });
+    expect(refusal(path.join(store, 'clients.json')).message).toContain('store path parent is not a directory');
+  });
+
+  it('says why a path cannot be resolved', () => {
+    const { storePath } = linkedStore();
+    vi.spyOn(fs, 'realpathSync').mockImplementation((() => {
+      throw Object.assign(new Error('denied'), { code: 'EACCES' });
+    }) as unknown as typeof fs.realpathSync);
+    expect(refusal(storePath).message).toContain('store directory could not be resolved (EACCES)');
+  });
+
+  it('stops following links after a bounded number, so a path that keeps leading back to itself ends', () => {
+    const { link, chain, storePath } = linkedStore();
+    lstatReports({ ...chain, [link]: ROOT_LINK });
+    vi.spyOn(fs, 'readlinkSync').mockImplementation((() => link) as unknown as typeof fs.readlinkSync); // the link now leads to itself
+    expect(refusal(storePath).message).toContain('its path crosses too many symlinks');
+  });
+
+  it('refuses a path that its own walk and the kernel resolve to different places', () => {
+    const { base, link, chain, storePath } = linkedStore();
+    const elsewhere = path.join(base, 'elsewhere');
+    fs.mkdirSync(path.join(elsewhere, 'auth'), { recursive: true, mode: 0o700 });
+    lstatReports({ ...chain, [link]: ROOT_LINK, [elsewhere]: ROOT_DIR });
+    vi.spyOn(fs, 'readlinkSync').mockImplementation((() => 'elsewhere') as unknown as typeof fs.readlinkSync);
+    expect(refusal(storePath).message).toContain('store directory could not be resolved consistently');
+  });
+
+  // The bypass the review found: every link was judged, and the directory a link leads to, but the ordinary directories
+  // around them were not. A link is only as safe as the directory it sits in, and a target only as safe as every
+  // directory on the way to it, because whoever can write one of those can rename or replace what the check looked at.
+  describe('every directory the path goes through, not only the links', () => {
+    // macOS's own shape under one base that stands for "/": <base>/var is a root-owned link to private/var, and the store
+    // directory is <base>/private/var/folders/T/auth, as /var/folders/<xx>/<hash>/T/<store> is there. "private" appears
+    // only in the link's target, never in the path the operator wrote. `trusted` is root's down to `folders`, as on a
+    // Mac; `T` is the service user's own.
+    function macStore(kind: 'relative' | 'absolute' = 'relative') {
+      const base = fs.realpathSync(tmpdir0700('mvp-cp-mac-'));
+      const dirs = {
+        root: path.parse(base).root,
+        outer: path.dirname(base), // the directory that holds the base
+        base,
+        private: path.join(base, 'private'),
+        target: path.join(base, 'private', 'var'),
+        folders: path.join(base, 'private', 'var', 'folders'),
+        temp: path.join(base, 'private', 'var', 'folders', 'T'),
+      };
+      fs.mkdirSync(path.join(dirs.temp, 'auth'), { recursive: true, mode: 0o755 });
+      fs.chmodSync(path.join(dirs.temp, 'auth'), 0o700);
+      const link = path.join(base, 'var');
+      fs.symlinkSync(kind === 'relative' ? path.join('private', 'var') : dirs.target, link);
+      return {
+        ...dirs,
+        link,
+        trusted: { ...rootChain(dirs.folders), [link]: ROOT_LINK },
+        storePath: path.join(link, 'folders', 'T', 'auth', 'clients.json'),
+      };
+    }
+    type Mac = ReturnType<typeof macStore>;
+
+    it('opens the macOS shape when root and the service user own every directory on the path and group and other cannot write them', () => {
+      const m = macStore();
+      lstatReports(m.trusted);
+      const registry = new ClientRegistry(m.storePath);
+      registry.add(newClient('behind-var'));
+      const stored = JSON.parse(fs.readFileSync(path.join(m.temp, 'auth', 'clients.json'), 'utf-8'));
+      expect(stored.clients.map((client: { client_id: string }) => client.client_id)).toEqual(['behind-var']);
+      expect(new ClientRegistry(m.storePath).get('behind-var')?.client_id).toBe('behind-var');
+    });
+
+    it.each<[string, (m: Mac) => Record<string, Report>]>([
+      ['/private owned by the service user, which only the service user can change', m => ({ [m.private]: { ...ROOT_DIR, uid: SERVICE_UID } })],
+      ['a directory below the link target owned by the service user, as /var/folders/<xx>/<hash> is', m => ({ [m.folders]: { ...ROOT_DIR, uid: SERVICE_UID } })],
+      ['the directory above the link owned by the service user, as a home directory is', m => ({ [m.outer]: { ...ROOT_DIR, uid: SERVICE_UID } })],
+      ['a sticky world-writable directory above the link that root owns, for an entry that root owns', m => ({ [m.outer]: { ...ROOT_DIR, mode: STICKY_WORLD_WRITABLE } })],
+      ['the link itself in a sticky world-writable directory that root owns, as /tmp is: only root may rename or remove it', m => ({ [m.base]: { ...ROOT_DIR, mode: STICKY_WORLD_WRITABLE } })],
+    ])('still opens it with %s', (_name, change) => {
+      const m = macStore();
+      lstatReports({ ...m.trusted, ...change(m) });
+      expect(new ClientRegistry(m.storePath).size).toBe(0);
+    });
+
+    it.each<[string, (m: Mac) => Record<string, Report>, string]>([
+      // The directory that holds the link: whoever can write it can rename the link away and put another there.
+      ['the directory that holds the link is writable by group', m => ({ [m.base]: { ...ROOT_DIR, mode: GROUP_WRITABLE } }), WRITABLE],
+      ['the directory that holds the link is writable by other', m => ({ [m.base]: { ...ROOT_DIR, mode: OTHER_WRITABLE } }), WRITABLE],
+      ['the directory that holds the link belongs to another user', m => ({ [m.base]: { ...ROOT_DIR, uid: STRANGER_UID } }), NOT_TRUSTED],
+      // /private holds the link target and is in no path the operator wrote, only in the link.
+      ['/private, which only the link names, is writable by group', m => ({ [m.private]: { ...ROOT_DIR, mode: GROUP_WRITABLE } }), WRITABLE],
+      ['/private, which only the link names, is writable by other', m => ({ [m.private]: { ...ROOT_DIR, mode: OTHER_WRITABLE } }), WRITABLE],
+      ['/private, which only the link names, belongs to another user', m => ({ [m.private]: { ...ROOT_DIR, uid: STRANGER_UID } }), NOT_TRUSTED],
+      // Below the target.
+      ['a directory below the link target is writable by other', m => ({ [m.folders]: { ...ROOT_DIR, mode: OTHER_WRITABLE } }), WRITABLE],
+      ['a directory below the link target belongs to another user', m => ({ [m.folders]: { ...ROOT_DIR, uid: STRANGER_UID } }), NOT_TRUSTED],
+      ['the directory that holds the store directory is writable by group', m => ({ [m.temp]: { uid: SERVICE_UID, mode: GROUP_WRITABLE } }), WRITABLE],
+      ['the directory that holds the store directory belongs to another user', m => ({ [m.temp]: { uid: STRANGER_UID, mode: DIR | 0o755 } }), NOT_TRUSTED],
+      // Above the link.
+      ['a directory above the link is writable by other and not sticky', m => ({ [m.outer]: { ...ROOT_DIR, mode: OTHER_WRITABLE } }), WRITABLE],
+      ['a directory above the link belongs to another user', m => ({ [m.outer]: { ...ROOT_DIR, uid: STRANGER_UID } }), NOT_TRUSTED],
+      ['the root of the file system belongs to another user', m => ({ [m.root]: { ...ROOT_DIR, uid: STRANGER_UID } }), NOT_TRUSTED],
+      // The sticky bit keeps others from renaming an entry that root owns, and from nothing else.
+      ['a sticky world-writable directory above the link holds an entry another user owns', m => ({ [m.outer]: { ...ROOT_DIR, mode: STICKY_WORLD_WRITABLE }, [m.base]: { ...ROOT_DIR, uid: STRANGER_UID } }), WRITABLE],
+      ['a sticky world-writable directory above the link belongs to another user', m => ({ [m.outer]: { uid: STRANGER_UID, mode: STICKY_WORLD_WRITABLE } }), NOT_TRUSTED],
+    ])('refuses it when %s, and says which', (_name, change, reason) => {
+      const m = macStore();
+      lstatReports({ ...m.trusted, ...change(m) });
+      const error = refusal(m.storePath);
+      expect(error.message).toContain(RULE);
+      expect(error.message).toContain(reason);
+      expect(error.message).not.toContain(m.base); // the message reaches /register, so it names no path
+      expect(fs.existsSync(path.join(m.temp, 'auth', 'clients.json'))).toBe(false);
+    });
+
+    // Only root's own entry is safe in a directory that others can write. The service user's is safe from them too, but
+    // the rule stays the narrow one: nothing here needs more.
+    it.skipIf(SERVICE_UID === 0)('refuses it when a sticky world-writable directory above the link holds an entry the service user owns', () => {
+      const m = macStore();
+      lstatReports({ ...m.trusted, [m.outer]: { ...ROOT_DIR, mode: STICKY_WORLD_WRITABLE }, [m.base]: { uid: SERVICE_UID, mode: DIR | 0o755 } });
+      const error = refusal(m.storePath);
+      expect(error.message).toContain(WRITABLE);
+      expect(error.message).not.toContain(m.base);
+    });
+
+    it.each<[string, (m: Mac) => Record<string, Report>, string]>([
+      ['writable by group', m => ({ [m.private]: { ...ROOT_DIR, mode: GROUP_WRITABLE } }), WRITABLE],
+      ['owned by another user', m => ({ [m.private]: { ...ROOT_DIR, uid: STRANGER_UID } }), NOT_TRUSTED],
+    ])('judges the directories an ABSOLUTE link target goes through as well: /private %s', (_name, change, reason) => {
+      const m = macStore('absolute');
+      lstatReports({ ...m.trusted, ...change(m) });
+      const error = refusal(m.storePath);
+      expect(error.message).toContain(reason);
+      expect(error.message).not.toContain(m.base);
+    });
+
+    it('judges the path again before every write: a directory that stops being trusted while the service runs ends registration and approval, and nothing is written', () => {
+      const m = macStore();
+      lstatReports(m.trusted);
+      const registry = new ClientRegistry(m.storePath);
+      registry.add(newClient('before'));
+      const file = path.join(m.temp, 'auth', 'clients.json');
+      const written = fs.readFileSync(file, 'utf-8');
+      lstatReports({ ...m.trusted, [m.private]: { ...ROOT_DIR, mode: GROUP_WRITABLE } });
+      expect(() => registry.add(newClient('after'))).toThrow(WRITABLE);
+      expect(() => registry.approve('before')).toThrow(WRITABLE);
+      expect(fs.readFileSync(file, 'utf-8')).toBe(written);
+      expect(registry.get('after')).toBeUndefined();
+    });
+
+    it('over HTTP: a directory that stops being trusted ends registration with the reason, no path, and nothing written', async () => {
+      const m = macStore();
+      lstatReports(m.trusted);
+      const svc = await bootService({ memoryDir: tmpdir0700('mvp-cp-memory-'), authStatePath: m.storePath });
+      lstatReports({ ...m.trusted, [m.private]: { ...ROOT_DIR, uid: STRANGER_UID } });
+      const res = await request(svc.app).post('/register')
+        .send({ client_name: 'untrusted-ancestor', redirect_uris: [LOOPBACK_CB], grant_types: ['authorization_code'] });
+      expect(res.status).toBe(500);
+      expect(res.body.error).toBe('server_error');
+      expect(res.body.error_description).toContain(RULE);
+      expect(res.body.error_description).toContain(NOT_TRUSTED);
+      expect(res.body.error_description).not.toContain(m.base);
+      expect(fs.existsSync(path.join(m.temp, 'auth', 'clients.json'))).toBe(false);
+    });
+  });
+
+  it('a store directory swapped for a symlink while the service runs: registration is refused with the reason, no path, and nothing is written', async () => {
+    const outer = tmpdir0700('mvp-cp-outer-');
+    fs.mkdirSync(path.join(outer, 'auth'), { mode: 0o700 });
+    const svc = await bootService({ memoryDir: tmpdir0700('mvp-cp-memory-'), authStatePath: path.join(outer, 'auth', 'clients.json') });
+    const moved = `${outer}-moved`;
+    tmpDirs.push(moved);
+    fs.renameSync(outer, moved);
+    fs.symlinkSync(moved, outer);
+    const res = await request(svc.app).post('/register')
+      .send({ client_name: 'swapped-root', redirect_uris: [LOOPBACK_CB], grant_types: ['authorization_code'] });
+    expect(res.status).toBe(500);
+    expect(res.body.error).toBe('server_error');
+    expect(res.body.error_description).toContain(RULE);
+    expect(res.body.error_description).not.toContain(outer);
+    expect(res.body.error_description).not.toContain(moved);
+    expect(fs.existsSync(path.join(moved, 'auth', 'clients.json'))).toBe(false);
+  });
+
+  // The real thing, with nothing pretended: where the platform temp directory is /var/folders/..., the store spelled
+  // through /var crosses the system's own symlink, and every directory on the way is the system's own as well. When it
+  // is refused, the failure lists who owns what on the real path, so a surprise on a runner can be read from its log.
+  it.runIf(process.platform === 'darwin')('opens a store directory spelled through the real /var symlink of macOS', ({ skip }) => {
+    const real = fs.realpathSync(tmpdir0700('mvp-cp-var-'));
+    if (!real.startsWith('/private/var/')) skip('the temp directory is not under /private/var');
+    const spelled = real.slice('/private'.length);
+    expect(fs.realpathSync(spelled)).toBe(real);
+    expect(spelled).not.toBe(real);
+    const storePath = path.join(spelled, 'clients.json');
+    const owners = ['/var', ...Object.keys(rootChain(real)).reverse()]
+      .map((at) => { const st = fs.lstatSync(at); return `${at} uid=${st.uid} mode=${(st.mode & 0o7777).toString(8)}${st.isSymbolicLink() ? ' (symlink)' : ''}`; });
+    let registry: ClientRegistry;
+    try {
+      registry = new ClientRegistry(storePath);
+    } catch (err) {
+      throw new Error(`${(err as Error).message}\nservice uid=${process.getuid?.()}\n${owners.join('\n')}`);
+    }
+    registry.add(newClient('behind-var'));
+    expect(new ClientRegistry(storePath).get('behind-var')?.client_id).toBe('behind-var');
+    expect(JSON.parse(fs.readFileSync(path.join(real, 'clients.json'), 'utf-8')).clients).toHaveLength(1);
+  });
+});

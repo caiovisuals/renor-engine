@@ -265,6 +265,69 @@ describe('remember_fact over the MCP tool path', () => {
     db.close();
   });
 
+  it('cuts a saved note with the chunk sizes renor index defaults to (400/50) when the config names none', async () => {
+    const v = fs.mkdtempSync(path.join(os.tmpdir(), 'mcp-save-chunk-defaults-'));
+    tmpDirs.push(v);
+    const db = openDb(path.join(v, 'index.db'));
+    runMigrations(db);
+    const tools = createMcpTools(db, undefined, undefined, {
+      vaultPath: v, memoryDir: 'Memory/Daily', priorityPaths: [], memoryLedger: 'System/Memory Events Ledger.md',
+    });
+    // One entry of 70 short paragraphs (~850 tokens, under the 4000-character limit of a save): the cut splits it
+    // into chunks of at most 400 tokens, and each paragraph is small enough to be carried over.
+    const paragraphs = Array.from({ length: 70 }, (_, p) => Array.from({ length: 8 }, (_, i) => `w${p}x${i}`).join(' '));
+    const saved = await tools.note({ text: paragraphs.join('\n\n'), date: '2026-10-10' }) as any;
+    expect(saved.ok).toBe(true);
+    expect(saved.warning).toBeUndefined();
+    const chunks = db.prepare('SELECT text FROM chunks WHERE note_path = ? ORDER BY start_line, id').all(saved.path) as { text: string }[];
+    expect(chunks.length).toBeGreaterThan(2);
+    // An overlap of 50 repeats the end of a chunk at the start of the next; an overlap of 0 repeats nothing.
+    for (let i = 1; i < chunks.length; i++) {
+      const lastOfPrevious = chunks[i - 1].text.split('\n\n').pop()!;
+      expect(chunks[i].text.startsWith(lastOfPrevious)).toBe(true);
+    }
+    db.close();
+  });
+
+  it('keeps the default overlap below a chunk maximum the config names', async () => {
+    const v = fs.mkdtempSync(path.join(os.tmpdir(), 'mcp-save-chunk-max-only-'));
+    tmpDirs.push(v);
+    const db = openDb(path.join(v, 'index.db'));
+    runMigrations(db);
+    const tools = createMcpTools(db, undefined, undefined, {
+      vaultPath: v, memoryDir: 'Memory/Daily', priorityPaths: [], memoryLedger: 'System/Memory Events Ledger.md', chunkMaxTokens: 20,
+    });
+    const paragraphs = Array.from({ length: 20 }, (_, p) => `word${p} tail`);
+    const saved = await tools.note({ text: paragraphs.join('\n\n'), date: '2026-10-10' }) as any;
+    expect(saved.ok).toBe(true);
+    expect(saved.warning).toBeUndefined();
+    const sizes = (db.prepare('SELECT token_count AS n FROM chunks WHERE note_path = ?').all(saved.path) as { n: number }[]).map((r) => r.n);
+    expect(sizes.length).toBeGreaterThan(2);
+    // An overlap of 50 against a maximum of 20 made every chunk carry the last one and grow (67 tokens by the 12th).
+    expect(Math.max(...sizes)).toBeLessThanOrEqual(30);
+    db.close();
+  });
+
+  it('keeps a saved memory and says so when the index refresh after it fails', async () => {
+    const v = fs.mkdtempSync(path.join(os.tmpdir(), 'mcp-save-refresh-failed-'));
+    tmpDirs.push(v);
+    const db = openDb(path.join(v, 'index.db'));
+    runMigrations(db);
+    const idx = new VectorIndex(db, 4); idx.initTable();
+    const tools = createMcpTools(db, idx, { embed: vi.fn().mockRejectedValue(new Error('embedding service down')), dimensions: 4 } as any, {
+      vaultPath: v, memoryDir: 'Memory/Daily', priorityPaths: [], memoryLedger: 'System/Memory Events Ledger.md',
+    });
+    const fact = await tools.remember_fact({ subject: 'Alice', predicate: 'works_at', object: 'Globex' }) as any;
+    expect(fact.ok).toBe(true);
+    expect(fact.warning).toBe('memory-saved-but-index-refresh-failed');
+    expect(fs.readFileSync(path.join(v, 'System/Memory Events Ledger.md'), 'utf8')).toContain('Globex');
+    const note = await tools.note({ text: 'Alice moved to Lisbon', date: '2026-10-10' }) as any;
+    expect(note.ok).toBe(true);
+    expect(note.warning).toBe('memory-saved-but-index-refresh-failed');
+    expect(fs.readFileSync(note.path, 'utf8')).toContain('Alice moved to Lisbon');
+    db.close();
+  });
+
   it('reports a non-string subject as a subject error, not an object error', async () => {
     const v = fs.mkdtempSync(path.join(os.tmpdir(), 'mcp-remember-subject-'));
     tmpDirs.push(v);

@@ -58,10 +58,20 @@ function isBlank(c: string | undefined): boolean {
 }
 
 /**
+ * What a text must hold for anything in it to be labelled. Each labelled step starts at one of these: a `<` (a comment, a
+ * <details> block), a `[` (a link title, an image, a reference definition, a footnote), a backtick or a tilde (a code fence,
+ * whose info string can hold hidden words), forty spaces in a row, or eleven line breaks with nothing but blanks between them
+ * (ten blank lines). A text with none of them has no hidden span, and comes back as it is: found by this one test, instead of
+ * by the scanner's step object and string for every character of it (about 17% of what a `get_context` allocated).
+ */
+const MAY_HIDE = new RegExp(`[<\\[\`~]| {${LONG_SPACE_RUN}}|\\n(?:[ \\t\\r]*\\n){${LONG_BLANK_RUN}}`);
+
+/**
  * The agent-facing copy of `text`: each hidden span labelled in place, the rest unchanged. Returns `text` itself when
  * nothing in it is hidden.
  */
 export function labelHiddenSpans(text: string): string {
+  if (!MAY_HIDE.test(text)) return text;
   return new Labeller(text, 0).run();
 }
 

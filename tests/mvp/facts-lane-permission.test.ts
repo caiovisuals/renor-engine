@@ -7,6 +7,7 @@ import { openDb } from '../../src/db/client';
 import { runMigrations } from '../../src/db/schema';
 import { remember, DEFAULT_LEDGER_REL } from '../../src/memory/lifecycle';
 import { EvalHashEmbeddingProvider } from '../../src/eval/hashEmbedding';
+import { seedFacts } from '../helpers/seedFacts';
 import { VectorIndex } from '../../src/embeddings/vectorIndex';
 import {
   buildAgentContext,
@@ -69,12 +70,23 @@ const RULES = ['Renor UI changes', 'Renor agent autonomy']; // by relevance to t
 const line = (f: AgentContextFact) => `${f.subject} · ${f.predicate}`;
 const ruleLines = (body: Context) => body.facts.filter(f => f.predicate === 'rule').map(line);
 
-/** The long other-lane facts that share the action's words: they outrank the rules on shared words and are newer. */
+/**
+ * The long other-lane facts that share the action's words: they outrank the rules on shared words and are newer.
+ *
+ * They are written straight into the facts table (seedFacts, which dates them after anything a test saves), because
+ * they only have to be there to fill the candidate window. Saving 200 facts through `remember` costs about 85 KB of
+ * SQLite writes each: 17 MB for one workspace, 0.8 GB for this file, and 18 of its tests build one.
+ */
 async function reviews(ws: ReturnType<typeof createWorkspace>, scope = 'project:renor', count = 200): Promise<void> {
-  for (let i = 0; i < count; i++) {
+  seedFacts(ws.db, count, (i) => {
     const n = 400 + i;
-    await ws.put(`PR ${n} review`, 'verdict', `PR ${n} review: verified the Renor dashboard change, checked the new section renders, confirmed the build and tests pass, and left notes on the add flow.`, scope);
-  }
+    return {
+      subject: `PR ${n} review`,
+      predicate: 'verdict',
+      object: `PR ${n} review: verified the Renor dashboard change, checked the new section renders, confirmed the build and tests pass, and left notes on the add flow.`,
+      scope,
+    };
+  });
 }
 
 const INDIRECT = 'Can I add a new section to the Renor dashboard, and do I need to ask Rowan?';

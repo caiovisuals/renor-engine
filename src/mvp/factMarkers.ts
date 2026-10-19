@@ -1,4 +1,5 @@
 import type Database from 'better-sqlite3';
+import { listStatement, paddedList } from '../db/statements';
 import { authorMarker, isImportSource, type AuthorMarker } from '../memory/sourceName';
 import { ledgerEventIds } from '../retrieval/ledgerLiveness';
 
@@ -9,9 +10,9 @@ import { ledgerEventIds } from '../retrieval/ledgerLiveness';
 export function factAuthorsByEvent(db: Database.Database, eventIds: readonly string[]): Map<string, string | null> {
   const ids = [...new Set(eventIds)];
   if (ids.length === 0) return new Map();
-  const rows = db.prepare(
-    `SELECT event_id AS eventId, author FROM facts WHERE event_id IN (${ids.map(() => '?').join(',')})`,
-  ).all(...ids.map(id => id.toUpperCase())) as Array<{ eventId: string; author: string | null }>;
+  const rows = listStatement(
+    db, ids.length, marks => `SELECT event_id AS eventId, author FROM facts WHERE event_id IN (${marks})`,
+  ).all(...paddedList(ids.map(id => id.toUpperCase()))) as Array<{ eventId: string; author: string | null }>;
   return new Map(rows.map(row => [row.eventId.toLowerCase(), row.author]));
 }
 

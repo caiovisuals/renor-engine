@@ -1,4 +1,5 @@
 import { closedLedgerEvents, resolveLedgerHits } from '../retrieval/ledgerLiveness';
+import { isBlankOrInvisible } from '../memory/invisibleText';
 import fs from 'fs';
 import crypto from 'crypto';
 import path from 'path';
@@ -13,6 +14,8 @@ import { LocalEmbeddingProvider } from '../embeddings/local';
 import { VertexEmbeddingProvider } from '../embeddings/vertex';
 import { CachingEmbeddingProvider } from '../embeddings/caching';
 import { InteractiveEmbeddingProvider } from '../embeddings/interactive';
+import { CoalescingEmbeddingProvider } from '../embeddings/coalescing';
+import { conversationNoteMatcher } from '../retrieval/readerLayout';
 import { retrieveContext, createNoteDater, createNoteTimeBound, type HitOrder } from '../retrieval/orchestrator';
 import { createLedgerEventClock } from '../retrieval/ledgerEventTime';
 import type { ChunkScope, RetrievalProbe } from '../retrieval/semantic';
@@ -24,7 +27,7 @@ import { statVaultFiles, vaultIgnores, walkVaultStats, type VaultFileStat } from
 import { quoteFtsQuery, shownPage } from '../retrieval/queryHelpers';
 import { keywordSearch } from '../retrieval/keyword';
 import { selectNoteIdentityHits, NOTE_IDENTITY_EXTRA } from '../retrieval/noteIdentity';
-import { isLedgerPreamble, keywordLedgerHits, ledgerNoteMatcher, presentLedgerEvents } from '../retrieval/ledgerPresentation';
+import { isLedgerPreamble, keywordLedgerHits, ledgerNoteMatcher, presentLedgerEvents, type LedgerRecordCache } from '../retrieval/ledgerPresentation';
 import type { EmbeddingProvider } from '../embeddings/types';
 import type { MvpConfig } from './config';
 import { dailyDirForScope, normalizeScope } from './scope';
@@ -176,14 +179,16 @@ export function createEmbeddingProvider(
     const served = crypto.createHash('sha256').update(`${config.vertexProject ?? ''}\0${config.vertexLocation ?? ''}`).digest('hex').slice(0, 12);
     // The query cache is outermost: a query already asked is answered from it with the service down, and only a query
     // that must go to the service meets the interactive budget and the failure memory in front of it.
-    return withQueryCache(new InteractiveEmbeddingProvider(new VertexEmbeddingProvider({
+    // Document embeddings from concurrent index passes share requests (coalescing.ts): below the budget, so each caller's
+    // budget still ends its own call, and above the service, so a request holds at most the usual four in flight.
+    return withQueryCache(new InteractiveEmbeddingProvider(new CoalescingEmbeddingProvider(new VertexEmbeddingProvider({
       keyFile: config.vertexKeyFile,
       project: config.vertexProject,
       location: config.vertexLocation,
       model: config.embeddingModel,
       dimensions: config.embeddingDims,
       ...vertexSeam,
-    })), config, `p-${served}`);
+    }))), config, `p-${served}`);
   }
   const keys = (config.embeddingApiKey ?? '').split(',').map(k => k.trim()).filter(Boolean);
   return new OpenAIEmbeddingProvider(
@@ -497,7 +502,15 @@ export async function engineSearchMemory(
   noteCapWhenUnset?: number,
   /** Internal floor input: expose note similarities so the MCP search can filter its completed page. */
   showSimilarity = false,
+  /** search_memory's reader layout (readerLayout.ts) needs each chunk's place in its note: the ids ride on the hits until it has used them. */
+  withChunkIds = false,
 ): Promise<{ ok: boolean; error?: string; notice?: string; rankedBy?: HitOrder; hits: unknown[]; scope?: string; evidence?: ProductEvidenceAttachment }> {
+  // A query with no searchable characters can never truthfully match stored data. Refuse before
+  // any embedding call (eval-hash or provider) so whitespace-only input yields no hits instead
+  // of an arbitrary semantic match, matching search_history's blank-query handling.
+  if (isBlankOrInvisible(query)) {
+    return { ok: true, hits: [] };
+  }
   if (!engine.provider || !engine.vectorIndex) {
     return semanticUnavailable();
   }
@@ -597,6 +610,7 @@ export async function engineSearchMemory(
       console.error('[digests] reading the digests failed:', failureReason(err, 200));
     }
   }
+  const isConversation = withChunkIds ? conversationNoteMatcher(db) : () => false;
   const hits = led.map(h => ({
     notePath: clientPath(memoryDir, h.notePath),
     headingPath: h.headingPath,
@@ -604,6 +618,8 @@ export async function engineSearchMemory(
     score: h.score,
     reason: h.reason,
     ...(h.session_date ? { session_date: h.session_date } : {}),
+    // Only a conversation's chunks: the layout merges those and no others.
+    ...(withChunkIds && 'chunkId' in h && typeof h.chunkId === 'number' && h.chunkId > 0 && isConversation(h.notePath) ? { chunkId: h.chunkId } : {}),
     // The author of a fact an identity question read: the reader's view marks it (mvp/factMarkers.ts).
     ...('author' in h && h.author !== undefined ? { author: h.author } : {}),
     // Raw cosine before boosts, rounded as in the checked floor arm. A ledger event is no note:
@@ -621,7 +637,7 @@ export async function engineSearchMemory(
   };
 }
 
-export function engineSearchText(db: Database.Database, memoryDir: string, query: string, topK: number, scope?: string, includeHistory = false, ledgerRelPath = DEFAULT_LEDGER_REL) {
+export function engineSearchText(db: Database.Database, memoryDir: string, query: string, topK: number, scope?: string, includeHistory = false, ledgerRelPath = DEFAULT_LEDGER_REL, ledgerRecords?: LedgerRecordCache) {
   const fts = prepareOnce(db, `SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'chunks_fts'`).get();
   if (!fts) return { ok: false, error: 'fts-unavailable', results: [] as unknown[] };
   const match = quoteFtsQuery(query);
@@ -658,7 +674,7 @@ export function engineSearchText(db: Database.Database, memoryDir: string, query
         const live = keywordLedgerHits(resolveLedgerHits(
           rows.map(r => toResult({ ...r, score: Math.abs(r.score), reason: 'fts' })),
           closedEvents, includeHistory,
-        ), isLedger, query);
+        ), isLedger, query, ledgerRecords);
         return inScope ? inScope.hits(live, r => r.notePath) : live;
       },
       topK,
@@ -690,7 +706,7 @@ export function engineSearchText(db: Database.Database, memoryDir: string, query
     if (derived === undefined) return r;
     const session_date = boundTime(path.resolve(memoryDir, r.notePath), derived);
     return { ...r, session_date };
-  }), isLedger);
+  }), isLedger, ledgerRecords);
   return {
     ok: true,
     results,
@@ -788,12 +804,19 @@ function indexOptionsFor(engine: Engine, interactive = false) {
 }
 
 /**
+ * Files an index pass has in flight at once. A file holds its slot while its embedding request is out, so the slot count is
+ * how many requests an index pass can batch: with the coalescing provider (coalescing.ts) the requests stay at four in
+ * flight whatever this is. Value set by the measurements in engine/docs/perf (see the note there).
+ */
+export const INDEX_FILE_CONCURRENCY = 48;
+
+/**
  * `interactive`: an agent waits on this pass (the `index_memory` tool), so a file whose embedding the service will not give
  * within the write budget is left unfinished and the pass returns; a background job then embeds it
  * (`engineFinishIndexInBackground`), however long the service takes. Unset: the provider waits as long as its own retries take.
  */
 export async function engineIndex(db: Database.Database, config: MvpConfig, engine: Engine, pass: { interactive?: boolean } = {}) {
-  const stats = await indexVault(db, config.memoryDir, indexOptionsFor(engine, pass.interactive === true), 4);
+  const stats = await indexVault(db, config.memoryDir, indexOptionsFor(engine, pass.interactive === true), INDEX_FILE_CONCURRENCY);
   if (stats.errors > 0 && pass.interactive) engineFinishIndexInBackground(db, config, engine);
   return stats;
 }
@@ -944,7 +967,7 @@ export async function engineIndexChanged(
   let failure: string | undefined;
   // Together: each file that embeds waits on the provider for a round trip, and a save that changed the
   // daily note and the ledger should wait for one round trip, not two.
-  await inPool(changed, 4, async (f) => {
+  await inPool(changed, INDEX_FILE_CONCURRENCY, async (f) => {
     try {
       await indexFile(db, f.file, options);
       if (stampIsTrusted(f, scanStart)) known.set(f.file, stampOf(f));

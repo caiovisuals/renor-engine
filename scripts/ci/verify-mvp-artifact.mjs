@@ -38,6 +38,9 @@ import { fileURLToPath } from 'node:url';
 const engineRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const MVP_ENTRY_REL = join('dist', 'mvp', 'cli.js');
 const STAMP_REL = join('dist', 'BUILD.json');
+// The packed token vocabulary the counter reads on its first count (src/indexer/o200k.ts): data, not code, so tsc emits it only
+// because the source names it, and a missing copy would pass startup and fail the first note that is cut.
+const TOKEN_VOCAB_REL = join('dist', 'indexer', 'o200k.json');
 // Same path GET /api/health reads from the compiled product API (dist/api/server.js).
 const BUILD_MANIFEST_READ_RE = /join\)\((root),\s*'dist',\s*'BUILD\.json'\)/;
 const DISCOVERY_PATH = '/.well-known/oauth-authorization-server';
@@ -106,7 +109,7 @@ async function main() {
   }
   runNpm('build', ['run', 'build', '--ignore-scripts=false'], { cwd: engineRoot });
 
-  for (const rel of [MVP_ENTRY_REL, STAMP_REL]) {
+  for (const rel of [MVP_ENTRY_REL, STAMP_REL, TOKEN_VOCAB_REL]) {
     if (!existsSync(join(engineRoot, rel))) die(`the build did not emit ${rel}`);
   }
   const head = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: engineRoot, encoding: 'utf8' }).trim();
@@ -136,14 +139,16 @@ async function main() {
       die(`the production artifact still ships ${rel} — the alpha start command must not depend on a devDependency`);
     }
   }
-  for (const rel of [MVP_ENTRY_REL, STAMP_REL]) {
+  for (const rel of [MVP_ENTRY_REL, STAMP_REL, TOKEN_VOCAB_REL]) {
     if (!existsSync(join(artifactDir, rel))) die(`the artifact is missing ${rel}`);
   }
-  // Dependencies the engine loads LAZILY (first token count, first OpenAI provider) are not
+  // Dependencies the engine loads LAZILY (first OpenAI provider) are not
   // touched by startup, so a missing one would pass every check below and fail the first
-  // request. Resolve them from the artifact, exactly as the engine will.
+  // request. Resolve them from the artifact, exactly as the engine will. (gpt-tokenizer is no
+  // longer one: the engine counts tokens with src/indexer/o200k.ts, and only the evaluation
+  // harness loads gpt-tokenizer.)
   const artifactRequire = createRequire(join(artifactDir, 'package.json'));
-  for (const dep of ['gpt-tokenizer', 'openai']) {
+  for (const dep of ['openai']) {
     try {
       artifactRequire.resolve(dep);
     } catch {

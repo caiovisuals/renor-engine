@@ -42,9 +42,15 @@ describe('loadConfig', () => {
     process.env.DB_PATH = '/tmp/test.db';
     process.env.OPENAI_API_KEY = 'sk-test';
     const c = loadConfig();
-    expect(c.embeddingProvider).toBe('openai');
+    expect(c.embeddingProvider).toBe('none');
     expect(c.chunkMaxTokens).toBe(400);
     expect(c.chunkOverlapTokens).toBe(50);
+  });
+
+  it('does not select OpenAI from an ambient API key', () => {
+    process.env.VAULT_PATH = '/tmp/vault';
+    process.env.OPENAI_API_KEY = 'sk-ambient';
+    expect(loadConfig().embeddingProvider).toBe('none');
   });
 
   // embeddingProvider validation
@@ -88,6 +94,7 @@ describe('loadConfig', () => {
     process.env.EMBEDDING_PROVIDER = 'openai';
     process.env.OPENAI_API_KEY = 'sk-valid-key';
     const c = loadConfig();
+    expect(c.embeddingProvider).toBe('openai');
     expect(c.openaiApiKey).toBe('sk-valid-key');
   });
 

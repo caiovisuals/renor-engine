@@ -12,6 +12,7 @@ import { MAX_STATEMENT_LENGTH } from './limits';
 import { appendConfined, createConfined, withConfinedFile } from './confinedWrite';
 import { isBlankOrInvisible } from './invisibleText';
 import { cleanSource } from './sourceName';
+import { displacementsAfter, hasOpenDisplacementBy, type ClosedFact } from './writerConflicts';
 import { withAppendLock } from './durableAppend';
 import { assertStorable, secretGuardEnabled, SecretRefusedError } from '../extraction/secretGuard';
 import { markErrorReason, refusalReason, type ToolErrorReason } from '../toolRefusal';
@@ -79,6 +80,11 @@ interface LedgerEvent {
   scope?: string;
   /** The user's own words this event came from. Optional: older ledgers have none. */
   statement?: string;
+  /**
+   * The writer the connection authenticated, written only where it is not the source (writerConflicts.ts). Absent: the
+   * writer is the source, as in every ledger written before writers were recorded.
+   */
+  writer?: string;
   /** retire and restore only: the fact event they take out of recall or bring back. */
   target?: string;
 }
@@ -94,7 +100,7 @@ const EVENT_HEADER_RE = /^## (mem_[A-Za-z0-9]+) · (.+?)[ \t]*$/i;
 // `.` otherwise refuses U+2028/U+2029 (and a lone \r), which JavaScript calls line terminators and this
 // ledger does not: one such character in a value used to make the whole ledger unreadable at startup.
 const FIELD_RE = /^- ([A-Za-z][\w-]*): (.*)$/s;
-const KNOWN_FIELDS = new Set(['kind', 'subject', 'predicate', 'object', 'closed_event', 'source', 'scope', 'statement', 'target']);
+const KNOWN_FIELDS = new Set(['kind', 'subject', 'predicate', 'object', 'closed_event', 'source', 'scope', 'statement', 'writer', 'target']);
 const REQUIRED_FIELDS = ['subject', 'predicate', 'object'] as const;
 /**
  * retire takes one fact out of recall and restore brings it back (retireFact, restoreFact). Each names the fact's own
@@ -105,7 +111,7 @@ const REQUIRED_FIELDS = ['subject', 'predicate', 'object'] as const;
 const RETIREMENT_KINDS = new Set(['retire', 'restore']);
 const KNOWN_KINDS = new Set(['store', 'supersede', ...RETIREMENT_KINDS]);
 const CONTROL_CHARS = /[\u0000-\u001F\u007F]/;
-export const FIELD_LIMITS: Record<string, number> = { subject: 512, predicate: 256, object: 8192, source: 256, scope: 80, statement: MAX_STATEMENT_LENGTH };
+export const FIELD_LIMITS: Record<string, number> = { subject: 512, predicate: 256, object: 8192, source: 256, scope: 80, statement: MAX_STATEMENT_LENGTH, writer: 256 };
 
 /**
  * Characters JSON.stringify leaves literal although a line-oriented reader may read them as a line
@@ -301,6 +307,7 @@ function validateLedgerEvent(ev: LedgerEvent): void {
     validateField('object', ev.object, true);
   }
   validateField('source', ev.source, false);
+  if (ev.writer !== undefined) validateField('writer', ev.writer, true);
   if (retirement) {
     if (ev.target === undefined || !EVENT_ID_RE.test(ev.target)) {
       throw new Error(`ledger corruption in event ${ev.id}: a ${ev.kind} event needs the id of the fact event it ${ev.kind}s (target)`);
@@ -334,6 +341,7 @@ function eventDigest(ev: LedgerEvent): string {
   if (scope !== 'global') parts.push(scope);
   // Same rule for the statement: absent => digest identical to pre-statement events.
   if (ev.statement !== undefined) parts.push(`statement:${ev.statement}`);
+  if (ev.writer !== undefined) parts.push(`writer:${ev.writer}`);
   if (ev.target !== undefined) parts.push(`target:${ev.target}`);
   return crypto.createHash('sha256').update(JSON.stringify(parts)).digest('hex');
 }
@@ -411,6 +419,7 @@ export async function appendLedgerEvent(
   const scope = normalizeScope(ev.scope);
   if (scope !== 'global') lines.push(`- scope: ${scope}`);
   if (ev.statement !== undefined) lines.push(`- statement: ${encodeStatement(ev.statement)}`);
+  if (ev.writer !== undefined) lines.push(`- writer: ${ev.writer}`);
   lines.push(`- source: ${ev.source}`, ``);
   // Confined and durable in one append (confinedWrite.ts): a link, a hard link or a FIFO planted in the vault is refused,
   // never followed, and a failed write is cut back, so the ledger never keeps a fragment of an event whose save the caller
@@ -607,6 +616,7 @@ export function parseLedgerEvents(content: string, options: { finalEventKnown?: 
       closedEvent: fields.closed_event ?? null,
       source: fields.source ?? 'ledger',
       scope: fields.scope ? normalizeScope(fields.scope) : 'global',
+      ...(fields.writer !== undefined ? { writer: fields.writer } : {}),
     };
     validateLedgerEvent(ev); // bounds, kind, id/timestamp/closed_event shape
     events.push(ev);
@@ -800,10 +810,10 @@ function resolveLifecycleEntity(
 
 function currentFact(db: Database.Database, entityId: number, predicate: string, scope: string = 'global') {
   return prepareOnce(db, 
-    `SELECT id, object_text, event_id, valid_from, scope FROM facts
+    `SELECT id, object_text, event_id, valid_from, scope, author FROM facts
      WHERE subject_entity_id = ? AND predicate = ? AND scope = ? AND valid_to IS NULL
      ORDER BY valid_from DESC, id DESC LIMIT 1`
-  ).get(entityId, predicate, scope) as { id: number; object_text: string; event_id: string | null; valid_from: string; scope: string } | undefined;
+  ).get(entityId, predicate, scope) as { id: number; object_text: string; event_id: string | null; valid_from: string; scope: string; author: string | null } | undefined;
 }
 
 /**
@@ -829,9 +839,9 @@ function streamCurrentFacts(db: Database.Database, entityId: number, predicate: 
 function currentFactClosedAcrossSpellings(db: Database.Database, ev: LedgerEvent, entityId: number, scope: NormalizedScope) {
   if (!ev.closedEvent) return undefined;
   const named = prepareOnce(db, 
-    `SELECT id, object_text, event_id, valid_from, scope FROM facts
+    `SELECT id, object_text, event_id, valid_from, scope, author FROM facts
      WHERE event_id = ? AND subject_entity_id = ? AND predicate = ? AND valid_to IS NULL`
-  ).get(ev.closedEvent.toUpperCase(), entityId, ev.predicate) as { id: number; object_text: string; event_id: string | null; valid_from: string; scope: string } | undefined;
+  ).get(ev.closedEvent.toUpperCase(), entityId, ev.predicate) as { id: number; object_text: string; event_id: string | null; valid_from: string; scope: string; author: string | null } | undefined;
   return named && named.scope !== scope && savedScopeMatches(named.scope, scope) ? named : undefined;
 }
 
@@ -1088,6 +1098,8 @@ function applyEvent(db: Database.Database, ev: LedgerEvent, positions?: Map<stri
     // create=true always resolves or creates — never null here.
     const entityId = resolveLifecycleEntity(db, ev.subject, ev.at, true, { index }) as number;
     const closedFactIds: number[] = [];
+    // The value this write replaces (the newest one it closes): the writer displacements it leaves open are read from it.
+    let replaced: ClosedFact | null = null;
     // The current fact under the event's own spelling, then the one it names under the other spelling of its slug.
     const scope = normalizeScope(ev.scope);
     for (const cur of [currentFact(db, entityId, ev.predicate, scope), currentFactClosedAcrossSpellings(db, ev, entityId, scope)]) {
@@ -1119,6 +1131,9 @@ function applyEvent(db: Database.Database, ev: LedgerEvent, positions?: Map<stri
       // fail loudly on contradictory reuse.
       prepareOnce(db, `UPDATE facts SET valid_to = ?, updated_at = ? WHERE id = ?`).run(ev.at, ev.at, cur.id);
       closedFactIds.push(cur.id);
+      if (replaced === null || cur.valid_from > replaced.validFrom) {
+        replaced = { eventId: cur.event_id, object: cur.object_text, validFrom: cur.valid_from, source: cur.author };
+      }
     }
     // A retired value that was current under this spelling is closed as if it had never been retired
     // (reconcileStreamCurrent replays it the same way), so restoring it later brings it back as history.
@@ -1134,6 +1149,10 @@ function applyEvent(db: Database.Database, ev: LedgerEvent, positions?: Map<stri
       `INSERT INTO facts (subject_entity_id, predicate, object_text, source_path, confidence, valid_from, valid_to, updated_at, event_id, scope, author, statement_words)
        VALUES (?, ?, ?, '_mcp_', 1.0, ?, NULL, ?, ?, ?, ?, ?) RETURNING id`
     ).get(entityId, ev.predicate, ev.object, ev.at, ev.at, ev.id, scope, ev.source, statementTerms(ev.statement)) as { id: number };
+    // Who saved it, and the writer displacements it leaves open (writerConflicts.ts); a replay writes the same row.
+    const writer = ev.writer ?? ev.source;
+    prepareOnce(db, 'INSERT OR REPLACE INTO fact_writers (event_id, writer, displaced) VALUES (?, ?, ?)')
+      .run(ev.id, writer, JSON.stringify(displacementsAfter(db, replaced, { eventId: ev.id, writer, object: ev.object })));
     // Searchable by its words from the moment it exists: the index row is written by this transaction,
     // under the subject name a read shows (the entity's, which may be an earlier spelling of ev.subject).
     indexFactTerms(db, row.id, scope, { subject: canonicalSubject(db, entityId), predicate: ev.predicate, object: ev.object });
@@ -1425,6 +1444,8 @@ function serializeLifecycleWrite<T>(fn: () => Promise<T>): Promise<T> {
 /** The principal write verb. Ledger-first, then SQLite. Idempotent on identical current value. */
 export async function remember(db: Database.Database, vaultPath: string, ledgerRelPath: string, args: {
   subject: string; predicate: string; object: string; source?: string; scope?: string; statement?: string;
+  /** The authenticated writer of the save (mvp/server.ts `agentOf`); absent, the writer is the source. */
+  writer?: string;
 }): Promise<MemoryReceipt> {
   return serializeLifecycleWrite(() => rememberCritical(db, vaultPath, ledgerRelPath, args));
 }
@@ -1538,7 +1559,7 @@ async function refuseSecrets(args: { subject: string; predicate: string; object:
 }
 
 async function rememberCritical(db: Database.Database, vaultPath: string, ledgerRelPath: string, sent: {
-  subject: string; predicate: string; object: string; source?: string; scope?: string; statement?: string;
+  subject: string; predicate: string; object: string; source?: string; scope?: string; statement?: string; writer?: string;
 }): Promise<MemoryReceipt> {
   // What is stored is the source's name, not what was sent (sourceName.ts): a path or a URL is cut down to what it ends in,
   // a long name is cut and control characters are dropped, before anything is judged, so the checks below and the secret
@@ -1551,6 +1572,10 @@ async function rememberCritical(db: Database.Database, vaultPath: string, ledger
   if (secretGuardEnabled()) await refuseSecrets(args);
   const at = new Date().toISOString();
   const scope = normalizeScope(args.scope);
+  // The source the event stores, and the writer the save is recorded under: the authenticated identity when the caller
+  // passed one, else the source itself. The event names the writer only where it differs from the source.
+  const source = args.source || 'agent';
+  const writer = args.writer ?? source;
 
   // Current-value decision is made against the lifecycle-owned entity only,
   // so a same-named disposable note entity can never influence or inherit it.
@@ -1562,7 +1587,10 @@ async function rememberCritical(db: Database.Database, vaultPath: string, ledger
 
   // nochange only when nothing the caller said is new: the scope holds this value and no other AND, when they
   // supply the user's words, the same subject spelling and statement as the current event (see repeatsCurrentEvent).
+  // A writer that owes a confirmation (its value was replaced) is recorded even when it repeats the current value: that
+  // save is the confirmation, and only the ledger keeps it.
   if (currents.length > 0 && currents.every(c => c.object_text === args.object)
+      && !(currents[0].event_id !== null && hasOpenDisplacementBy(db, currents[0].event_id, writer))
       && await repeatsCurrentEvent(vaultPath, ledgerRelPath, currents[0].event_id, args)) {
     return { ok: true, eventId: 'none', action: 'nochange', subject: args.subject, predicate: args.predicate, closed: null,
       created: { factId: currents[0].id, object: args.object, validFrom: 'existing' }, ledger: resolveLedgerPath(vaultPath, ledgerRelPath) };
@@ -1602,9 +1630,10 @@ async function rememberCritical(db: Database.Database, vaultPath: string, ledger
     id, at, kind,
     subject: args.subject, predicate: args.predicate, object: args.object,
     closedEvent: named?.event_id ?? null,
-    source: args.source || 'agent',
+    source,
     scope,
     ...(args.statement !== undefined ? { statement: args.statement } : {}),
+    ...(writer !== source ? { writer } : {}),
   };
   // Durable first: if the SQLite apply fails, the event is still in the ledger
   // and the next replay repairs the index. The apply itself is one transaction,

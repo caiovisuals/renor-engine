@@ -1,5 +1,6 @@
 import { createHmac, randomBytes } from 'node:crypto';
 import type Database from 'better-sqlite3';
+import { listStatement, paddedList } from '../db/statements';
 import { ledgerEventIds } from '../retrieval/ledgerLiveness';
 import { emitTelemetry, type TelemetryEvent } from './telemetry';
 
@@ -222,11 +223,11 @@ export function searchItems(
   const named = new Map<string, { subject: string; predicate: string }>();
   if (events.size > 0) {
     const ids = [...events];
-    const rows = db.prepare(
-      `SELECT lower(f.event_id) AS event, e.canonical_name AS subject, f.predicate AS predicate
+    const rows = listStatement(
+      db, ids.length, marks => `SELECT lower(f.event_id) AS event, e.canonical_name AS subject, f.predicate AS predicate
        FROM facts f JOIN entities e ON e.id = f.subject_entity_id
-       WHERE lower(f.event_id) IN (${ids.map(() => '?').join(',')})`,
-    ).all(...ids) as Array<{ event: string; subject: string; predicate: string }>;
+       WHERE lower(f.event_id) IN (${marks})`,
+    ).all(...paddedList(ids)) as Array<{ event: string; subject: string; predicate: string }>;
     for (const row of rows) named.set(row.event, row);
   }
   const items: ServedItem[] = [];

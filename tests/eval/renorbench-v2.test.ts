@@ -10,7 +10,7 @@ import { roleOf, type GoldTarget } from '../../src/eval/metrics';
 import type { EvalCase } from '../../src/eval/scoring';
 import { chunkNote } from '../../src/indexer/chunker';
 import { parseNote } from '../../src/indexer/parser';
-import { SESSION_EXPAND_MAX_CHUNK_TOKENS, SESSION_EXPAND_REASON } from '../../src/retrieval/orchestrator';
+import { SESSION_EXPAND_MAX_CHUNK_TOKENS } from '../../src/retrieval/orchestrator';
 
 /**
  * RenorBench v2 exists because v1 is too small to show three product features: session expansion, the newest-value
@@ -201,8 +201,9 @@ describe('RenorBench v2 through the product arm', () => {
     const detail = bySuffix('detail-');
     expect(detail.length).toBeGreaterThanOrEqual(40);
     for (const test of detail) {
-      const hit = holding(defaults.results.get(test.id)!, test.relevant[0]);
-      expect(hit?.reason, `${test.id}: the remark must arrive as a statement the expansion added`).toBe(SESSION_EXPAND_REASON);
+      // The reader layout (readerLayout.ts) joins the statements the expansion added to the chunks of their chat, in the chat's order and under the best
+      // chunk's reason, so the remark is in the reply but no longer labelled as the expansion's. That the expansion alone put it there is the next line.
+      expect(holding(defaults.results.get(test.id)!, test.relevant[0]), `${test.id}: the remark must be in the reply`).toBeDefined();
       expect(holding(noExpansion.results.get(test.id)!, test.relevant[0]), `${test.id}: no remark may be in the window`).toBeUndefined();
     }
     expect(defaults.summary.byCategory.session_detail).toMatchObject({ replyRecall: 1, replyRecallAll: 1 });

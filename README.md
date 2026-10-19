@@ -1,26 +1,53 @@
 # Renor
 
+![Claude Code saves a decision to Renor; a fresh Codex session recalls it](docs/assets/renor-readme-demo.gif)\
+*Self-hosted Renor, real session: Claude Code saves a decision, a fresh Codex session recalls it. Waiting time sped up.*
+
 [![engine-public-ci](https://github.com/patrickpassosb/renor-engine/actions/workflows/engine-public-ci.yml/badge.svg?branch=main)](https://github.com/patrickpassosb/renor-engine/actions/workflows/engine-public-ci.yml)
 
-**Renor is memory for coding agents.** You keep notes as Markdown files in a folder on your machine. Renor indexes them and serves them to any MCP client (Claude Code, Codex and others), so an agent can recall what you already decided instead of asking you to paste the same context again.
+**Renor is memory for coding agents.** You keep notes as Markdown files in a folder on your machine. Renor indexes them and serves them to any MCP client (Claude Code, Codex and others), so an agent can recall what you already decided instead of asking you to paste the same context again. A hosted version with no install is at <https://renor.cloud>.
 
-**Try it.** After the install and index steps below, stop `node dist/cli.js mcp` if you left it running (Claude Code starts its own), then, in the same terminal and from this directory, with Node 22 as the `node` on your `PATH`, add Renor to Claude Code over MCP:
+## Quickstart
+
+You need Node 22 and, for this one-time install, access to the npm registry. After that nothing here needs an account, an API key or the network.
 
 ```bash
-claude mcp add --scope local renor-local -e VAULT_PATH="$VAULT_PATH" -e EMBEDDING_PROVIDER=eval-hash -e RENOR_EVIDENCE_MODE=off -- node "$PWD/dist/cli.js" mcp
+git clone https://github.com/patrickpassosb/renor-engine.git
+cd renor-engine
+node -v                    # must print v22.x
+npm ci && npm rebuild better-sqlite3 --ignore-scripts=false && npm run build
+node scripts/smoke-self-hosted.mjs
 ```
 
-Then start Claude Code in this directory (restart it if it was already running) and `/mcp` should list `renor-local`. Claude Code can then search your notes, save facts, and recall them in later sessions. The quickstart vault is a temporary folder, and the cleanup step at the end of "Verify it" below deletes it. For notes you want to keep, point `VAULT_PATH` at a permanent folder, run `node dist/cli.js index`, then `claude mcp remove renor-local` and the command above again.
+The last command starts the engine with nothing set, saves one fact (`Ada favorite_color cerulean`), searches for it three ways and stops. It works in a temporary notes folder that it removes afterwards and reads none of your settings, so it cannot touch notes you already have. It ends with:
 
-A hosted version with no install is at <https://renor.cloud>.
+```text
+PASS: self-hosted stdio MCP can remember and retrieve a current fact.
+```
+
+With nothing set, the engine uses no embedding model: search matches the words you saved, and nothing leaves your machine. A ZIP download has no git history to build from; section 1 has its build step.
+
+### Use it with your agent
+
+Point Renor at a folder of Markdown notes (a new, empty folder is fine) and register the server. `VAULT_PATH` is the one setting you need, and it must be an absolute path:
+
+```bash
+export VAULT_PATH="$HOME/renor-notes"
+node dist/cli.js index
+claude mcp add --scope user renor-local -e VAULT_PATH="$VAULT_PATH" -- node "$PWD/dist/cli.js" mcp
+```
+
+For Codex, register it with `codex mcp add renor-local --env VAULT_PATH="$VAULT_PATH" -- node "$PWD/dist/cli.js" mcp`. Restart the agent, and `/mcp` lists `renor-local`. The `node` the agent starts must be Node 22. What the agent saves (a note or a fact) is found at once, in the same session and in later ones. `node dist/cli.js index` reads the notes already in the folder, so a Markdown file you add or edit by hand is found only after you run it again.
+
+Renor sends nothing off your machine unless you give it a key for a model. `EMBEDDING_PROVIDER=openai` sends the text of your notes to OpenAI to embed it, and an evidence-model key (`RENOR_EVIDENCE_API_KEY`, or one of the `OLLAMA_*` keys) makes search send the notes it matched to that model. If your shell already exports such a key and you do not want that, add `-e RENOR_EVIDENCE_MODE=off` to the `claude mcp add` command. Every setting, with its default, is in [docs/ENVIRONMENT-VARIABLES.md](docs/ENVIRONMENT-VARIABLES.md).
 
 **The problem.** Every new session starts from zero. You re-explain the project, the decision you made last week and why, the thing you corrected twice. Renor keeps that context in files you own and hands the relevant part back when an agent asks.
 
-**What it does.** It indexes your Markdown notes into a local SQLite database, ranks them with embeddings plus keyword and entity signals, and exposes search, recall and remember tools over MCP. Two servers ship here: a command-line server on stdin/stdout, and an HTTP server with OAuth sign-in.
+**What it does.** It indexes your Markdown notes into a local SQLite database, ranks them by their words and entities (and by their meaning, once you turn embeddings on), and exposes search, recall and remember tools over MCP. Two servers ship here: a command-line server on stdin/stdout, and an HTTP server with OAuth sign-in.
 
 **Who it is for.** People who run coding agents every day and are willing to run a Node service. It is a single-owner engine: one person's notes, one set of agents. It is not a multi-user product.
 
-**Run it offline or hosted.** After dependencies are installed, the ten-minute path's runtime indexing and search use no paid model and no network: `eval-hash` and `none` are offline embedding settings that exist so you can try it, not a quality claim. If you would rather not run this yourself, a hosted service is at <https://renor.cloud>.
+**Run it offline or hosted.** After dependencies are installed, indexing and search use no paid model and no network unless you configure one: with no embedding provider set the engine runs entirely on this machine. `eval-hash` is a deterministic offline stand-in the tests use, not a quality claim. If you would rather not run this yourself, a hosted service is at <https://renor.cloud>.
 
 **License.** AGPL-3.0-only for Renor's work ([LICENSE](LICENSE)); imported upstream files remain ISC ([NOTICE](NOTICE)). Contributing: [CONTRIBUTING.md](CONTRIBUTING.md). Security reports: [SECURITY.md](SECURITY.md). Agent instructions, including the self-hosted setup, are in [skill/SKILL.md](skill/SKILL.md).
 
@@ -28,7 +55,7 @@ Run everything below in the directory that contains this file and `package.json`
 
 ## Before you install: Node 22 and npm packages
 
-Installation requires internet access to the npm registry, or a populated npm cache that can satisfy `npm ci` and `npm rebuild`. Runtime indexing and search in the ten-minute path are offline after those dependencies are installed.
+Installation requires internet access to the npm registry, or a populated npm cache that can satisfy `npm ci` and `npm rebuild`. Runtime indexing and search in the Quickstart are offline after those dependencies are installed.
 
 Renor is tested on **Node 22** (`.nvmrc` and `mise.toml` pin it). Run `node -v` and check it prints `v22.x`. `better-sqlite3` and `sqlite-vec` are native modules compiled for one Node major; on a different major a native module can fail at `node dist/cli.js index` with:
 
@@ -54,73 +81,45 @@ npm rebuild better-sqlite3 --ignore-scripts=false
 
 ## 1. Install
 
-If you use mise, `node` below means `mise exec node@22 -- node`, and `npm` means `mise exec node@22 -- npm`. The `renor` name is not on `PATH` until you link it, so the examples call `node dist/cli.js`.
+The Quickstart installs from a git checkout. If you use mise, `node` below means `mise exec node@22 -- node`, and `npm` means `mise exec node@22 -- npm`. The `renor` name is not on `PATH` until you link it, so the examples call `node dist/cli.js`.
 
-`npm run build` runs `scripts/ci/stamp-build.mjs` first (a `prebuild` step). It writes `dist/BUILD.json`, which `/version` reports as the build's commit. In a git checkout it reads that commit from `git`, so a local build needs nothing extra. A copy with no `.git` (a tarball, a GitHub "Download ZIP" or `git archive`) has no commit to read, so the build stops until `RENOR_BUILD_COMMIT` is set to a 7–40 character hex revision. That variable matters only for the stamp: the code builds and runs the same either way. If you know the revision you downloaded, use that sha. `0000000` only passes the check, and `/version` will report it.
+`npm run build` runs `scripts/ci/stamp-build.mjs` first (a `prebuild` step). It writes `dist/BUILD.json`, which `/version` reports as the build's commit. In a git checkout it reads that commit from `git`, so a local build needs nothing extra. A copy with no `.git` (a tarball, a GitHub "Download ZIP" or `git archive`) has no commit to read, so the build stops until `RENOR_BUILD_COMMIT` is set to a 7–40 character hex revision. That variable matters only for the stamp: the code builds and runs the same either way.
 
-For a git checkout, clone and build without setting `RENOR_BUILD_COMMIT`:
-
-```bash
-git clone https://github.com/patrickpassosb/renor-engine.git
-cd renor-engine
-node -v                    # v22.x
-npm ci
-npm rebuild better-sqlite3 --ignore-scripts=false
-npm run build
-```
-
-For an archive or GitHub **Download ZIP**, enter its extracted directory and set the revision before building. Use the 40-character hex revision the archive came from. The value below is only an example of the format; it is a commit in the private history, not in the public repository, so replace it:
+For an archive or GitHub **Download ZIP**, enter its extracted directory and name the build before you install. If you know the revision you downloaded, use that sha; `0000000` passes the check, and `/version` will report it. Then run the check from the Quickstart:
 
 ```bash
 cd renor-engine-*
 node -v                    # v22.x
-export RENOR_BUILD_COMMIT="9f25a24229ec3c29f1c149f4966f06435f5ac8e9"
-npm ci
-npm rebuild better-sqlite3 --ignore-scripts=false
-npm run build
+export RENOR_BUILD_COMMIT=0000000
+npm ci && npm rebuild better-sqlite3 --ignore-scripts=false && npm run build
+node scripts/smoke-self-hosted.mjs
 ```
 
 ## 2. Command-line server
 
-This server speaks MCP on stdin and stdout. Give it a new folder and one note. `eval-hash` stays on this machine: it does not download a model. Unset `EMBEDDING_PROVIDER` selects OpenAI and exits unless `OPENAI_API_KEY` is set. `local` downloads a model; do not use it for this path.
-
-`RENOR_EVIDENCE_MODE=off` keeps the smoke run from calling an extraction model. The server does not index on startup, so index before you connect a client.
+This is the server the Quickstart runs. It speaks MCP on stdin and stdout, so talk to it with a client, not by typing. `VAULT_PATH` names your notes folder and is the one setting it needs; every other setting has a default, listed in [docs/ENVIRONMENT-VARIABLES.md](docs/ENVIRONMENT-VARIABLES.md).
 
 ```bash
-export VAULT_PATH="$(mktemp -d)/renor-vault"
-printf 'Vault path (keep this): %s\n' "$VAULT_PATH"
-mkdir -p "$VAULT_PATH"
-printf '%s\n' 'The blue notebook is on the desk.' > "$VAULT_PATH/notebook.md"
-
-export EMBEDDING_PROVIDER=eval-hash
-export RENOR_EVIDENCE_MODE=off
-
-# node dist/cli.js index, then node dist/cli.js mcp. The same file is the `renor` command once it is on PATH (for example after `npm link` in this directory); until then, use `node dist/cli.js`.
-node dist/cli.js index
-node dist/cli.js mcp
+export VAULT_PATH="$HOME/renor-notes"   # an absolute path; created if it is missing
+node dist/cli.js index                  # indexes the Markdown notes already in it
+node dist/cli.js mcp                    # leave it running, or let your agent start it (see "Connect Claude Code")
 ```
 
-`node dist/cli.js index` exits 0. The first run on a new folder prints `[migrations] applied:` lines and then `Done. 1/1 indexed, 0 errors.` Leave `node dist/cli.js mcp` running. Its stdout is the MCP protocol; talk to it with a client, not by typing. Index before that process starts so those migration lines are not written onto the client's channel.
+`node dist/cli.js index` exits 0. The first run on a new folder prints `[migrations] applied:` lines and then `Done. N/N indexed, 0 errors.` The server does not index on startup, so index first, and again after you add or edit a Markdown file by hand; what the agent saves is indexed as it is saved. Its stdout is the MCP protocol: the `[migrations]` lines go to stderr.
+
+**Search without embeddings.** With `EMBEDDING_PROVIDER` unset the engine uses no embedding model: indexing and search run on this machine, search matches words, and what the agent saves is found at once. `EMBEDDING_PROVIDER=openai` with `OPENAI_API_KEY` embeds your notes with OpenAI, and their text is sent to it. `local` downloads a model on first use. `eval-hash` is a deterministic offline stand-in the tests use and makes no quality claim. After you change the provider on a folder that already holds notes, run `node dist/cli.js rebuild` so they are embedded again.
 
 ### Verify it
 
-Stop the manually started server with **Ctrl-C**, then run the checked-in MCP SDK client. It starts the same stdio server, lists its tools, saves one current fact, searches for that value three ways, and stops the server itself:
+The Quickstart's last command is the check. It starts this same stdio server, lists its tools, saves one current fact, searches for it three ways, and stops the server itself:
 
 ```bash
 node scripts/smoke-self-hosted.mjs
 ```
 
-Those are the MCP calls `tools/list`, `tools/call` for `remember_fact` with `{"subject":"Ada","predicate":"favorite_color","object":"cerulean"}`, then `tools/call` for `search` with each of `{"query":"What is Ada's favorite color?"}`, `{"query":"Ada favorite color cerulean"}`, and `{"query":"cerulean"}`. The tool list must include `remember_fact` and `search`; every search must return `cerulean`. Success ends with:
+Those are the MCP calls `tools/list`, `tools/call` for `remember_fact` with `{"subject":"Ada","predicate":"favorite_color","object":"cerulean"}`, then `tools/call` for `search` with each of `{"query":"What is Ada's favorite color?"}`, `{"query":"Ada favorite color cerulean"}`, and `{"query":"cerulean"}`. The tool list must include `remember_fact` and `search`; every search must return `cerulean`. The check exits non-zero if a call fails or the value is missing.
 
-```text
-PASS: self-hosted stdio MCP can remember and retrieve a current fact.
-```
-
-The smoke client exits non-zero if a call fails or the value is missing. After you are finished with this disposable quickstart vault, remove the temporary directory:
-
-```bash
-rm -rf -- "$(dirname -- "$VAULT_PATH")"
-```
+It makes a temporary notes folder, removes it afterwards and ignores `VAULT_PATH`, so it never adds anything to your notes. To check one folder instead, name it with an absolute path: `node scripts/smoke-self-hosted.mjs "$VAULT_PATH"`. The test fact `Ada favorite_color cerulean` then stays in that folder's memory.
 
 ## 3. HTTP server
 
@@ -187,14 +186,10 @@ The hive tools tell agents apart by connection name only. The name is not a tool
 Command-line server, from this directory, with `node dist/cli.js mcp` not already occupying the terminal (the client starts it). The `node` on the client's `PATH` must be Node 22.
 
 ```bash
-claude mcp add --scope local renor-local \
-  -e VAULT_PATH="$VAULT_PATH" \
-  -e EMBEDDING_PROVIDER=eval-hash \
-  -e RENOR_EVIDENCE_MODE=off \
-  -- node "$PWD/dist/cli.js" mcp
+claude mcp add --scope user renor-local -e VAULT_PATH="$VAULT_PATH" -- node "$PWD/dist/cli.js" mcp
 ```
 
-`VAULT_PATH` must be absolute. Restart Claude Code. `/mcp` should list `renor-local`. This is `node dist/cli.js mcp`. The name is only a label for this machine's entry (`--scope local`), so it does not collide with a hosted connector named `renor`.
+`VAULT_PATH` must be absolute. Restart Claude Code. `/mcp` should list `renor-local`. This is `node dist/cli.js mcp`. `--scope user` makes the entry available in every project; the default, `--scope local`, makes it appear only when Claude Code is started in the folder where you ran the command. The name is only a label for this machine's entry, so it does not collide with a hosted connector named `renor`. If your environment already holds a model key that you do not want Renor to use, add `-e RENOR_EVIDENCE_MODE=off`.
 
 HTTP server, while `npm run mvp` is running. Claude Code registers the redirect `http://localhost:<port>/callback` (the host is `localhost`, not `127.0.0.1`). Section 3 already allowlists port 39472. `--callback-port` must be that same port or registration is denied:
 
@@ -209,14 +204,10 @@ Restart Claude Code, run `/mcp`, choose `renor-local-http`, and authenticate. Si
 Command-line server:
 
 ```bash
-codex mcp add renor-local \
-  --env VAULT_PATH="$VAULT_PATH" \
-  --env EMBEDDING_PROVIDER=eval-hash \
-  --env RENOR_EVIDENCE_MODE=off \
-  -- node "$PWD/dist/cli.js" mcp
+codex mcp add renor-local --env VAULT_PATH="$VAULT_PATH" -- node "$PWD/dist/cli.js" mcp
 ```
 
-The `node` on Codex's `PATH` must be Node 22. This is `node dist/cli.js mcp`. `codex mcp add` writes a global entry for the whole user account, not a per-project one; `codex mcp remove renor-local` undoes it.
+The `node` on Codex's `PATH` must be Node 22. This is `node dist/cli.js mcp`. `codex mcp add` writes a global entry for the whole user account, not a per-project one; `codex mcp remove renor-local` undoes it. Add `--env RENOR_EVIDENCE_MODE=off` if your environment already holds a model key that you do not want Renor to use.
 
 HTTP server (this starts the browser sign-in). Codex's redirect is its own loopback URI, not the Claude Code URI from section 3. Registration is denied until that exact URI is also listed in `MVP_ALLOWED_CALLBACK_URIS` (comma-separated). Add it, restart `npm run mvp`, then:
 

@@ -10,12 +10,15 @@ import { createMvpApp } from '../../src/mvp/server';
 
 // Clients ask before running any tool not marked read-only, so each hosted tool is classified here as reading or writing.
 const READING_TOOLS = [
-  'export_memory', 'get_context', 'lookup_entity', 'memory_map', 'memory_status', 'preview_import',
+  'export_memory', 'get_context', 'lookup_entity', 'memory_map', 'memory_status',
   'read_memory', 'retrieve_memory', 'search_history', 'search_memory', 'search_text',
   'list_requests',
 ];
 const WRITING_TOOLS = [
   'apply_import', 'index_memory', 'remember', 'remember_note', 'restore_memory', 'retire_memory', 'save_memory', 'undo_import',
+  // preview_import stages a batch that holds up to 8 previews at once: each call adds one, so it is not read-only and not
+  // idempotent. It writes no memory, and nothing it stages is destructive.
+  'preview_import',
   // whats_new moves this connection's mark, so a second call answers less: not read-only and not idempotent.
   'whats_new',
   // Requests are records; asking, answering and closing still change state.

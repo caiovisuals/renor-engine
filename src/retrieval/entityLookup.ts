@@ -1,4 +1,5 @@
 import Database from 'better-sqlite3';
+import { readUntilWrite } from '../db/readCache';
 import { prepareOnce } from '../db/statements';
 import { savedScopeSqlPredicate, scopeSqlPredicate, type NormalizedScope } from '../mvp/scope';
 
@@ -54,6 +55,29 @@ function tieOrder(table = ''): string {
   return `(${table}source_note = '${LIFECYCLE_NOTE_PATH}') DESC, ${table}source_note, ${table}id`;
 }
 
+interface NameBounds { name: number; alias: number; note: number }
+
+/**
+ * The longest canonical name, alias and source path, in SQLite characters (one code point, not a JavaScript UTF-16
+ * unit). Read once until the next write. An alias list that cannot be read counts as unbounded, so that query still runs.
+ */
+function entityNameBounds(db: Database.Database): NameBounds {
+  return readUntilWrite(db, 'entityLookupBounds', () => {
+    const row = prepareOnce(
+      db,
+      `SELECT COALESCE(MAX(length(canonical_name)), 0) AS name, COALESCE(MAX(length(source_note)), 0) AS note FROM entities`,
+    ).get() as { name: number; note: number };
+    let alias = Number.POSITIVE_INFINITY;
+    try {
+      alias = prepareOnce(
+        db,
+        `SELECT COALESCE(MAX(length(alias.value)), 0) AS n FROM entities AS e, json_each(e.aliases_json) AS alias`,
+      ).pluck().get() as number;
+    } catch { /* malformed aliases: do not skip the alias query */ }
+    return { name: Number(row.name), alias: Number(alias), note: Number(row.note) };
+  });
+}
+
 /**
  * Resolve an entity by name or alias, then by substring of a canonical name,
  * then by substring of its source note path.
@@ -65,37 +89,51 @@ function tieOrder(table = ''): string {
 export function lookupEntity(db: Database.Database, name: string, filter?: EntityRowFilter): EntityRow | null {
   const where = filter ? ` AND (${filter.sql})` : '';
   const params = filter ? filter.params : [];
+  // `lower` and NOCASE keep a string's length, and `instr` cannot match a needle longer than the haystack. The length
+  // is SQLite's: a JavaScript `.length` counts one code point above U+FFFF as two and would skip a real name.
+  const bounds = entityNameBounds(db);
+  const qlen = (prepareOnce(db, 'SELECT length(?) AS n').get(name) as { n: number | null }).n;
+  const fits = (max: number) => qlen === null || qlen <= max;
+  if (!fits(bounds.name) && !fits(bounds.alias) && !fits(bounds.note)) return null;
 
-  const byName = prepareOnce(db, `SELECT * FROM entities WHERE canonical_name = ? COLLATE NOCASE${where} ORDER BY ${tieOrder()} LIMIT 1`)
-    .get(name, ...params) as any;
-  if (byName) return toRow(byName);
+  if (fits(bounds.name)) {
+    const byName = prepareOnce(db, `SELECT * FROM entities WHERE canonical_name = ? COLLATE NOCASE${where} ORDER BY ${tieOrder()} LIMIT 1`)
+      .get(name, ...params) as any;
+    if (byName) return toRow(byName);
+  }
 
   // Unaliased, as in the other three queries, so a filter can name the row's own columns as `entities.<column>`.
-  const byAlias = prepareOnce(
-    db,
-    `SELECT entities.* FROM entities, json_each(entities.aliases_json) AS alias
-     WHERE lower(alias.value) = lower(?)${where}
-     ORDER BY ${tieOrder('entities.')}
-     LIMIT 1`,
-  )
-    .get(name, ...params) as any;
-  if (byAlias) return toRow(byAlias);
+  if (fits(bounds.alias)) {
+    const byAlias = prepareOnce(
+      db,
+      `SELECT entities.* FROM entities, json_each(entities.aliases_json) AS alias
+       WHERE lower(alias.value) = lower(?)${where}
+       ORDER BY ${tieOrder('entities.')}
+       LIMIT 1`,
+    )
+      .get(name, ...params) as any;
+    if (byAlias) return toRow(byAlias);
+  }
 
   // Partial match: canonical_name contains the search term (e.g. "User" → "USER.md — About User")
-  const byPartial = prepareOnce(
-    db,
-    `SELECT * FROM entities WHERE instr(lower(canonical_name), lower(?)) > 0${where} ORDER BY length(canonical_name) ASC, ${tieOrder()} LIMIT 1`,
-  )
-    .get(name, ...params) as any;
-  if (byPartial) return toRow(byPartial);
+  if (fits(bounds.name)) {
+    const byPartial = prepareOnce(
+      db,
+      `SELECT * FROM entities WHERE instr(lower(canonical_name), lower(?)) > 0${where} ORDER BY length(canonical_name) ASC, ${tieOrder()} LIMIT 1`,
+    )
+      .get(name, ...params) as any;
+    if (byPartial) return toRow(byPartial);
+  }
 
   // Path match: source note path contains the search term (e.g. "Cora" → notes in .../Cora/...)
-  const byPath = prepareOnce(
-    db,
-    `SELECT * FROM entities WHERE instr(lower(source_note), lower(?)) > 0${where} ORDER BY length(canonical_name) ASC, ${tieOrder()} LIMIT 1`,
-  )
-    .get(name, ...params) as any;
-  if (byPath) return toRow(byPath);
+  if (fits(bounds.note)) {
+    const byPath = prepareOnce(
+      db,
+      `SELECT * FROM entities WHERE instr(lower(source_note), lower(?)) > 0${where} ORDER BY length(canonical_name) ASC, ${tieOrder()} LIMIT 1`,
+    )
+      .get(name, ...params) as any;
+    if (byPath) return toRow(byPath);
+  }
 
   return null;
 }

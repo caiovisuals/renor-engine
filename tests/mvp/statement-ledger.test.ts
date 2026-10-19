@@ -2,14 +2,14 @@ import { describe, it, expect, afterEach } from 'vitest';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
-import net from 'net';
 import crypto from 'crypto';
 import request from 'supertest';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { VectorIndex } from '../../src/embeddings/vectorIndex';
 import { loadMvpConfig, type MvpConfig } from '../../src/mvp/config';
-import { startMvpService, MVP_MCP_PATH, type MvpApp } from '../../src/mvp/server';
+import { MVP_MCP_PATH, type MvpApp } from '../../src/mvp/server';
+import { startMvpServiceOnFreePort } from '../helpers/mvpPort';
 import { attachEngine, engineSearchMemory, readEmbeddingTableDims } from '../../src/mvp/engine';
 import { EvidenceExtractor } from '../../src/evidence/secondPass';
 import { openDb } from '../../src/db/client';
@@ -41,17 +41,6 @@ afterEach(async () => {
   delete process.env.RENOR_NEWEST_FIRST;
   delete process.env.RENOR_SEARCH_EVIDENCE;
 });
-
-function freePort(): Promise<number> {
-  return new Promise((resolve, reject) => {
-    const srv = net.createServer();
-    srv.listen(0, '127.0.0.1', () => {
-      const port = (srv.address() as net.AddressInfo).port;
-      srv.close(() => resolve(port));
-    });
-    srv.on('error', reject);
-  });
-}
 
 function makeConfig(memoryDir: string, port: number): MvpConfig {
   const authRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'mvp-authroot-'));
@@ -133,11 +122,9 @@ const LEDGER = 'System/Memory Events Ledger.md';
 describe('the user\'s own words are kept in the ledger (statement field)', () => {
   async function boot(provider?: EmbeddingProvider) {
     process.env.RENOR_NEWEST_FIRST = '0';
-    const port = await freePort();
     const memoryDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mvp-stmt-'));
     tmpDirs.push(memoryDir);
-    const config = makeConfig(memoryDir, port);
-    const started = await startMvpService(config, provider);
+    const { started, config } = await startMvpServiceOnFreePort(port => makeConfig(memoryDir, port), provider);
     services.push(started);
     const client = await mcp(config, await registerAndToken(started.app));
     return { memoryDir, config, client };
@@ -164,8 +151,7 @@ describe('the user\'s own words are kept in the ledger (statement field)', () =>
     await old.close();
     await closeServices();
     if (opts.coldIndex) fs.rmSync(path.join(memoryDir, '.memory-index'), { recursive: true, force: true });
-    const config = makeConfig(memoryDir, await freePort());
-    const started = await startMvpService(config, stubProvider(8));
+    const { started, config } = await startMvpServiceOnFreePort(port => makeConfig(memoryDir, port), stubProvider(8));
     services.push(started);
     return mcp(config, await registerAndToken(started.app));
   }
@@ -217,15 +203,13 @@ describe('the user\'s own words are kept in the ledger (statement field)', () =>
   });
 
   it('an older ledger without statements still loads and still accepts new events', async () => {
-    const port = await freePort();
     const memoryDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mvp-stmt-old-'));
     tmpDirs.push(memoryDir);
     fs.mkdirSync(path.join(memoryDir, 'System'), { recursive: true });
     fs.writeFileSync(path.join(memoryDir, LEDGER),
       '---\ntype: memory-ledger\ntitle: Memory Events Ledger\n---\n\n# Memory Events Ledger\n\n'
       + '\n## MEM_OLD1 · 2026-01-01T00:00:00.000Z\n- kind: store\n- subject: Old\n- predicate: likes\n- object: tea\n- source: legacy\n');
-    const config = makeConfig(memoryDir, port);
-    const started = await startMvpService(config);
+    const { started, config } = await startMvpServiceOnFreePort(port => makeConfig(memoryDir, port));
     services.push(started);
     const client = await mcp(config, await registerAndToken(started.app));
     const before = parse(await call(client, 'retrieve_memory', { subject: 'Old' }));
@@ -493,15 +477,13 @@ describe('the user\'s own words are kept in the ledger (statement field)', () =>
   describe('a ledger written by the earlier build, with the separators literal inside the quotes', () => {
     it('starts, serves, and still recognises the same words', async () => {
       const literal = `before${LS}middle${PS}after${NEL}end`;
-      const port = await freePort();
       const memoryDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mvp-stmt-literal-'));
       tmpDirs.push(memoryDir);
       fs.mkdirSync(path.join(memoryDir, 'System'), { recursive: true });
       fs.writeFileSync(path.join(memoryDir, LEDGER),
         '---\ntype: memory-ledger\ntitle: Memory Events Ledger\n---\n\n# Memory Events Ledger\n'
         + `\n## MEM_LITERAL1 · 2026-01-01T00:00:00.000Z\n- kind: store\n- subject: Literal\n- predicate: value\n- object: kept\n- statement: "${literal}"\n- source: earlier-build\n`);
-      const config = makeConfig(memoryDir, port);
-      const started = await startMvpService(config, stubProvider(8));
+      const { started, config } = await startMvpServiceOnFreePort(port => makeConfig(memoryDir, port), stubProvider(8));
       services.push(started);
       const client = await mcp(config, await registerAndToken(started.app));
 

@@ -489,6 +489,7 @@ describe('the read surfaces are the ones this suite drives', () => {
     expect(rankingCalls.sort()).toEqual([
       'mcp/server.ts: read in shownPage',
       'mvp/engine.ts: read in shownPage',
+      'retrieval/orchestrator.ts: read in shownPage',
     ]);
     const readers = files
       .filter(({ rel, text }) => !rel.startsWith('db/') && !rel.startsWith('importing/') && !textless.has(rel) && rel !== ranking
@@ -497,6 +498,7 @@ describe('the read surfaces are the ones this suite drives', () => {
     expect(readers.sort()).toEqual([
       'mcp/server.ts: guarded, page cut after the guard',
       'mvp/engine.ts: guarded, page cut after the guard',
+      'retrieval/orchestrator.ts: guarded, page cut after the guard',
     ]);
   });
 });
