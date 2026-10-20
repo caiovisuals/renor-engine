@@ -6,7 +6,7 @@ Run every command from the directory that holds `package.json`. If you use mise,
 
 ## Troubleshooting
 
-**Wrong Node version.** Renor is tested on **Node 22** (`.nvmrc` and `mise.toml` pin it). `better-sqlite3` and `sqlite-vec` are native modules compiled for one Node major; on another major `node dist/cli.js index` fails with:
+**Wrong Node version.** Renor is tested on **Node 22** (`.nvmrc` and `mise.toml` pin it). `npm ci` on another major prints an `EBADENGINE` warning. `better-sqlite3` and `sqlite-vec` are native modules compiled at install for the Node major that ran `npm ci`; run Renor with a different major (switching versions after the install, or an agent that starts another `node`) and `node dist/cli.js index` fails with:
 
 ```
 Error: The module '.../better_sqlite3.node' was compiled against a different Node.js version using NODE_MODULE_VERSION 127. This version of Node.js requires NODE_MODULE_VERSION 131.
@@ -26,7 +26,7 @@ npm rebuild better-sqlite3 --ignore-scripts=false
 
 **Installing offline.** `npm ci` and `npm rebuild` need the npm registry or a populated npm cache. Nothing after the install needs the network unless you configure a model.
 
-**Agent says Renor has no tools, or fails to start it.** The agent starts `node dist/cli.js mcp` itself, so do not leave one running in a terminal. Register it with the absolute Node path the README uses (`"$(node -p process.execPath)"`), not a bare `node` that may resolve to another version in the agent's environment. `VAULT_PATH` must be absolute.
+**Agent says Renor has no tools, or fails to start it.** The agent starts `node dist/cli.js mcp` itself, so do not leave one running in a terminal. Register it with the absolute Node path the README uses (`"$(node -p process.execPath)"`), not a bare `node` that may resolve to another version in the agent's environment. `VAULT_PATH` must be absolute and must not be empty: registered from a terminal where it was not exported, the server exits with `VAULT_PATH environment variable is required`, which Claude Code shows only as `✘ Failed to connect — CONNECTION_CLOSED`. Remove the server, run the README's `export` line, and add it again.
 
 **A note is not found.** What an agent saves is indexed as it is saved. A Markdown file you add or edit by hand is found after the next `node dist/cli.js index`, or keep `node dist/cli.js watch` running. The server does not index on startup. Without embeddings, search matches exact words (see below).
 

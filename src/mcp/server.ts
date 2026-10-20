@@ -224,7 +224,7 @@ export const TOOLS = [
   },
   {
     name: 'evidence',
-    description: 'Question-conditioned evidence extraction (H10-v4 champion path). Retrieves like search and then lists every distinct item/event/amount relevant to the question, with dates. Best for how-many / how-much / count / list / aggregate questions about the user\'s history. It never computes totals — count or sum the items yourself and prefer items with dates matching the question window. Identical questions over unchanged history replay from a content-addressed cache at zero model cost. Gated by RENOR_EVIDENCE_MODE (off | auto | always); call with force: true to run even when auto declines.',
+    description: 'Question-conditioned evidence extraction. Retrieves like search and then lists every distinct item/event/amount relevant to the question, with dates. Best for how-many / how-much / count / list / aggregate questions about the user\'s history. It never computes totals — count or sum the items yourself and prefer items with dates matching the question window. Identical questions over unchanged history replay from a content-addressed cache at zero model cost. Gated by RENOR_EVIDENCE_MODE (off | auto | always); call with force: true to run even when auto declines.',
     inputSchema: {
       type: 'object' as const,
       properties: {

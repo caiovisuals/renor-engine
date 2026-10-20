@@ -38,12 +38,12 @@ export VAULT_PATH="$HOME/renor-notes"    # absolute path; created if missing
 node dist/cli.js index
 ```
 
-Each command below starts Renor with the Node 22 you are using now (`node -p process.execPath`), so the agent does not need Node 22 on its own `PATH`.
+Each command below starts Renor with the Node 22 you are using now (`node -p process.execPath`), so the agent does not need Node 22 on its own `PATH`. In a new terminal, run the `export` line again first: each command stops with `VAULT_PATH: run the export line above first` rather than register a server that cannot start (an agent shows that only as "Connection closed").
 
 **Claude Code**
 
 ```bash
-claude mcp add --scope user renor-local -e VAULT_PATH="$VAULT_PATH" -- "$(node -p process.execPath)" "$PWD/dist/cli.js" mcp
+claude mcp add --scope user renor-local -e VAULT_PATH="${VAULT_PATH:?run the export line above first}" -- "$(node -p process.execPath)" "$PWD/dist/cli.js" mcp
 ```
 
 Restart Claude Code; `/mcp` lists `renor-local` in every project. `claude mcp remove renor-local` undoes it.
@@ -51,7 +51,7 @@ Restart Claude Code; `/mcp` lists `renor-local` in every project. `claude mcp re
 **Codex**
 
 ```bash
-codex mcp add renor-local --env VAULT_PATH="$VAULT_PATH" -- "$(node -p process.execPath)" "$PWD/dist/cli.js" mcp
+codex mcp add renor-local --env VAULT_PATH="${VAULT_PATH:?run the export line above first}" -- "$(node -p process.execPath)" "$PWD/dist/cli.js" mcp
 ```
 
 Restart Codex; `codex mcp list` shows it. `codex mcp remove renor-local` undoes it.
@@ -61,11 +61,11 @@ Restart Codex; `codex mcp list` shows it. `codex mcp remove renor-local` undoes 
 Cursor reads MCP servers from `~/.cursor/mcp.json` (every project) or `.cursor/mcp.json` (one project). This prints the entry:
 
 ```bash
-node -e 'console.log(JSON.stringify({ mcpServers: { "renor-local": { command: process.execPath,
+VAULT_PATH="${VAULT_PATH:?run the export line above first}" node -e 'console.log(JSON.stringify({ mcpServers: { "renor-local": { command: process.execPath,
   args: [process.cwd() + "/dist/cli.js", "mcp"], env: { VAULT_PATH: process.env.VAULT_PATH } } } }, null, 2))'
 ```
 
-Put it in that file, or merge the `renor-local` entry into an existing `mcpServers`, then check that `renor-local` is enabled in Cursor's MCP settings.
+Put it in that file, or merge the `renor-local` entry into an existing `mcpServers`, then check that `renor-local` is enabled in Cursor's MCP settings. (The `cursor-plugin/` folder of this repository is the Cursor plugin for the hosted service at renor.cloud, which needs a Renor account; it does not connect to this engine.)
 
 **Any other MCP client:** the command is `node dist/cli.js mcp` (stdio) with `VAULT_PATH` set.
 
@@ -86,7 +86,7 @@ Everything Renor keeps is in that one folder, so back it up, sync it or move it 
 ## More
 
 - [docs/self-hosting.md](docs/self-hosting.md): troubleshooting, embeddings, the HTTP server with OAuth sign-in, connecting agents over HTTP, the tool lists, owner names, multi-agent ("hive") tools (set `RENOR_CONNECTION_NAME` per agent), and how the vault is protected.
-- [skill/SKILL.md](skill/SKILL.md): instructions to give your agent so it recalls and saves memory without being asked.
+- [skill/SKILL.md](skill/SKILL.md): instructions to give your agent so it recalls and saves memory without being asked. Most of it names the hosted tools (`get_context`, `remember`); the `renor-local` server above has other names (`search`, `remember_fact`, `note`), listed in its [Stdio section](skill/SKILL.md#stdio-renor-mcp).
 
 Renor is a single-owner engine: one person's notes, one set of agents. It is not a multi-user product.
 

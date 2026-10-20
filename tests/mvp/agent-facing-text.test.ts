@@ -176,6 +176,7 @@ describe('the server instructions ask for a read at the decision and a write of 
     expect(instructions).toMatch(/save decisions with their reason, root causes and corrections, not status, progress or event logs/);
     // What the user asks to have remembered is still saved: the rule is about what an agent logs on its own.
     expect(instructions).toMatch(/To save anything, call remember with one argument, statement/);
+    expect(instructions).toContain('When the user says to remember or save something, they mean this tool, not your own memory.');
     expect(instructions).toMatch(/when you save on your own/);
   });
 

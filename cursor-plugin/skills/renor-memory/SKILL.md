@@ -1,6 +1,6 @@
 ---
 name: renor-memory
-description: 'Use Renor (durable memory over MCP, server "renor") when a task depends on anything the user already told an AI, or on decisions made in earlier sessions — recall before answering and before a decision or review, and before finishing substantive work record the why that should survive the session.'
+description: 'Use Renor (durable memory over MCP, server "renor") when a task depends on anything the user already told an AI, or on decisions made in earlier sessions — recall before answering and before a decision or review, and before finishing substantive work record the why that should survive the session. When the user says to remember or save something, that means Renor''s remember tool, not your own memory.'
 ---
 
 # Renor memory (this workspace)

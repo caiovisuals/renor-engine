@@ -4,11 +4,13 @@ Cursor plugin that connects agents to [Renor](https://renor.cloud), durable memo
 
 Tell an agent something once. Renor keeps it, and your agents in Cursor (and Claude Code, Codex, OpenCode and the rest) recall it when it is relevant later.
 
+This plugin needs a Renor account (<https://renor.cloud>) and connects only to the hosted service. To connect Cursor to an engine you run yourself, skip the plugin and follow "Cursor" in the [engine README](https://github.com/patrickpassosb/renor-engine#connect-your-agent).
+
 ## Install
 
 Until Renor is listed in Cursor's plugin directory, install it locally:
 
-1. Copy this `cursor-plugin` folder to `~/.cursor/plugins/local/renor`.
+1. Copy this `cursor-plugin` folder to `~/.cursor/plugins/local/renor` (from the repository root: `mkdir -p ~/.cursor/plugins/local && cp -R cursor-plugin ~/.cursor/plugins/local/renor`).
 2. Reload Cursor.
 3. Open **Cursor Settings → MCP**, find `renor` and complete the Renor sign-in in your browser.
 
