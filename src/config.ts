@@ -1,3 +1,11 @@
+import os from 'node:os';
+import path from 'node:path';
+
+/** The notes folder when VAULT_PATH is unset or empty. */
+export function defaultVaultPath(): string {
+  return path.join(os.homedir(), '.renor');
+}
+
 export interface Config {
   vaultPath: string;
   dbPath: string;
@@ -16,8 +24,9 @@ export interface Config {
 }
 
 export function loadConfig(): Config {
-  const vaultPath = process.env.VAULT_PATH;
-  if (!vaultPath) throw new Error('VAULT_PATH environment variable is required');
+  // No setting is needed for a first run (`npx -y renor-engine mcp`): notes live in ~/.renor. A hidden name, so it can never be
+  // an existing folder of the user's (a clone named renor, say) that the first save would write notes and an index into.
+  const vaultPath = process.env.VAULT_PATH || defaultVaultPath();
 
   const rawProvider = process.env.EMBEDDING_PROVIDER ?? 'none';
   if (rawProvider !== 'none' && rawProvider !== 'openai' && rawProvider !== 'local' && rawProvider !== 'eval-hash') {

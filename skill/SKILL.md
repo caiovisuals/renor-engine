@@ -188,9 +188,9 @@ Example HTTP client entry for a local engine:
 }
 ```
 
-### Stdio (`renor mcp`)
+### Stdio (`renor-engine mcp`)
 
-`renor mcp` does **not** publish the HTTP tool names above. Its base tools are:
+`renor-engine mcp` does **not** publish the HTTP tool names above. Its base tools are:
 
 - `search` — default retrieval for natural-language questions (use this instead of
   `get_context` / `search_memory`);
@@ -225,7 +225,7 @@ its normalized name's SHA-256 on both transports. Mixed names keep the renderabl
 characters. A final name that renders empty, or the reserved word `unnamed`, does not publish those
 five tools. Without the variable they are absent from `tools/list`, and a direct
 call is refused with guidance to set `RENOR_CONNECTION_NAME` and reconnect (not
-to open a dashboard). Only one live `renor mcp` process may hold a name in a
+to open a dashboard). Only one live `renor-engine mcp` process may hold a name in a
 workspace; a second one is refused until the first process stops. On HTTP without
 a gateway secret, one OAuth client may register a given rendered `client_name`.
 Hosted connection keys also reserve that final hive identity within the workspace:
@@ -241,5 +241,5 @@ stores the engine default `agent`, and `note` stores `mcp`.
 Example stdio launch with a hive name:
 
 ```bash
-RENOR_CONNECTION_NAME=codex renor mcp
+RENOR_CONNECTION_NAME=codex npx -y renor-engine mcp
 ```

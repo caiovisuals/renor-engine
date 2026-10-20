@@ -1,12 +1,11 @@
 {
-  "name": "renor",
+  "name": "renor-engine",
   "version": "1.0.0",
   "description": "Local-first semantic memory — indexing, multi-signal retrieval, MCP",
   "main": "dist/cli.js",
   "files": [
     "dist",
     "README.md",
-    "skill",
     "LICENSE",
     "NOTICE"
   ],
@@ -49,10 +48,11 @@
     "eval:convomem:score": "tsx scripts/eval/convomem/score-convomem.ts",
     "eval:register": "tsx scripts/eval/register-run.ts",
     "eval:progress": "tsx scripts/eval/progress.ts",
-    "prebuild": "node scripts/ci/stamp-build.mjs"
+    "prebuild": "node scripts/ci/stamp-build.mjs",
+    "prepack": "npm run build"
   },
   "bin": {
-    "renor": "dist/cli.js"
+    "renor-engine": "dist/cli.js"
   },
   "keywords": [
     "renor",
@@ -62,13 +62,19 @@
     "knowledge-graph"
   ],
   "homepage": "https://renor.cloud",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/patrickpassosb/renor-engine.git"
+  },
+  "bugs": {
+    "url": "https://github.com/patrickpassosb/renor-engine/issues"
+  },
   "author": "Patrick Passos",
   "license": "AGPL-3.0-only",
   "type": "commonjs",
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.31.0",
     "@posthog/mcp": "0.21.0",
-    "@xenova/transformers": "^2.17.2",
     "better-sqlite3": "^12.8.0",
     "chokidar": "^3.6.0",
     "commander": "^14.0.3",
@@ -81,6 +87,7 @@
     "zod": "^4.6.5"
   },
   "devDependencies": {
+    "@xenova/transformers": "^2.17.2",
     "@types/better-sqlite3": "^7.6.13",
     "@types/express": "^5.0.6",
     "@types/node": "^25.9.8",
@@ -91,7 +98,14 @@
     "typescript": "^6.0.2",
     "vitest": "^4.1.2"
   },
-  "private": true,
+  "peerDependencies": {
+    "@xenova/transformers": "^2.17.2"
+  },
+  "peerDependenciesMeta": {
+    "@xenova/transformers": {
+      "optional": true
+    }
+  },
   "overrides": {
     "@xenova/transformers": {
       "sharp": "0.35.5",

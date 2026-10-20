@@ -35,7 +35,11 @@ export class LocalEmbeddingProvider implements EmbeddingProvider {
     if (this.extractor) return Promise.resolve(this.extractor);
     if (this.initPromise) return this.initPromise;
     this.initPromise = (async () => {
-      const { pipeline, env } = await import('@xenova/transformers' as any);
+      // An optional peer dependency: an `npx renor-engine` install leaves it out (it is hundreds of megabytes), a clone has it.
+      const { pipeline, env } = await import('@xenova/transformers' as any).catch((err: unknown) => {
+        if (!/cannot find (module|package)/i.test(String((err as Error)?.message))) throw err;
+        throw new Error('EMBEDDING_PROVIDER=local needs the optional package @xenova/transformers: add it (`npx -y -p renor-engine -p @xenova/transformers renor-engine mcp`, or `npm install @xenova/transformers` beside a clone) or set EMBEDDING_PROVIDER=none');
+      });
       env.cacheDir = path.join(os.homedir(), '.cache', 'osm-memory', 'models');
       this.extractor = await pipeline('feature-extraction', this.modelName);
       return this.extractor;

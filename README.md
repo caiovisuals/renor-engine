@@ -31,6 +31,17 @@ Downloaded a ZIP instead of cloning? It has no git history to stamp the build wi
 
 ## Connect your agent
 
+**Without a clone.** With Node 22 installed, one line registers the published package. Your notes go to a hidden `.renor` folder in your home directory (`~/.renor`, printed on stderr at start; it never reuses an existing `renor` folder); to use another folder, add `-e VAULT_PATH=/absolute/path` to the `claude` line or `--env VAULT_PATH=/absolute/path` to the `codex` line. The first start downloads about 130 MB and takes about 15 seconds; if your agent shows one failed connection, restart it.
+
+```bash
+claude mcp add --scope user renor-local -- npx -y renor-engine mcp
+codex mcp add renor-local -- npx -y renor-engine mcp
+```
+
+For Cursor or any other client, the server is the command `npx` with the arguments `-y renor-engine mcp`. `claude mcp remove renor-local` and `codex mcp remove renor-local` undo it. The rest of this section is the same thing from a clone, which also lets you change the code.
+
+**From a clone.**
+
 Pick a folder for your memory (a new, empty one is fine; an Obsidian vault works too) and index it. Run this, and the commands below, from the `renor-engine` directory in the same shell:
 
 ```bash
@@ -86,7 +97,7 @@ Everything Renor keeps is in that one folder, so back it up, sync it or move it 
 ## More
 
 - [docs/self-hosting.md](docs/self-hosting.md): troubleshooting, embeddings, the HTTP server with OAuth sign-in, connecting agents over HTTP, the tool lists, owner names, multi-agent ("hive") tools (set `RENOR_CONNECTION_NAME` per agent), and how the vault is protected.
-- [skill/SKILL.md](skill/SKILL.md): instructions to give your agent so it recalls and saves memory without being asked. Most of it names the hosted tools (`get_context`, `remember`); the `renor-local` server above has other names (`search`, `remember_fact`, `note`), listed in its [Stdio section](skill/SKILL.md#stdio-renor-mcp).
+- [skill/SKILL.md](skill/SKILL.md): instructions to give your agent so it recalls and saves memory without being asked. Most of it names the hosted tools (`get_context`, `remember`); the `renor-local` server above has other names (`search`, `remember_fact`, `note`), listed in its [Stdio section](skill/SKILL.md#stdio-renor-engine-mcp).
 
 Renor is a single-owner engine: one person's notes, one set of agents. It is not a multi-user product.
 

@@ -489,14 +489,16 @@ program
   .description("Start MCP server (stdio transport) for agent connectivity")
   .action(async () => {
     const { config, db, provider, vectorIndex } = await setup({ serving: true });
+    // stderr only: stdout is the JSON-RPC stream. Said when the folder is the default, so a person who set nothing can find it.
+    if (!process.env.VAULT_PATH) process.stderr.write(`Renor memory: ${config.vaultPath}\n`);
     try {
       await startMcpServer(db, vectorIndex, provider, config);
     } catch (err) {
-      // A refused startup is an operator-facing answer, not a crash: another live `renor mcp`
+      // A refused startup is an operator-facing answer, not a crash: another live `renor-engine mcp`
       // already holds this connection's name (memory/agentLease.ts). Say it on one line and exit
       // non-zero, so a client that launches the server reads a stderr it can act on. stdout
       // stays empty either way, so a JSON-RPC stream is never polluted.
-      process.stderr.write(`renor mcp: ${(err as Error).message}\n`);
+      process.stderr.write(`renor-engine mcp: ${(err as Error).message}\n`);
       process.exit(1);
     }
   });

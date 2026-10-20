@@ -15,7 +15,7 @@ export function claimAgentLease(db: Database.Database, agent: string, holder: st
   const existing = db.prepare('SELECT holder FROM agent_leases WHERE agent = ?').get(identity) as { holder: string } | undefined;
   if (existing && existing.holder !== holder && pidAlive(existing.holder)) {
     throw new Error(
-      `another live connection is named ${JSON.stringify(identity)}; set RENOR_CONNECTION_NAME to a different name, or stop the other renor mcp process, then reconnect`,
+      `another live connection is named ${JSON.stringify(identity)}; set RENOR_CONNECTION_NAME to a different name, or stop the other renor-engine mcp process, then reconnect`,
     );
   }
   db.prepare(

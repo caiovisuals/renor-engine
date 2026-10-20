@@ -1,4 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import os from 'node:os';
+import path from 'node:path';
 import { loadConfig } from '../src/config';
 
 describe('loadConfig', () => {
@@ -33,8 +35,13 @@ describe('loadConfig', () => {
     expect(loadConfig().vaultPath).toBe('/tmp/vault');
   });
 
-  it('throws when VAULT_PATH missing', () => {
-    expect(() => loadConfig()).toThrow('VAULT_PATH');
+  // `npx -y renor-engine mcp` needs no setting: the notes go to a renor folder in the home directory.
+  it('defaults VAULT_PATH to ~/.renor when it is missing or empty, with the index inside it', () => {
+    const vault = path.join(os.homedir(), '.renor');
+    expect(loadConfig().vaultPath).toBe(vault);
+    expect(loadConfig().dbPath).toBe(`${vault}/.semantic-memory/index.db`);
+    process.env.VAULT_PATH = '';
+    expect(loadConfig().vaultPath).toBe(vault);
   });
 
   it('has sensible defaults', () => {

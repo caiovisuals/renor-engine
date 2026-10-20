@@ -152,8 +152,10 @@ describe('docs/ENVIRONMENT-VARIABLES.md', () => {
   });
 
   it('states the defaults of the command-line server as loadConfig() resolves them', () => {
-    expect(() => withEnv({}, () => loadConfig())).toThrow(/VAULT_PATH/);
-    expect(documentedDefault('VAULT_PATH')).toMatch(/required/);
+    // No setting is a first run in a renor folder in the home directory, and an empty one is the same as unset.
+    expect(withEnv({}, () => loadConfig()).vaultPath).toBe(path.join(os.homedir(), '.renor'));
+    expect(withEnv({ VAULT_PATH: '' }, () => loadConfig()).vaultPath).toBe(path.join(os.homedir(), '.renor'));
+    expect(documentedDefault('VAULT_PATH')).toBe('`~/.renor`');
     const config = withEnv({ VAULT_PATH: '/vault' }, () => loadConfig());
     const stated: Record<string, string> = {
       EMBEDDING_PROVIDER: config.embeddingProvider,

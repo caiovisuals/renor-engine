@@ -35,7 +35,7 @@ export function createMcpTools(
 ) {
   // Startup configuration, captured once: tool arguments and later env changes cannot rename a connection.
   // The hive name is the header form. Empty, unnamed, or a second live holder publishes no hive tools
-  // (a duplicate name throws here, so `renor mcp` fails at startup instead of joining the other process).
+  // (a duplicate name throws here, so `renor-engine mcp` fails at startup instead of joining the other process).
   const rawConnectionName = process.env.RENOR_CONNECTION_NAME?.trim();
   const identity = rawConnectionName ? hiveIdentity(rawConnectionName) : null;
   const hive = identity ? createStdioHiveTools(db, identity) : {};
@@ -362,7 +362,7 @@ export function registerMcpHandlers(server: Server, tools: ReturnType<typeof cre
     const handler = (tools as any)[name];
     if (!handler) {
       if (HIVE_TOOLS.some(tool => tool.name === name)) {
-        return { content: [{ type: 'text', text: `${name} is refused: this connection has no name. Set RENOR_CONNECTION_NAME to this agent's name before starting renor mcp, then reconnect.` }], isError: true };
+        return { content: [{ type: 'text', text: `${name} is refused: this connection has no name. Set RENOR_CONNECTION_NAME to this agent's name before starting renor-engine mcp, then reconnect.` }], isError: true };
       }
       return { content: [{ type: 'text', text: `Unknown tool: ${name}` }], isError: true };
     }
