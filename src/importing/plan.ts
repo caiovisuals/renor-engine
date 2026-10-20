@@ -120,7 +120,22 @@ export interface BuildPlanOptions {
   now?: string;
 }
 
+/** Every import writes under this folder: a read marks a memory there as imported (mvp/agentMemory.ts, IMPORTED_PATH). */
+export const IMPORT_ROOT = 'Imported';
+
+/**
+ * Refuses a destination outside Imported/. The import mark is read off a note's path, so an import written elsewhere read
+ * as the workspace's own notes, and one written where the engine keeps its daily log (`Memory`, or the root) turned an
+ * imported file's entry lines into saves by whatever source the file named.
+ */
+export function assertImportNamespace(namespace: string): void {
+  if (destinationRelPath(namespace, 'x').split('/')[0] !== IMPORT_ROOT) {
+    throw new Error(`the import destination must be under ${IMPORT_ROOT}/ (got ${JSON.stringify(namespace)}): a read marks an imported memory by that folder`);
+  }
+}
+
 export function buildImportPlan(bundle: ImportBundle, options: BuildPlanOptions): ImportPlan {
+  assertImportNamespace(options.namespace);
   const existingStreams = options.existingStreams ?? new Set<string>();
   const destinationNow = options.now ?? new Date().toISOString();
   const notes: PlannedNote[] = [];
@@ -228,7 +243,7 @@ export function buildImportPlan(bundle: ImportBundle, options: BuildPlanOptions)
     emittedStreams.add(key);
   }
 
-  // RENOR_SECRET_GUARD (default OFF): a note or fact that looks like a secret is left out of the plan, with the
+  // RENOR_SECRET_GUARD (default ON): a note or fact that looks like a secret is left out of the plan, with the
   // reason, so the dry run shows it and every other note is still imported. With the guard off none of this runs.
   let guardSkips: GuardSkips | null = null;
   if (secretGuardEnabled()) {

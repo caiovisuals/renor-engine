@@ -101,12 +101,19 @@ async function startWorkspace() {
   const authRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'mvp-authroot-'));
   const config = makeConfig(memoryDir, authRoot, await freePort());
   const service = await startMvpService(config, new EvalHashEmbeddingProvider());
+  const token = await authorize(service.app);
   const client = new Client({ name: 'daily-entry-dates', version: '0.1.0' });
   await client.connect(new StreamableHTTPClientTransport(
     new URL(MVP_MCP_PATH, `http://127.0.0.1:${config.port}`),
-    { requestInit: { headers: { Authorization: `Bearer ${await authorize(service.app)}` } } },
+    { requestInit: { headers: { Authorization: `Bearer ${token}` } } },
+  ));
+  const limited = new Client({ name: 'daily-entry-dates-limited', version: '0.1.0' });
+  await limited.connect(new StreamableHTTPClientTransport(
+    new URL(MVP_MCP_PATH, `http://127.0.0.1:${config.port}`),
+    { requestInit: { headers: { Authorization: `Bearer ${token}`, 'x-renor-storage-limit': '1' } } },
   ));
   open.push(async () => {
+    await limited.close();
     await client.close();
     service.httpServer.closeAllConnections?.();
     await new Promise<void>(resolve => service.httpServer.close(() => resolve()));
@@ -126,7 +133,7 @@ async function startWorkspace() {
     expect(saved, JSON.stringify(saved)).toMatchObject({ ok: true, mode: 'note', indexed: true });
     return saved.file as string;
   };
-  return { call, note, memoryDir };
+  return { call, note, memoryDir, limitedCall: (name: string, args: Record<string, unknown> = {}) => limited.callTool({ name, arguments: args }) };
 }
 
 type Hit = { notePath: string; text: string; session_date?: string; reason: string };
@@ -139,6 +146,23 @@ const STALE = 'Quillmoor hosting decision: deploy it on Fly.io in the São Paulo
 const CORRECTION = 'Change of plan: Quillmoor moves from Fly.io to Railway.';
 
 describe('a daily-log entry is dated by its own moment, not by its file (live dogfood D3)', () => {
+  it('rolls a restore back when its completed Markdown would exceed the gateway storage ceiling', async () => {
+    const ws = await startWorkspace();
+    const statement = `storage ceiling restore ${'x'.repeat(3_500)}`;
+    await ws.call('remember', { statement });
+    const entry = ((await ws.call('memory_map', { query: 'storage ceiling restore' })).memories as Array<{ id: string }>)[0];
+    await ws.call('retire_memory', { id: entry.id });
+    const before = fs.readdirSync(ws.memoryDir, { recursive: true }).map(String)
+      .filter((file) => file.endsWith('.md')).map((file) => fs.readFileSync(path.join(ws.memoryDir, file), 'utf8')).join('\n');
+    expect(before).not.toContain(statement);
+    const refused = await ws.limitedCall('restore_memory', { id: entry.id });
+    expect(refused.isError).toBe(true);
+    expect((refused.content as Array<{ text: string }>)[0].text).toContain('would not fit');
+    const after = fs.readdirSync(ws.memoryDir, { recursive: true }).map(String)
+      .filter((file) => file.endsWith('.md')).map((file) => fs.readFileSync(path.join(ws.memoryDir, file), 'utf8')).join('\n');
+    expect(after).not.toContain(statement);
+  });
+
   it('a correction saved after what it corrects comes first, and each entry carries the moment it was said', async () => {
     const ws = await startWorkspace();
     const file = await ws.note(FIRST, STALE);

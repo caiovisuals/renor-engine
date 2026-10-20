@@ -1367,7 +1367,7 @@ export function retireMemory(ctx: MemoryMapContext, id: string, expectedHash?: s
         const block = blocks.find((b) => b.id === id);
         if (!block) throw refusal('memory_not_found', 'memory not found (it may already be retired)');
         const entryTitle = collapse(block.text, 90);
-        // RENOR_SECRET_GUARD (default OFF): retiring copies the block into the journal, so a block the scanner flags
+        // RENOR_SECRET_GUARD (default ON): retiring copies the block into the journal, so a block the scanner flags
         // is not retired, and nothing has been written yet.
         if (secretGuardEnabled()) {
           await assertStorable([{ field: 'memory', text: block.raw }, { field: 'title', text: entryTitle }], 'retire');
@@ -1400,7 +1400,7 @@ export function retireMemory(ctx: MemoryMapContext, id: string, expectedHash?: s
 
     const title = (ctx.db.prepare('SELECT title FROM notes WHERE path = ?').get(file.indexed) as { title: string } | undefined)?.title
       ?? parseNote(file.indexed, (await readPrefix(file.real, MAP_READ_BYTES))?.text ?? '').title;
-    // RENOR_SECRET_GUARD (default OFF): the same rule for a whole note, before the retired directory exists.
+    // RENOR_SECRET_GUARD (default ON): the same rule for a whole note, before the retired directory exists.
     if (secretGuardEnabled()) {
       await assertStorable([{ field: 'memory', text: await readToScreen(file.real, 'retire') }, { field: 'title', text: title }], 'retire');
     }
@@ -1433,8 +1433,12 @@ export function retireMemory(ctx: MemoryMapContext, id: string, expectedHash?: s
  * retirement of it is in effect. Idempotent: a restore whose bytes are already back (a retry after
  * an interruption) completes the journal and re-indexes instead of failing.
  */
-export function restoreMemory(ctx: MemoryMapContext, id: string): Promise<RetireReceipt | FactRetirementReceipt> {
-  if (factEventId(id) !== null) return restoreFact(ctx.db, ctx.memoryDir, ctx.ledgerRelPath, id, ctx.source);
+export function restoreMemory(
+  ctx: MemoryMapContext,
+  id: string,
+  options: { validateAfterWrite?: () => void | Promise<void> } = {},
+): Promise<RetireReceipt | FactRetirementReceipt> {
+  if (factEventId(id) !== null) return restoreFact(ctx.db, ctx.memoryDir, ctx.ledgerRelPath, id, ctx.source, options.validateAfterWrite);
   return serialize(async () => {
     const before = await readJournal(ctx);
     const pick = (records: RetiredRecord[]) => {
@@ -1457,12 +1461,13 @@ export function restoreMemory(ctx: MemoryMapContext, id: string): Promise<Retire
     const rootReal = await fs.realpath(ctx.memoryDir);
     const at = new Date().toISOString();
 
+    let rollback: (() => Promise<void>) | undefined;
     if (record.kind === 'entry') {
       const day = DAILY_FILE_RE.exec(record.path)?.[2];
       // The block is stored exactly as it was in the file. Not trimmed: a statement that opens with a line break
       // has an entry line that ends in the separator space, and trimming it made the entry impossible to restore.
       if (!record.block || !day || !ENTRY_LINE_RE.test(record.block.split('\n')[0])) throw new Error('retired entry record is incomplete');
-      // RENOR_SECRET_GUARD (default OFF): restoring puts the text back into live memory, so it is screened like a save.
+      // RENOR_SECRET_GUARD (default ON): restoring puts the text back into live memory, so it is screened like a save.
       if (secretGuardEnabled()) {
         await assertStorable([{ field: 'memory', text: record.block }, { field: 'title', text: record.title }], 'restore');
       }
@@ -1475,6 +1480,9 @@ export function restoreMemory(ctx: MemoryMapContext, id: string): Promise<Retire
           if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
         }
         const copies = Array.from({ length: Math.max(1, record.copies ?? 1) }, () => record.block!).join('\n');
+        rollback = existing === null
+          ? async () => { await fs.rm(file.real, { force: true }); }
+          : async () => { await atomicWrite(file.real, existing!); };
         if (existing !== null) {
           const { lines, blocks } = parseEntries(record.path, existing);
           if (blocks.some((b) => b.id === record.id)) return; // already back
@@ -1501,7 +1509,15 @@ export function restoreMemory(ctx: MemoryMapContext, id: string): Promise<Retire
         await assertStorable([{ field: 'memory', text: await readToScreen(storedReal, 'restore') }, { field: 'title', text: record.title }], 'restore');
       }
       const targetDir = await ensureRealDir(rootReal, path.posix.dirname(record.path));
-      await fs.rename(storedReal, path.join(targetDir, path.posix.basename(record.path)));
+      const targetReal = path.join(targetDir, path.posix.basename(record.path));
+      await fs.rename(storedReal, targetReal);
+      rollback = async () => { await fs.rename(targetReal, storedReal); };
+    }
+    try {
+      await options.validateAfterWrite?.();
+    } catch (err) {
+      await rollback?.();
+      throw err;
     }
     // Index before the journal says "restored": if indexing fails, the record stays active and a
     // retry completes the restore (see the idempotent path above).

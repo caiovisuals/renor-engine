@@ -43,6 +43,8 @@ export const TOOL_ERROR_REASONS = [
   'memory_already_retired',
   /** A restore would overwrite a file that now occupies the path. */
   'restore_conflict',
+  /** A write would take counted Markdown over the workspace plan ceiling. */
+  'storage_limit',
   /** An import batch or preview is unknown or has expired. */
   'batch_not_found',
   /** The batch was already applied, failed or undone; it cannot be applied again. */

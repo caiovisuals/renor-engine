@@ -7,13 +7,14 @@ import { parseMarkdownImportNote } from './markdown';
 import { isSelected } from './source';
 import { BUNDLE_FORMAT, type ImportBundle } from './types';
 import { buildImportPlan, type ImportPlan } from './plan';
-import { applyImportPlan, isEmptyLeftover, type ApplyResult } from './apply';
+import { applyImportPlan, ImportStorageLimitError, isEmptyLeftover, type ApplyResult } from './apply';
 import { retireMemory, type MemoryMapContext } from '../memorymap/memoryMap';
 import { isBlankOrInvisible } from '../memory/invisibleText';
 import { assertNoUnstorableControls } from '../memory/controls';
 import { SecretRefusedError } from '../extraction/secretGuard';
 import { refusal } from '../toolRefusal';
 import { IMPORT_JOURNAL_DIR } from './forgetImported';
+import { measureMarkdownBytes } from '../mvp/storedSize';
 import { JournalLog, journalLogName, readJournalLog, removeJournalLog } from './journalLog';
 
 // Fits the existing 1 MiB HTTP ceiling even with JSON escaping. Count UTF-8
@@ -223,7 +224,7 @@ export async function previewImport(ctx: MemoryMapContext, input: PreviewInput) 
   previews.set(batchId, { bundle, plan, expiresAt });
   return { ok: true, batchId, expiresAt: new Date(expiresAt).toISOString(), ...report };
 }
-export function applyHostedImport(ctx: MemoryMapContext, batchId: string) {
+export function applyHostedImport(ctx: MemoryMapContext, batchId: string, storageLimitBytes?: number) {
   return serial(ctx.db, async () => {
     const existing = readJournal(ctx, batchId);
     if (existing?.state === 'applied') return { ok: true, batchId, ...existing.result };
@@ -248,6 +249,12 @@ export function applyHostedImport(ctx: MemoryMapContext, batchId: string) {
           manifest.reasserted!.push({ relPath: note.relPath, hash: note.contentHash });
           log.append({ list: 'reasserted', relPath: note.relPath, hash: note.contentHash });
         },
+        ...(storageLimitBytes === undefined ? {} : { validateBeforeCommit: async () => {
+          const bytes = await measureMarkdownBytes(ctx.memoryDir);
+          if (bytes > storageLimitBytes) {
+            throw new ImportStorageLimitError(`Renor: this workspace would store ${bytes.toLocaleString('en-US')} bytes of Markdown; the storage limit is ${storageLimitBytes.toLocaleString('en-US')} bytes. This memory write was not run.`);
+          }
+        } }),
       });
       log.close();
       manifest.result = result;
@@ -256,7 +263,11 @@ export function applyHostedImport(ctx: MemoryMapContext, batchId: string) {
       return { ok: true, batchId, ...result, recall: ctx.indexOptions.embeddingProvider && result.indexRows.chunksInserted > 0
         ? 'Keyword recall is ready through search_text. The new notes are embedded in the background: search by meaning finds them once memory_status says semantic: true. No structured facts were generated.'
         : 'Keyword recall is ready through search_text; no embeddings or structured facts were generated.' };
-    } catch (err) { log.close(); manifest.state = 'failed'; writeJournal(ctx, manifest); throw err; }
+    } catch (err) {
+      log.close(); manifest.state = 'failed'; writeJournal(ctx, manifest);
+      if (err instanceof ImportStorageLimitError) throw refusal('storage_limit', err.message);
+      throw err;
+    }
   });
 }
 // The owner changed what is on disk since the import, or the secret guard will not move the note (it stays live):

@@ -145,17 +145,25 @@ describe('MCP evidence tool', () => {
     db.close();
   });
 
-  it('shipped defaults extract intent and non-intent queries; both off switches suppress calls', async () => {
+  it('the shipped default sends nothing, even forced; always extracts intent and non-intent queries; both off switches suppress calls', async () => {
     const previous = process.env.RENOR_SEARCH_EVIDENCE;
     delete process.env.RENOR_SEARCH_EVIDENCE;
     const { db, idx, vaultPath } = seedDb();
     try {
       const chat = fakeChat();
       // Empty env exercises real defaults without ambient keys or model calls.
-      const resolved = resolveEvidenceToolOptions({ dbPath: db.name }, {});
+      const defaults = resolveEvidenceToolOptions({ dbPath: db.name }, {});
+      expect(defaults.mode).toBe('off');
+      expect(defaults.maxSessions).toBe(20);
+      expect(defaults.model).toBe('gemma4:31b');
+      const unset = toolWith(db, idx, { ...defaults, chat, cachePath: tmpCachePath() }, vaultPath).tools;
+      const unsetHits = await unset.search({ query: 'How many days did the camping trip last?' });
+      expect(unsetHits.every((h: { reason?: string }) => h.reason !== 'evidence')).toBe(true);
+      expect((await unset.evidence({ query: 'How many camping trips?', force: true })).evidence).toEqual({ status: 'skipped', reason: 'mode-off' });
+      expect(chat).not.toHaveBeenCalled();
+
+      const resolved = resolveEvidenceToolOptions({ dbPath: db.name }, { RENOR_EVIDENCE_MODE: 'always' });
       expect(resolved.mode).toBe('always');
-      expect(resolved.maxSessions).toBe(20);
-      expect(resolved.model).toBe('gemma4:31b');
       const { tools } = toolWith(db, idx, { ...resolved, chat, cachePath: tmpCachePath() }, vaultPath);
       const withEvidence = await tools.search({ query: 'How many days did the camping trip last?' });
       expect(withEvidence[0].reason).toBe('evidence');

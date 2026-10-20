@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "renor": {
+      "type": "http",
+      "url": "https://mcp.renor.cloud/mcp"
+    }
+  }
+}

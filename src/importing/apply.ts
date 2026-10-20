@@ -34,6 +34,10 @@ import { refuseFlaggedPlan } from './secretScreen';
  *     chunks, once, before semantic search reads the index again.
  */
 
+
+/** A final measured-size refusal. applyImportPlan compensates canonical and derived writes before rethrowing it. */
+export class ImportStorageLimitError extends Error {}
+
 export interface ApplyOptions {
   /** Destination workspace memory directory (the workspace's canonical store). */
   memoryDir: string;
@@ -49,6 +53,8 @@ export interface ApplyOptions {
   onNoteCreated?: (note: PlannedNote) => void;
   /** Journal an identical note this import found and therefore re-asserted without writing. */
   onNoteUnchanged?: (note: PlannedNote) => void;
+  /** Final canonical-size check while the SQLite transaction is still open. Throwing rolls the whole import back. */
+  validateBeforeCommit?: () => void | Promise<void>;
 }
 
 export interface ApplyResult {
@@ -107,7 +113,7 @@ export async function applyImportPlan(
   _bundle: ImportBundle,
   options: ApplyOptions,
 ): Promise<ApplyResult> {
-  // RENOR_SECRET_GUARD (default OFF): a plan that still holds a note or fact that looks like a secret is refused
+  // RENOR_SECRET_GUARD (default ON): a plan that still holds a note or fact that looks like a secret is refused
   // whole, here, before the first directory, file, ledger event or index row. buildImportPlan leaves such items
   // out, so this catches a plan built with the guard off, or by another caller.
   if (secretGuardEnabled()) refuseFlaggedPlan(plan);
@@ -271,6 +277,9 @@ export async function applyImportPlan(
         // that job when the import returns).
         if (indexRows.chunksInserted > 0) markVectorsUnfinished(db);
       }
+      // Canonical Markdown is now complete, but neither its index projection nor the files have committed as a unit.
+      // This is the last point at which a measured workspace ceiling can reject and compensate every added byte.
+      await options.validateBeforeCommit?.();
       db.exec('COMMIT');
       committed = true;
     } catch (err) {
@@ -309,6 +318,7 @@ export async function applyImportPlan(
     // memory that no longer exists. Keep the notes so the canonical layer stays
     // self-consistent and recoverable, and report the residual instead of destroying it.
     const notesRemoved = ledgerTouched && !restore.restored ? 0 : compensateCreatedPaths(created);
+    if (err instanceof ImportStorageLimitError && (!ledgerTouched || restore.restored)) throw err;
     throw new Error(rollbackMessage({ phase, err, notesRemoved, ledgerTouched, restore, eventsAppended }));
   } finally {
     try {

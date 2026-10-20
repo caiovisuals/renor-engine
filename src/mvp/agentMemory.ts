@@ -791,6 +791,26 @@ function normalizeMemory(hit: any, fallbackReason: string, reader?: string): Age
   };
 }
 
+export const CONTEXT_LEAN_ITEMS_FLAG = 'RENOR_CONTEXT_LEAN_ITEMS';
+
+/** get_context's lean memory items (RENOR_CONTEXT_LEAN_ITEMS): off by default, and the reply is then what it always was. */
+export function contextLeanItemsEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  const raw = (env[CONTEXT_LEAN_ITEMS_FLAG] ?? '').trim().toLowerCase();
+  return raw === '1' || raw === 'true' || raw === 'yes' || raw === 'on';
+}
+
+/**
+ * A memory as the lean get_context lists it: its text as stored, the day it was written, and every marker it carries
+ * (replaced, matched, origin, source, untrusted). The note path, heading, score and reason go: they cost about twice
+ * the memory's own text (an item was about 107 tokens for 32 of text, docs/evals/results/agent-workflow-20261020), and
+ * the reply is already in the order they decided. A daily entry's text keeps its own time and writer.
+ */
+export function leanMemory(memory: AgentContextMemory): Record<string, unknown> {
+  const { notePath: _notePath, headingPath: _headingPath, text, score: _score, reason: _reason, session_date, ...markers } = memory;
+  const day = session_date === undefined ? undefined : /^\d{4}-\d{2}-\d{2}/.exec(session_date)?.[0] ?? session_date;
+  return { text, ...(day === undefined ? {} : { session_date: day }), ...markers };
+}
+
 /** The reasons of a memory the question's own words found (keyword search), as opposed to one found by meaning alone. */
 const WORD_MATCH_REASONS = ['fts', 'note-identity'];
 
@@ -1592,6 +1612,13 @@ export async function buildAgentContext(
 
   // The opt-in read-honesty lane (LANE 3, RENOR_READ_HONESTY, off by default), set up once per read when it is armed.
   const honestyLane = readHonestyEnabled(options.env) && Boolean(query);
+  // Lean memory items (RENOR_CONTEXT_LEAN_ITEMS, off by default): each memory is costed, and the reply measured, as it is
+  // listed (leanMemory), so the same max_tokens holds more of them. The read-honesty lane lists provenance on every item,
+  // so it keeps its own items.
+  const lean = !honestyLane && contextLeanItemsEnabled(options.env);
+  const listedTokens = (body: Record<string, unknown>): number => replyTokens(JSON.stringify(
+    lean ? { ...body, memories: (body.memories as AgentContextMemory[]).map(leanMemory) } : body,
+  ));
   const ledgerRel = options.ledgerRelPath ?? DEFAULT_LEDGER_REL;
   const paths = honestyLane ? factSourcePaths(db, scopeNorm) : new Map<string, string>();
   // Each item the lane lists says where it came from and when it was last verified.
@@ -1770,7 +1797,7 @@ export async function buildAgentContext(
       // reply, so a fact and the contradiction it brings are listed from the least max_tokens that holds them.
       size = honestyLane
         ? replyTokens(JSON.stringify('predicate' in item ? factWithProvenance(item) : memoryWithProvenance(item))) + (brings.get(bringsKey(item)) ?? 0)
-        : replyTokens(JSON.stringify(item)) + 1 + (brings.get(bringsKey(item)) ?? 0);
+        : replyTokens(JSON.stringify(lean && !('predicate' in item) ? leanMemory(item) : item)) + 1 + (brings.get(bringsKey(item)) ?? 0);
       costs.set(item, size);
     }
     return size;
@@ -1870,7 +1897,7 @@ export async function buildAgentContext(
     }
     return reply;
   };
-  const fixed = () => budget(maxTokens - replyTokens(JSON.stringify(assemble({ facts: [], memories: [], truncated: false, tokens: 0, listed: new Set() }, judged?.relevance))));
+  const fixed = () => budget(maxTokens - listedTokens(assemble({ facts: [], memories: [], truncated: false, tokens: 0, listed: new Set() }, judged?.relevance)));
   // With the lane armed, the reply that holds everything the read found is the reply whenever it fits: the budget cuts
   // each list in turn, so short of that it can keep a fact's ledger event where the fact would take its place.
   const whole = honestyLane ? budget(Number.POSITIVE_INFINITY) : undefined;
@@ -1880,7 +1907,7 @@ export async function buildAgentContext(
     kept = fixed();
     body = assemble(kept);
   }
-  for (let over = replyTokens(JSON.stringify(body)) - maxTokens; over > 0 && kept.tokens > 0; over = replyTokens(JSON.stringify(body)) - maxTokens) {
+  for (let over = listedTokens(body) - maxTokens; over > 0 && kept.tokens > 0; over = listedTokens(body) - maxTokens) {
     kept = budget(kept.tokens - over);
     body = assemble(kept);
   }
@@ -1903,5 +1930,7 @@ export async function buildAgentContext(
     ];
   }
   if (correctionOf.size > 0) pinToCorrections(reply, correctionOf);
+  // Last, once the order and the pairs are settled on the full items, which say how they were found.
+  if (lean) reply.memories = (reply.memories as AgentContextMemory[]).map(leanMemory);
   return reply;
 }

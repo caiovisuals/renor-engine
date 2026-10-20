@@ -215,6 +215,8 @@ async function main(): Promise<void> {
   const { provider, meta: providerMeta } = makeProvider(opts.provider, opts.model);
   const productEvidence = Boolean(opts.productEvidence) || searchEvidenceEnabled();
   if (opts.productEvidence) process.env.RENOR_SEARCH_EVIDENCE = '1';
+  // The engine's unset evidence mode is off (src/evidence/gate.ts); an evidence arm keeps the hosted value, always.
+  if (productEvidence && !process.env.RENOR_EVIDENCE_MODE?.trim()) process.env.RENOR_EVIDENCE_MODE = 'always';
   const evidenceCacheShared = Boolean(process.env.RENOR_EVIDENCE_CACHE?.trim());
   const evidenceCachePath = process.env.RENOR_EVIDENCE_CACHE?.trim()
     || path.join(outputDir, 'evidence-cache.db');

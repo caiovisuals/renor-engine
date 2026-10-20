@@ -16,7 +16,7 @@ import { buildImportPlan } from '../../src/importing/plan';
 import { applyImportPlan } from '../../src/importing/apply';
 import { BUNDLE_FORMAT } from '../../src/importing/types';
 
-// The check reads /proc/self/fd; without /proc (not Linux) the race stays open and is documented in README.public.md.
+// The check reads /proc/self/fd; without /proc (not Linux) the race stays open and is documented in docs/self-hosting.md.
 const HAS_PROC = fs.existsSync('/proc/self/fd');
 const RACE_MS = 4000;
 const CANARY = 'ENGINE-WRITE-';

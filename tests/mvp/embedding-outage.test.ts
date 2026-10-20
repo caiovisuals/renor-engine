@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach, afterAll, vi } from 'vitest';
+import { describe, it, expect, afterEach, afterAll, vi, beforeAll } from 'vitest';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
@@ -178,6 +178,12 @@ async function workspaceInOutage() {
 
 const QUESTION = 'When is the quarterly access review due?';
 const NOTE = 'The quarterly access review is due on November 15.';
+
+// The secret guard is on by default. These tests store fixture text that the guard refuses (a credential-shaped or an
+// identifier-shaped sentence that is incidental to what each test checks), so they run with it explicitly off.
+const SAVED_GUARD = process.env.RENOR_SECRET_GUARD;
+beforeAll(() => { process.env.RENOR_SECRET_GUARD = '0'; });
+afterAll(() => { if (SAVED_GUARD === undefined) delete process.env.RENOR_SECRET_GUARD; else process.env.RENOR_SECRET_GUARD = SAVED_GUARD; });
 
 describe('while the embedding provider is down', () => {
   it('get_context answers with the saved facts and keyword search, says semantic search failed and why, and calls the provider once', async () => {

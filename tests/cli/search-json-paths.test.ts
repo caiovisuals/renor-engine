@@ -55,6 +55,8 @@ function cliEnv(extra: Record<string, string> = {}): NodeJS.ProcessEnv {
   caseNo++;
   return {
     ...env,
+    // The engine's unset evidence mode is off (src/evidence/gate.ts): a case configuring a model turns the pass on.
+    RENOR_EVIDENCE_MODE: 'always',
     VAULT_PATH: vault,
     DB_PATH: dbPath,
     EMBEDDING_PROVIDER: 'eval-hash',

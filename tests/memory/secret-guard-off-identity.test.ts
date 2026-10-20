@@ -17,7 +17,7 @@ vi.mock('../../src/extraction/secretScanner', async importOriginal => {
 });
 
 /**
- * With RENOR_SECRET_GUARD off (unset, or any value that is not on) the guarded write paths do what they did before the
+ * With RENOR_SECRET_GUARD off (set to 0, false, no or off) the guarded write paths do what they did before the
  * guard existed. Two proofs, and neither compares anything with a number written down on one machine:
  *
  * 1. DIFFERENTIAL. The tree without the guard is exported from git (the commit this change was built on: `git archive`,
@@ -100,6 +100,14 @@ function findBase(): { sha: string } | { why: string } {
     git('cat-file', '-e', `${sha}^{commit}`);
   } catch {
     return { why: `${sha.slice(0, 8)} is not in this checkout's history (a shallow clone?)` };
+  }
+  // The differential compares a tree WITHOUT the guard with this one. Once the guard is on main (#573), a base that already has it
+  // is not that tree (it refuses on its default, so the two sides cannot agree): the mechanism checks below are what still apply.
+  try {
+    git('cat-file', '-e', `${sha}:engine/src/extraction/secretGuard.ts`);
+    return { why: `${sha.slice(0, 8)} already has the secret guard: there is no tree without it to compare` };
+  } catch {
+    // the base has no guard file: it is the tree without the guard
   }
   let changed: string[];
   try {
@@ -422,9 +430,9 @@ const NAMES = Object.keys(SCENARIOS) as ScenarioName[];
 
 // ----------------------------------------------------------------------------- the tests
 const SAVED = process.env.RENOR_SECRET_GUARD;
-// Unset is the default. The others are values an operator might write and that do not switch the guard on.
-const OFF: Array<string | undefined> = [undefined, '', '0', 'false', 'no', 'off', 'banana', 'enabled', '2'];
-const SOME_OFF: Array<string | undefined> = [undefined, '0', 'banana']; // the switch is one function: all nine are tried for saves
+// Unset is the default, which is ON. The off values are the explicit ones an operator writes.
+const OFF: Array<string | undefined> = ['0', 'false', 'no', 'off', 'OFF', ' No '];
+const SOME_OFF: Array<string | undefined> = ['0', 'off', 'no']; // the switch is one function: all of them are tried for saves
 const label = (value: string | undefined) => `RENOR_SECRET_GUARD=${value === undefined ? '(unset)' : JSON.stringify(value)}`;
 const setGuard = (value: string | undefined) => {
   if (value === undefined) delete process.env.RENOR_SECRET_GUARD;

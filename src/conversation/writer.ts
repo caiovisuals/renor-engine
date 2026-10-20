@@ -31,7 +31,7 @@ export async function writeConversation(
     throw new Error("Path traversal detected in conversation filename");
   }
 
-  // RENOR_SECRET_GUARD (default OFF): a transcript that looks like it holds a secret is not written, and the
+  // RENOR_SECRET_GUARD (default ON): a transcript that looks like it holds a secret is not written, and the
   // directory is not created. The caller (the log-conversation hook) reports the refusal and exits cleanly.
   if (secretGuardEnabled()) {
     await assertStorable([

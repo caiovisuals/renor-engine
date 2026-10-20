@@ -1,17 +1,20 @@
 /**
  * Gating for the H10 second-pass evidence extraction.
  *
- * Search runs extraction on every query by default (owner-approved promotion).
+ * Off unless the operator turns it on (owner decision, 18 Oct 2026: a self-hosted engine keeps its notes on the
+ * user's machine until the user chooses otherwise). The pass sends the matched notes to the evidence model's
+ * provider, so an unset or blank RENOR_EVIDENCE_MODE means off. Hosted Renor sets always in each workspace's unit
+ * (scripts/alpha/provision-renor-tenant.sh), and the product benchmark runner sets it for its child process.
  *
- *   off    — kill switch. The tool returns hits only, even when forced.
+ *   off    — default and kill switch. The tool returns hits only, even when forced.
  *   auto   — run only for aggregation/enumeration intent or force: true.
- *   always — default: run on every query with available source sessions.
+ *   always — run on every query with available source sessions.
  */
 export type EvidenceMode = 'off' | 'auto' | 'always';
 
 export function resolveEvidenceMode(env: NodeJS.ProcessEnv = process.env): EvidenceMode {
   const raw = (env.RENOR_EVIDENCE_MODE ?? '').trim().toLowerCase();
-  if (raw === '') return 'always';
+  if (raw === '') return 'off';
   if (raw === 'off' || raw === 'false' || raw === '0' || raw === 'no') return 'off';
   if (raw === 'always' || raw === 'on' || raw === '1' || raw === 'yes' || raw === 'all') return 'always';
   if (raw === 'auto') return 'auto';

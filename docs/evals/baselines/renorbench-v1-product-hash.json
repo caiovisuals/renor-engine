@@ -1,9 +1,9 @@
 {
   "schema": 1,
   "benchmark": "renorbench-v1-product",
-  "reason": "Re-record on the evaluator hash main has after #686 (src/eval/runManifest.ts lists RENOR_EMBEDDING_SERVED_BY): every metric of this arm is equal to the previous baseline; only evaluatorSha256, gitSha and recordedAt change.",
-  "recordedAt": "2026-10-19T15:24:55.774Z",
-  "gitSha": "f1d34623fb9c38bd4101fe6bf511fabe528c758e",
+  "reason": "The evidence-mode default became off for the self-hosted engine; scripts/eval/run-longmemeval-product.ts and run-longmemeval.ts (evaluator sources) now set RENOR_EVIDENCE_MODE=always for their product child, which moves the evaluator hash. This arm has no evidence model, so its replies and scores are unchanged.",
+  "recordedAt": "2026-10-19T18:58:35.674Z",
+  "gitSha": "665ff99058884f753e283e10973272294c3bfc61",
   "manifest": {
     "benchmark": "renorbench-v1-product",
     "casesSha256": "dcefabf571d40270f780281f08ecd09be90d5403207c816d0aeaac2d3a0d4060",
@@ -15,7 +15,7 @@
       "qualityEligible": false
     },
     "qualityEligible": false,
-    "evaluatorSha256": "c281ad8b629287da8f120bc42e16c518d9b6a655e09a6a98a34029b81734ab1c",
+    "evaluatorSha256": "2bd71cec9a2a313f2fd4f72190a2a029409f1f9e111137cfce288b0c198fbe94",
     "chunking": {
       "maxTokens": 400,
       "overlapTokens": 0

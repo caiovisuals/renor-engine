@@ -69,7 +69,7 @@ export async function startWorkspace(opts: { secretGuard?: boolean; selfHosted?:
   process.env.MVP_PORT = String(port);
   process.env.MVP_ALLOWED_CALLBACK_URIS = 'http://127.0.0.1:1/callback';
   for (const key of ['MVP_HISTORY_DIR', 'MVP_LEDGER_REL', 'MVP_EMBEDDING_PROVIDER', 'EMBEDDING_PROVIDER']) delete process.env[key];
-  process.env.RENOR_SECRET_GUARD = opts.secretGuard ? '1' : '';
+  process.env.RENOR_SECRET_GUARD = opts.secretGuard ? '1' : '0';
   process.env.MVP_GATEWAY_SECRET = opts.selfHosted ? '' : 'synthetic-gateway-secret';
   process.env.MVP_MCP_JSON = opts.sse ? 'false' : 'true';
   const config = loadMvpConfig();

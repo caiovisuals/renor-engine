@@ -1,9 +1,9 @@
 {
   "schema": 1,
   "benchmark": "renorbench-v2-product",
-  "reason": "Re-record after PR #714 makes the reader event and duration lines default-on: one session-detail reply (detail-marathon-4) gains its expected leading events hit, +92 reply tokens; every quality metric is unchanged.",
-  "recordedAt": "2026-10-19T15:48:15.347Z",
-  "gitSha": "07f113fde24e6e00e9b741098a5821758f0fe75d",
+  "reason": "The evidence-mode default became off for the self-hosted engine; scripts/eval/run-longmemeval-product.ts and run-longmemeval.ts (evaluator sources) now set RENOR_EVIDENCE_MODE=always for their product child, which moves the evaluator hash. This arm has no evidence model, so its replies and scores are unchanged.",
+  "recordedAt": "2026-10-19T18:58:36.312Z",
+  "gitSha": "665ff99058884f753e283e10973272294c3bfc61",
   "manifest": {
     "benchmark": "renorbench-v2-product",
     "casesSha256": "104079aba16672ec96b866572ce5f2578281cc2b68c5890f929dfceb5e9247c6",
@@ -15,7 +15,7 @@
       "qualityEligible": false
     },
     "qualityEligible": false,
-    "evaluatorSha256": "c281ad8b629287da8f120bc42e16c518d9b6a655e09a6a98a34029b81734ab1c",
+    "evaluatorSha256": "2bd71cec9a2a313f2fd4f72190a2a029409f1f9e111137cfce288b0c198fbe94",
     "chunking": {
       "maxTokens": 400,
       "overlapTokens": 0
@@ -110,13 +110,5 @@
         "p95ReplyTokens": 4101
       }
     }
-  },
-  "lowering": {
-    "reason": "Re-record after PR #714 makes the reader event and duration lines default-on: one session-detail reply (detail-marathon-4) gains its expected leading events hit, +92 reply tokens; every quality metric is unchanged.",
-    "fromBaselineSha256": "1000b3b9e71ae5a457de4c32e631074ce1485bfc7319b06c3561f8ed528e324e",
-    "movedMetrics": [
-      "meanReplyTokens",
-      "session_detail.meanReplyTokens"
-    ]
   }
 }

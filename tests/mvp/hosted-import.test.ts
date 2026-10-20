@@ -540,7 +540,7 @@ describe('hosted vault import with the secret guard (RENOR_SECRET_GUARD) on', ()
   it('a dry run lists the notes the guard leaves out, by path and field and never their text, and apply writes only the rest', async () => {
     const t = await tenant();
     try {
-      delete process.env.RENOR_SECRET_GUARD;
+      process.env.RENOR_SECRET_GUARD = '0';
       const open = await call(t.client, 'preview_import', { label: 'fixture', files: [...fixtureFiles, keysNote] });
       expect('secretGuard' in open).toBe(false); // with the guard off the dry run is what it was
       expect(open.toWrite).toBe(3);
@@ -561,7 +561,7 @@ describe('hosted vault import with the secret guard (RENOR_SECRET_GUARD) on', ()
     const t = await tenant();
     try {
       // Imported while the guard was off: text that is already stored is what retiring has to move.
-      delete process.env.RENOR_SECRET_GUARD;
+      process.env.RENOR_SECRET_GUARD = '0';
       const preview = await call(t.client, 'preview_import', { label: 'fixture', files: [...fixtureFiles, keysNote] });
       expect(await call(t.client, 'apply_import', { batchId: preview.batchId })).toMatchObject({ notesWritten: 3 });
 
@@ -573,7 +573,7 @@ describe('hosted vault import with the secret guard (RENOR_SECRET_GUARD) on', ()
       expect(fs.existsSync(path.join(t.memoryDir, 'Imported/fixture/People/Ada.md'))).toBe(false);
       expect(journalOf(t.memoryDir, preview.batchId).created.find(n => n.relPath === keysPath)?.retired).toBeFalsy();
 
-      delete process.env.RENOR_SECRET_GUARD;
+      process.env.RENOR_SECRET_GUARD = '0';
       expect(await call(t.client, 'undo_import', { batchId: preview.batchId })).toMatchObject({ retired: 1, preserved: [] });
       expect(fs.existsSync(path.join(t.memoryDir, keysPath))).toBe(false);
       expect(journalOf(t.memoryDir, preview.batchId).created.every(n => n.retired)).toBe(true);

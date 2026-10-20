@@ -66,7 +66,7 @@ describe('retire and restore with the secret guard on', () => {
   }
 
   beforeEach(async () => {
-    delete process.env.RENOR_SECRET_GUARD; // what is stored before the guard exists
+    process.env.RENOR_SECRET_GUARD = '0'; // what is stored before the guard exists
     vault = fs.mkdtempSync(path.join(os.tmpdir(), 'memmap-guard-'));
     db = openDb(path.join(vault, '.memory-index', 'index.db'));
     runMigrations(db);
@@ -188,7 +188,7 @@ describe('retire and restore with the secret guard on', () => {
       process.env.RENOR_SECRET_GUARD = '1';
       await expect(restoreMemory(ctx, flaggedEntry)).rejects.toBeInstanceOf(SecretRefusedError);
       await expect(restoreMemory(ctx, flaggedNote)).rejects.toBeInstanceOf(SecretRefusedError);
-      delete process.env.RENOR_SECRET_GUARD;
+      process.env.RENOR_SECRET_GUARD = '0';
       expect((await restoreMemory(ctx, flaggedEntry)).action).toBe('restored');
       expect((await restoreMemory(ctx, flaggedNote)).action).toBe('restored');
       expect(state().daily).toContain(KEY);

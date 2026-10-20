@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, beforeAll, afterAll } from 'vitest';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
@@ -31,6 +31,12 @@ function write(vault: string, rel: string, content: string) {
 function ftsHits(db: Database.Database, term: string): number {
   return (db.prepare('SELECT COUNT(*) c FROM chunks_fts WHERE chunks_fts MATCH ?').get(term) as { c: number }).c;
 }
+
+// The secret guard is on by default. These tests store fixture text that the guard refuses (a credential-shaped or an
+// identifier-shaped sentence that is incidental to what each test checks), so they run with it explicitly off.
+const SAVED_GUARD = process.env.RENOR_SECRET_GUARD;
+beforeAll(() => { process.env.RENOR_SECRET_GUARD = '0'; });
+afterAll(() => { if (SAVED_GUARD === undefined) delete process.env.RENOR_SECRET_GUARD; else process.env.RENOR_SECRET_GUARD = SAVED_GUARD; });
 
 describe('memory map', () => {
   let vault: string;

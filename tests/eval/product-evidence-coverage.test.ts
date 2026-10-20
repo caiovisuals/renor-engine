@@ -230,6 +230,27 @@ describe('the run manifest records the evidence layer per case (issue #222 part 
     expect(overrides).toContain('RENOR_EVIDENCE_REASONING_EFFORT=low');
   });
 
+  it('keeps the hosted evidence mode for the product process: always when unset or blank, the operator\'s value otherwise', async () => {
+    // The engine's own unset default is off (src/evidence/gate.ts); the benchmark measures hosted Renor, which sets always.
+    const modes: Array<string | undefined> = [];
+    const hooks: ProductHooks = {
+      publicSearch: async (args) => {
+        modes.push(args.env.RENOR_EVIDENCE_MODE);
+        return {
+          hits: [{ notePath: path.join(args.vaultDir, 'Sessions', 'trip.md'), text: 'We went camping for 3 days.', score: 1 }],
+          transport: 'test', command: 'test', durationMs: 1,
+        };
+      },
+      models: stubModels,
+    };
+    for (const value of [undefined, '  ', 'auto', 'off']) {
+      if (value === undefined) delete process.env.RENOR_EVIDENCE_MODE;
+      else process.env.RENOR_EVIDENCE_MODE = value;
+      await run(writeDataset([row('q_mode', 'How many days did we camp?')]), hooks);
+    }
+    expect(modes).toEqual(['always', 'always', 'auto', 'off']);
+  });
+
   it('the run ledger tells a bounded arm from an unbounded one, and one bound from another', () => {
     // Settings, not credentials (src/eval/runLedger.ts PRESENCE_ONLY_ENV keeps their values): a bounded rerun is a
     // new measurement, never refused as a repeat of the unbounded run, and two bounds never share a fingerprint.

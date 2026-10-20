@@ -63,7 +63,7 @@ describe('writeConversation with the secret guard on', () => {
     process.env.RENOR_SECRET_GUARD = '1';
     const guarded = await writeConversation(vault, 'Claude Code/Conversations', conversation('Please fix the login redirect, it loops.'));
     const bytes = fs.readFileSync(guarded, 'utf8');
-    delete process.env.RENOR_SECRET_GUARD;
+    process.env.RENOR_SECRET_GUARD = '0';
     const other = fs.mkdtempSync(path.join(os.tmpdir(), 'conv-guard-open-'));
     try {
       const open = await writeConversation(other, 'Claude Code/Conversations', conversation('Please fix the login redirect, it loops.'));
@@ -75,7 +75,7 @@ describe('writeConversation with the secret guard on', () => {
   });
 
   it('writes the same flagged transcript with the guard off, which is what the guard was stopping', async () => {
-    delete process.env.RENOR_SECRET_GUARD;
+    process.env.RENOR_SECRET_GUARD = '0';
     const file = await writeConversation(vault, 'Claude Code/Conversations', conversation(`please use this key: ${KEY}`));
     expect(fs.readFileSync(file, 'utf8')).toContain(KEY);
   });

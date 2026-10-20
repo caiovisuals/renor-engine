@@ -1,0 +1,33 @@
+{
+  "name": "renor",
+  "displayName": "Renor",
+  "version": "1.0.0",
+  "minClientVersions": {
+    "cursor": "3.13.0"
+  },
+  "description": "Durable memory for your coding agents: recall past decisions before answering, save the why that should outlive the session.",
+  "author": {
+    "name": "Renor"
+  },
+  "homepage": "https://renor.cloud",
+  "repository": "https://github.com/patrickpassosb/renor-engine",
+  "license": "AGPL-3.0-only",
+  "logo": "assets/logo.png",
+  "keywords": [
+    "renor",
+    "memory",
+    "context",
+    "recall",
+    "decisions",
+    "mcp"
+  ],
+  "category": "developer-tools",
+  "tags": [
+    "renor",
+    "memory",
+    "mcp",
+    "context"
+  ],
+  "skills": "./skills/",
+  "mcpServers": "./mcp.json"
+}

@@ -2,7 +2,7 @@
  * The write-path secret guard: tier 0 of the sensitivity guardrail
  * (docs/evals/results/SECRET-GUARD-TIER0-20261003.md).
  *
- * Behind RENOR_SECRET_GUARD, default OFF. With it on, every path that writes text into memory screens
+ * Behind RENOR_SECRET_GUARD, default ON (secretGuardEnabled). Every path that writes text into memory screens
  * it with the deterministic scanner first, before anything is written:
  *
  *   save     `remember` (both modes), `save_memory`, the daily-note writer, the conversation logger:
@@ -14,7 +14,7 @@
  *            retired-memory journal; restore is refused the same way, because it puts the text back
  *            into live memory (src/memorymap/memoryMap.ts).
  *
- * With it off, nothing here runs on any of those paths.
+ * With it off (RENOR_SECRET_GUARD=0, false, no or off), nothing here runs on any of those paths.
  *
  * The guard is a DecisionModel, so the write path asks the same `capture_gate` question the indexer
  * asks and refuses on `sensitive`. A model's second opinion, if one is ever approved, composes behind
@@ -26,10 +26,13 @@
 import { defaultDecisionModel, type DecisionModel, type DecisionRequest, type DecisionResult } from './decision-model';
 import { scanSecrets, type SecretFinding } from './secretScanner';
 
-/** RENOR_SECRET_GUARD (default OFF). Opt in with 1/true/yes/on. */
+/**
+ * RENOR_SECRET_GUARD (default ON, decided 2026-10-12). Off only when set to 0, false, no or off (any case). Unset, empty
+ * and any other value keep it on: a value the guard does not recognise must not switch the screen off.
+ */
 export function secretGuardEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
   const raw = (env.RENOR_SECRET_GUARD ?? '').trim().toLowerCase();
-  return raw === '1' || raw === 'true' || raw === 'yes' || raw === 'on';
+  return !(raw === '0' || raw === 'false' || raw === 'no' || raw === 'off');
 }
 
 /** A capture_gate `sensitive` verdict that also says what kind of thing was found (a fixed label, never input text). */
@@ -66,7 +69,7 @@ export type GuardAction = 'save' | 'retire' | 'restore';
 
 const APPEARS_TO_CONTAIN: Record<Exclude<Refusal, 'unavailable'>, string> = {
   credential: 'a credential (an API key, token, password, PIN or private key)',
-  identifier: 'a personal identifier (a payment card, government ID, email address or phone number)',
+  identifier: 'a personal identifier (a payment card, government ID or phone number)',
   sensitive: 'a credential or personal identifier',
 };
 

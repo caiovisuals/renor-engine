@@ -123,7 +123,7 @@ export function stem(word: string): string {
   return w;
 }
 
-function wordsOf(text: string): string[] {
+export function wordsOf(text: string): string[] {
   return text.toLowerCase().match(/[a-z][a-z0-9]*(?:['’][a-z]+)?/g) ?? [];
 }
 
@@ -163,14 +163,14 @@ export function choiceOptions(query: string): Set<string>[] | null {
 
 // ---- sentences -----------------------------------------------------------------------------------------------------
 
-const FIRST_PERSON = /\b(?:i|me|my|mine|we|our|ours)\b/i;
+export const FIRST_PERSON = /\b(?:i|me|my|mine|we|our|ours)\b/i;
 // A request is not an event: "Can you recommend ...", "I'm looking for ...", "I was wondering ...".
 const REQUEST = /^(?:can|could|would|will|do|does|did|is|are|what|how|why|where|which|who|please|any|tell me|help me|give me|show me|let me know|i(?:'m| am) (?:looking|wondering|trying to find|curious|hoping)|i (?:need|want|was wondering|would like|am looking)|i'd like)\b/i;
 
 // The verbs a question about events leans on. They are how the user's statement is worded, not what it is about: "visited",
 // "attended" and "took her to" are all a visit to a museum, so a sentence is picked for the nouns and names a question holds,
 // and one of these only adds to a sentence that already has one.
-const GENERIC_VERBS = new Set([
+export const GENERIC_VERBS = new Set([
   'visit', 'attend', 'go', 'went', 'take', 'took', 'participate', 'watch', 'buy', 'bought', 'purchase', 'get', 'got', 'meet', 'met',
   'join', 'finish', 'complete', 'read', 'play', 'see', 'saw', 'fly', 'flew', 'use', 'try', 'do', 'make', 'made', 'have', 'receive',
   'sign', 'book', 'order', 'cancel', 'set', 'hear', 'heard', 'start', 'began', 'begin', 'come', 'came', 'give', 'gave', 'find', 'found',
@@ -183,7 +183,7 @@ const TIME_MARK = /\b(?:today|yesterday|ago|last|tonight|recently|just|finally|a
 // A plan, a wish or a request is not something that happened.
 const PLAN = /\b(?:planning|plan to|plan on|plans? (?:a|an|my|our|the|for)|going to|gonna|want to|wanna|thinking (?:of|about)|wondering|hoping|hope to|looking (?:for|to)|need to|would like|i'd like|if you|can you|could you|interested in|considering|might|maybe|should i)\b/i;
 
-function stripHeading(text: string): string {
+export function stripHeading(text: string): string {
   return text.replace(/^\s*#{1,6}[^\n]*\n+/, '');
 }
 

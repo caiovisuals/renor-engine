@@ -197,11 +197,15 @@ describe('EvidenceExtractor', () => {
 });
 
 describe('gating', () => {
-  it('resolves modes from env with the always default and rejects invalid values', () => {
-    expect(resolveEvidenceMode({})).toBe('always');
-    expect(resolveEvidenceMode({ RENOR_EVIDENCE_MODE: '   ' })).toBe('always');
+  it('resolves modes from env with the off default and rejects invalid values', () => {
+    // Self-hosted: the pass sends notes to a provider, so it runs only when the user turns it on.
+    expect(resolveEvidenceMode({})).toBe('off');
+    expect(resolveEvidenceMode({ RENOR_EVIDENCE_MODE: '' })).toBe('off');
+    expect(resolveEvidenceMode({ RENOR_EVIDENCE_MODE: '   ' })).toBe('off');
     expect(resolveEvidenceMode({ RENOR_EVIDENCE_MODE: 'auto' })).toBe('auto');
     expect(resolveEvidenceMode({ RENOR_EVIDENCE_MODE: 'always' })).toBe('always');
+    expect(resolveEvidenceMode({ RENOR_EVIDENCE_MODE: ' Always ' })).toBe('always');
+    expect(resolveEvidenceMode({ RENOR_EVIDENCE_MODE: 'on' })).toBe('always');
     expect(resolveEvidenceMode({ RENOR_EVIDENCE_MODE: 'OFF' })).toBe('off');
     expect(() => resolveEvidenceMode({ RENOR_EVIDENCE_MODE: 'sometimes' })).toThrow(/Invalid RENOR_EVIDENCE_MODE/);
   });

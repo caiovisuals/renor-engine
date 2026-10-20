@@ -160,7 +160,7 @@ export async function appendDailyEntry(
   }
   const text = checkedNoteText(entry.text);
 
-  // RENOR_SECRET_GUARD (default OFF): refuse a note that looks like it carries a secret before anything is
+  // RENOR_SECRET_GUARD (default ON): refuse a note that looks like it carries a secret before anything is
   // written, the directory included. The source is scanned as it will be stored, and joined: removing characters
   // can join the pieces of a key that were spaced apart (sourceFormsForGuard).
   if (secretGuardEnabled()) {

@@ -25,9 +25,4 @@ export const KNOWN_FAILURES: Record<string, KnownFailure> = {
     signature: { injected: true },
     userImpact: 'Medium. The export is the portable archive a user or a downstream tool parses to re-import or audit memory; a stored value that carries a line separator forges a section header or a note item inside the byte-faithful ledger section, so a Unicode-line-aware importer reads structure the exporter never wrote. Requires a crafted (or copied-from-elsewhere) value, and only affects consumers that treat U+2028/U+2029/U+0085 as line ends.',
   },
-  secret_guard_default_off: {
-    evidence: 'With RENOR_SECRET_GUARD unset — the product default (src/extraction/secretGuard.ts secretGuardEnabled) — remember accepted a statement holding an OpenAI-style project key and stored it: the save succeeded (isError=false), memory_status counted 1 note, and the secret\'s last 14 characters were found verbatim in the workspace files. The write-path guard is opt-in, so a deployment running the default stores key-shaped secrets in plaintext memory and any later recall carries them into an agent\'s reply.',
-    signature: { refused: false, notes: 1, leaked: true },
-    userImpact: 'High when it matters. Any deployment on the product default has no secret screening at all: an agent told "the staging key is X, keep it somewhere safe" stores X in plaintext, and the next recall of that note leaks the key to whatever agent reads it. Opt-in today, so the exposure is silent until the default flips or the guard is turned on.',
-  },
 };

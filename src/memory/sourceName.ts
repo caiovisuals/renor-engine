@@ -167,15 +167,25 @@ export function productFromUserAgent(userAgent: unknown): string | undefined {
 }
 
 /**
- * The prefix every imported fact's ledger source carries (importing/plan.ts). A named connection's author is a header
- * name, which has no colon, so a named agent cannot write it; an unnamed client that types it is marked untrusted too,
- * which errs on the side of the warning.
+ * The prefix every imported fact's ledger source carries (importing/plan.ts), and only an import's: it is how a read tells
+ * an imported fact from an agent's save. A named connection's author is a header name, which has no colon, so a named agent
+ * cannot write it; a source a caller chose (typed, or the product in its User-Agent) is kept off it by savedSource.
  */
 export const IMPORT_SOURCE_PREFIX = 'import:';
 
 /** Whether a stored source names an import (`import:markdown`, `import:renor-index`). */
 export function isImportSource(source: string | null | undefined): boolean {
   return typeof source === 'string' && source.startsWith(IMPORT_SOURCE_PREFIX);
+}
+
+/**
+ * The ledger source of a save a caller made (remember, save_memory, retire, restore): `cleanSource`, with the import prefix
+ * written as a hyphen (`import:markdown` is `import-markdown`, as a note header writes it), so no caller records a save
+ * the way an import is recorded. The import path writes its events itself and never comes through here.
+ */
+export function savedSource(source: string): string {
+  const name = cleanSource(source);
+  return isImportSource(name) ? `import-${name.slice(IMPORT_SOURCE_PREFIX.length)}` : name;
 }
 
 /**

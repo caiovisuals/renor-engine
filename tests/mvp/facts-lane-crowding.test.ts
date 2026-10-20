@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, beforeAll, afterAll } from 'vitest';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
@@ -66,6 +66,12 @@ function createWorkspace() {
 
   return { dir, db, engine, put, getContext };
 }
+
+// The secret guard is on by default. These tests store fixture text that the guard refuses (a credential-shaped or an
+// identifier-shaped sentence that is incidental to what each test checks), so they run with it explicitly off.
+const SAVED_GUARD = process.env.RENOR_SECRET_GUARD;
+beforeAll(() => { process.env.RENOR_SECRET_GUARD = '0'; });
+afterAll(() => { if (SAVED_GUARD === undefined) delete process.env.RENOR_SECRET_GUARD; else process.env.RENOR_SECRET_GUARD = SAVED_GUARD; });
 
 describe('facts lane crowding resolution (P2)', () => {
   it('joins word sequences with trailing single letters/digits (Lane J -> lanej)', () => {

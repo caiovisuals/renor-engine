@@ -8,7 +8,7 @@ import { runMigrations } from '../../src/db/schema';
 import { appendLedgerEvent, replayLedger } from '../../src/memory/lifecycle';
 import { readBundleSource, readSource } from '../../src/importing/source';
 import { buildImportPlan } from '../../src/importing/plan';
-import { applyImportPlan } from '../../src/importing/apply';
+import { applyImportPlan, ImportStorageLimitError } from '../../src/importing/apply';
 import { renderNoteMarkdown } from '../../src/importing/serialize';
 import { run as runCli } from '../../src/importing/cli';
 import { BUNDLE_FORMAT, ImportBundle } from '../../src/importing/types';
@@ -871,5 +871,26 @@ describe('import safety — the failure text reports the residual, and only the 
     // The writes really did commit, which is why there is nothing to roll back.
     expect(listImportedMarkdown(destination.memoryDir)).toEqual(['Imported/src/Projects/Alpha/plan.md']);
     expect(countsAt(destination.dbPath).notes).toBeGreaterThan(0);
+  });
+});
+
+
+describe('import storage ceiling', () => {
+  it('rolls back every imported byte when the measured result would cross the limit', async () => {
+    const file = writeBundle([noteRecord('Projects/Alpha/plan.md')]);
+    const destination = buildEmptyWorkspace();
+    const bundle = readSource(`bundle:${file}`, { include: [], exclude: [] });
+    const plan = buildImportPlan(bundle, { namespace: 'Imported/src', label: 'src', eventSource: 'import:src' });
+
+    await expect(applyImportPlan(plan, bundle, {
+      ...destination,
+      validateBeforeCommit: () => { throw new ImportStorageLimitError('storage limit'); },
+    })).rejects.toThrow('storage limit');
+
+    expect(listImportedMarkdown(destination.memoryDir)).toEqual([]);
+    const db = openDb(destination.dbPath);
+    try {
+      expect((db.prepare('SELECT count(*) AS n FROM notes').get() as { n: number }).n).toBe(0);
+    } finally { db.close(); }
   });
 });

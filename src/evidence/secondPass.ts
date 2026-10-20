@@ -15,7 +15,7 @@ import { EvidenceCache, type EvidenceFailureEntry } from './evidenceCache';
  *   - content-addressed caching (exact rendered prompt -> parsed items, and,
  *     for a day, a reply that was not a table: EVIDENCE_FAILURE_TTL_MS);
  *   - session selection matching the promoted arm (20 sessions, 6,000 chars/session);
- *   - gating (off | auto | always), default always, with an explicit off switch.
+ *   - gating (off | auto | always), default off (src/evidence/gate.ts).
  */
 
 export const EVIDENCE_PROMPT_TEMPLATE = `You extract evidence items from a user's dated conversation history.

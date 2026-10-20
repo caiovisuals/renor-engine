@@ -8,7 +8,8 @@ import { scanSecrets } from '../../src/extraction/secretScanner';
 /**
  * The headline of docs/evals/results/SECRET-GUARD-TIER0-20261003.md, made executable: the sets are the decision-layer
  * investigation's own, regenerated exactly (scripts/eval/secret-guard/investigationSets.ts), so anyone can rerun
- * 229 / 243 and 9 / 200 from this repository.
+ * 229 / 243 and 9 / 200 with the 2026-10-03 scanner, 234 / 243 with the 2026-10-12 scanner, and 225 / 243 with the
+ * 2026-10-13 scanner (value-shape checks, option b identifiers) from this repository.
  *
  * Everything here is synthetic. The sets are pinned by a hash of their texts, so this file holds no key-shaped literal,
  * and a change to a generator, to the Python-compatible random stream under it, or to the scanner is a visible edit.
@@ -20,11 +21,13 @@ import { scanSecrets } from '../../src/extraction/secretScanner';
 const T3_SYNTHETIC_SHA256 = '7baae89a130fb01d023b0896d5adffa1e49eaf815d72c28cc800bee114d2b348'; // 343 texts joined by a newline
 const T3_FULL_SHA256 = 'e3c423c2cbd5470a82e79d2c2ab2c762aa9dedbdf4f8a1660be4a0b69dbb6b82'; // 443 texts: with the natural turns
 const ROBUSTNESS_SHA256 = 'bc68076a0841c98c8a93e33519494737dd88cc2ef05b37190249261f7b449d24'; // 70 texts
-// SHA-256 of the verdicts (block, redact or store, one per item, joined by a newline) that the investigation's own
-// scanner (scanner.py, its report's Appendix E) gave these same items. A scanner that answers the same on every item
-// hashes the same.
-const PYTHON_T3_VERDICTS_SHA256 = '0216c4055b5c553fa4de245fe03d7d8a7af714fba70c66decf3553073c03ed83';
-const PYTHON_ROBUSTNESS_VERDICTS_SHA256 = 'db9e6fef3e7e95429b48cc0449c6465489ed33a2c56752ba508038ad58774961';
+// SHA-256 of the verdicts (block, redact or store, one per item, joined by a newline) that the scanner gives these items.
+// The 2026-10-03 investigation scanner (scanner.py, its report's Appendix E) hashed to 0216c405...; the 2026-10-12 scanner
+// differed on five store items that were block (the Portuguese connector, see secretScanner.ts item 5). The 2026-10-13
+// scanner differs again: the 14 email addresses are store (owner decision "option b"), the 6 placeholders are store, 3 more
+// phone numbers and 2 more 32-hex tokens are caught (183 block, 45 redact, 115 store). The 2026-10-12 hashes were ac75a68f... and db9e6fef...
+const T3_VERDICTS_SHA256 = '4b0960d803c5ad1732ce040a36c48aa98dab562dcd456f5ff6fa6ab02862a9a5';
+const ROBUSTNESS_VERDICTS_SHA256 = 'fcd1f239d82057bced049db4065cf0bb80e42793a43632632cbc77b2f668dab2';
 
 /** How many items of each kind the scanner flags: [flagged, items]. */
 function flaggedByKind(items: ReadonlyArray<{ kind: string; text: string }>): Record<string, [number, number]> {
@@ -79,50 +82,51 @@ describe('the scanner against the investigation\'s own', () => {
   };
   const sha = (lines: string[]) => crypto.createHash('sha256').update(lines.join('\n')).digest('hex');
 
-  it('gives, item by item, the verdict the investigation\'s scanner gave: 182 block, 56 redact, 105 store on T3', () => {
+  it('gives, item by item, the 2026-10-13 verdicts on T3: 183 block, 45 redact, 115 store (the 2026-10-12 scanner gave 187, 56 and 100)', () => {
     const items = buildInvestigationT3();
     const verdicts = items.map(i => verdict(i.text));
-    expect(sha(verdicts)).toBe(PYTHON_T3_VERDICTS_SHA256);
-    expect([verdicts.filter(v => v === 'block').length, verdicts.filter(v => v === 'redact').length, verdicts.filter(v => v === 'store').length]).toEqual([182, 56, 105]);
+    expect(sha(verdicts)).toBe(T3_VERDICTS_SHA256);
+    expect([verdicts.filter(v => v === 'block').length, verdicts.filter(v => v === 'redact').length, verdicts.filter(v => v === 'store').length]).toEqual([183, 45, 115]);
   });
 
-  it('and on the robustness set: 56 block, 4 redact, 10 store', () => {
+  it('and on the robustness set: 56 block, 0 redact, 14 store (the 2026-10-12 scanner gave 56, 4 redact and 10 store: the 4 long benign texts are store)', () => {
     const verdicts = buildInvestigationRobustness().map(i => verdict(i.text));
-    expect(sha(verdicts)).toBe(PYTHON_ROBUSTNESS_VERDICTS_SHA256);
-    expect([verdicts.filter(v => v === 'block').length, verdicts.filter(v => v === 'redact').length, verdicts.filter(v => v === 'store').length]).toEqual([56, 4, 10]);
+    expect(sha(verdicts)).toBe(ROBUSTNESS_VERDICTS_SHA256);
+    expect([verdicts.filter(v => v === 'block').length, verdicts.filter(v => v === 'redact').length, verdicts.filter(v => v === 'store').length]).toEqual([56, 0, 14]);
   });
 });
 
-describe('229 / 243, on the investigation\'s T3 set', () => {
+describe('225 / 243, on the investigation\'s T3 set (229 / 243 with the 2026-10-03 scanner, 234 / 243 with the 2026-10-12 one)', () => {
   const r = measureSet('t3', buildInvestigationT3());
 
-  it('refuses 229 of the 243 planted items: 176 of 187 credentials, 53 of 56 personal data', () => {
+  it('refuses 225 of the 243 planted items: 183 of 187 credentials, 42 of 56 personal data (the 14 email addresses are allowed)', () => {
     expect(r.planted).toBe(243);
-    expect(r.refuse.recall).toEqual([229, 243]);
-    expect(r.refuse.credentialRecall).toEqual([176, 187]);
-    expect(r.refuse.identifierRecall).toEqual([53, 56]);
+    expect(r.refuse.recall).toEqual([225, 243]);
+    expect(r.refuse.credentialRecall).toEqual([183, 187]);
+    expect(r.refuse.identifierRecall).toEqual([42, 56]);
   });
 
   it('what it misses is the investigation\'s list, and nothing else', () => {
-    expect(r.refuse.missed).toEqual({ 'key:twilio': 3, 'key:hex64': 1, nl_credential: 7, pii_phone: 3 });
+    expect(r.refuse.missed).toEqual({ 'key:twilio': 1, 'key:hex64': 1, nl_credential: 2, pii_email: 14 });
   });
 
-  it('refuses 9 of the 100 hard benign texts (the other 100 of the 200 are the natural turns): 6 placeholders and 3 tracking numbers', () => {
+  it('refuses 3 of the 100 hard benign texts (the other 100 of the 200 are the natural turns): 3 tracking numbers, no placeholder', () => {
     expect(r.benign).toBe(100);
-    expect(r.refuse.falseBlock).toEqual([9, 100]);
-    expect(r.refuse.falseBlockKinds).toEqual({ 'benign:placeholder': 6, 'benign:tracking': 3 });
+    expect(r.refuse.falseBlock).toEqual([3, 100]);
+    expect(r.refuse.falseBlockKinds).toEqual({ 'benign:tracking': 3 });
   });
 
   it('matches every per-kind count the investigation\'s report gives', () => {
     const k = flaggedByKind(buildInvestigationT3());
-    expect(k.nl_credential).toEqual([33, 40]); // credentials said in words
-    expect([k['key:twilio'], k['key:hex64']]).toEqual([[4, 7], [6, 7]]); // bare 32- and 64-hex: 4 of 7 in the 32-hex case
-    expect(k.pii_phone).toEqual([11, 14]);
-    expect(k['benign:placeholder']).toEqual([6, 10]);
+    expect(k.nl_credential).toEqual([38, 40]); // credentials said in words
+    expect([k['key:twilio'], k['key:hex64']]).toEqual([[6, 7], [6, 7]]); // bare 32- and 64-hex: 6 of 7 each (after "key:" or "Bearer")
+    expect(k.pii_phone).toEqual([14, 14]);
+    expect(k.pii_email).toEqual([0, 14]); // email addresses are allowed
+    expect(k['benign:placeholder']).toEqual([0, 10]); // a placeholder is not a credential
     expect(k['benign:tracking']).toEqual([3, 10]);
     // every other kind of provider key, key block, URL with a password, and secret inside useful text is caught
     for (const kind of Object.keys(k).filter(x => x.startsWith('key:') && x !== 'key:twilio' && x !== 'key:hex64')) expect(k[kind], kind).toEqual([7, 7]);
-    for (const kind of ['pem', 'conn_string', 'secret_in_useful_text', 'pii_email', 'pii_card']) expect(k[kind][0], kind).toBe(k[kind][1]);
+    for (const kind of ['pem', 'conn_string', 'secret_in_useful_text', 'pii_card', 'pii_passport', 'pii_ssn', 'pii_ni']) expect(k[kind][0], kind).toBe(k[kind][1]);
     // and the other seven kinds of benign text are left alone: git hashes, UUIDs, checksums, a data URI, versions and
     // addresses, talk about secrets, ordinary numbers and names
     for (const kind of Object.keys(k).filter(x => x.startsWith('benign:') && x !== 'benign:placeholder' && x !== 'benign:tracking')) expect(k[kind][0], kind).toBe(0);
@@ -132,23 +136,25 @@ describe('229 / 243, on the investigation\'s T3 set', () => {
 describe('refuse against redact, on the investigation\'s T3 set (the table in the results doc)', () => {
   const r = measureSet('t3', buildInvestigationT3());
 
-  it('match-span redaction protects 217 of 243 and leaves 12 flagged items still holding a planted value', () => {
-    expect(r.redactMatch.detected).toEqual([229, 243]);
-    expect(r.redactMatch.leakFree).toEqual([217, 243]);
-    expect(r.redactMatch.flaggedStillLeaking).toBe(12);
+  it('match-span redaction protects 215 of 243 and leaves 10 flagged items still holding a planted value', () => {
+    expect(r.redactMatch.detected).toEqual([225, 243]);
+    expect(r.redactMatch.leakFree).toEqual([215, 243]);
+    expect(r.redactMatch.flaggedStillLeaking).toBe(10);
   });
 
-  it('extended-span redaction protects 229 of 243, and costs about two thirds of every false positive', () => {
-    expect(r.redactExtended.leakFree).toEqual([229, 243]);
+  it('extended-span redaction protects 225 of 243; with only 3 false positives left it replaces 42 of their 126 characters', () => {
+    // 353 of 522 (two thirds) with the 2026-10-12 scanner, whose false positives were ordinary sentences: that cost is what made the
+    // 2026-10-03 decision refuse rather than redact, and it falls with them (data/renor-secret-guard-accuracy/report.md).
+    expect(r.redactExtended.leakFree).toEqual([225, 243]);
     expect(r.redactExtended.flaggedStillLeaking).toBe(0);
-    expect(r.redactMatch.alteredItemCharsReplaced).toEqual([180, 522]);
-    expect(r.redactExtended.alteredItemCharsReplaced).toEqual([353, 522]);
+    expect(r.redactMatch.alteredItemCharsReplaced).toEqual([42, 126]);
+    expect(r.redactExtended.alteredItemCharsReplaced).toEqual([42, 126]);
   });
 
-  it('a refusal stores nothing, so nothing leaks: the same 229 flagged items, no leak count to report', () => {
+  it('a refusal stores nothing, so nothing leaks: the same 225 flagged items, no leak count to report', () => {
     expect(r.refuse.recall[0]).toBe(r.redactExtended.leakFree[0]);
-    expect(r.redactMatch.falseRedact).toEqual([9, 100]);
-    expect(r.redactExtended.falseRedact).toEqual([9, 100]);
+    expect(r.redactMatch.falseRedact).toEqual([3, 100]);
+    expect(r.redactExtended.falseRedact).toEqual([3, 100]);
     expect(r.redactMatch.residualFlagged).toBe(0);
     expect(r.redactExtended.residualFlagged).toBe(0);
   });
@@ -168,11 +174,11 @@ describe('the robustness set', () => {
     for (const kind of ['obfuscated:base64', 'obfuscated:reversed', 'obfuscated:split', 'obfuscated:spoken']) expect(k[kind], kind).toEqual([4, 4]);
   });
 
-  it('refuses 56 of 60 and 4 of the 10 long benign texts', () => {
+  it('refuses 56 of 60 and none of the 10 long benign texts (4 of 10 before 2026-10-13)', () => {
     expect(r.refuse.recall).toEqual([56, 60]);
     expect(r.refuse.missed).toEqual({ 'obfuscated:spaced': 4 });
-    expect(r.refuse.falseBlock).toEqual([4, 10]);
-    expect(r.refuse.falseBlockKinds).toEqual({ long_benign: 4 });
+    expect(r.refuse.falseBlock).toEqual([0, 10]);
+    expect(r.refuse.falseBlockKinds).toEqual({});
   });
 
   it('a split key survives both redactors, and a refusal protects it: 4 of 44 leak after a redaction, none after a refusal', () => {
@@ -188,7 +194,7 @@ describe('investigationSets()', () => {
     const [t3, robustness] = investigationSets();
     expect([t3.name, t3.items, t3.textsSha256]).toEqual(['investigation:t3-synthetic', 343, T3_SYNTHETIC_SHA256]);
     expect([robustness.name, robustness.items, robustness.textsSha256]).toEqual(['investigation:robustness', 70, ROBUSTNESS_SHA256]);
-    expect(t3.refuse.recall).toEqual([229, 243]);
+    expect(t3.refuse.recall).toEqual([225, 243]);
   });
 });
 
@@ -197,7 +203,7 @@ describe('investigationSets()', () => {
 // It is skipped, and shown as skipped, wherever the dataset is not.
 const DATASET = process.env.RENOR_LONGMEMEVAL_S;
 
-describe.skipIf(!DATASET)('9 / 200 and 28 / 82,724, on the benchmark LongMemEval-S (skipped unless RENOR_LONGMEMEVAL_S names longmemeval_s.json: the benchmark is not in git; see the results doc)', () => {
+describe.skipIf(!DATASET)('3 / 200 and 0 / 82,724, on the benchmark LongMemEval-S (skipped unless RENOR_LONGMEMEVAL_S names longmemeval_s.json: the benchmark is not in git; see the results doc)', () => {
   const questions = DATASET ? readLongMemEval(DATASET) : [];
 
   it('rebuilds the 100 natural turns as the pinned ones, and measures the investigation\'s headline', () => {
@@ -205,16 +211,18 @@ describe.skipIf(!DATASET)('9 / 200 and 28 / 82,724, on the benchmark LongMemEval
     expect(t3.name).toBe('investigation:t3');
     expect([t3.items, t3.planted, t3.benign]).toEqual([443, 243, 200]);
     expect(t3.textsSha256).toBe(T3_FULL_SHA256);
-    expect(t3.refuse.recall).toEqual([229, 243]);
-    expect(t3.refuse.falseBlock).toEqual([9, 200]);
-    expect(t3.refuse.falseBlockKinds).toEqual({ 'benign:placeholder': 6, 'benign:tracking': 3 }); // none of the natural turns
-    expect(t3.redactExtended.alteredItemCharsReplaced).toEqual([353, 522]);
+    // Run with the dataset on 2026-10-13: the 100 natural turns add no flag, so these are the synthetic 343's numbers.
+    expect(t3.refuse.recall).toEqual([225, 243]);
+    expect(t3.refuse.falseBlock).toEqual([3, 200]);
+    expect(t3.refuse.falseBlockKinds).toEqual({ 'benign:tracking': 3 }); // none of the natural turns
+    expect(t3.redactExtended.alteredItemCharsReplaced).toEqual([42, 126]);
   }, 120_000);
 
-  it('refuses 28 of the 82,724 user turns of the benchmark: 0.034 %, 27 on a cue word and 1 phone number', () => {
+  it('refuses none of the 82,724 user turns of the benchmark (28 with the 2026-10-03 scanner, 17 with the 2026-10-12 one: 16 on a cue word and 1 phone number)', () => {
+    // Pinned from a run with the dataset on 2026-10-13. The 28 and 17 were cue words followed by prose; the value check stores them.
     const natural = measureNaturalTurns(questions);
-    expect([natural.texts, natural.flagged]).toEqual([82724, 28]);
-    expect(natural.byRule).toEqual({ 'credential-in-words': 27, phone: 1 });
-    expect(natural.charsReplaced).toEqual({ match: [851, 8355], extended: [4208, 8355] });
+    expect([natural.texts, natural.flagged]).toEqual([82724, 0]);
+    expect(natural.byRule).toEqual({});
+    expect(natural.charsReplaced).toEqual({ match: [0, 0], extended: [0, 0] });
   }, 120_000);
 });

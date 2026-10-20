@@ -39,7 +39,7 @@ const mkdb = () => {
 };
 
 beforeEach(() => {
-  delete process.env.RENOR_SECRET_GUARD; // off, as shipped; the guard's own describe turns it on
+  process.env.RENOR_SECRET_GUARD = '0'; // off for these tests; the guard's own describe turns it on
 });
 afterEach(() => {
   if (SAVED_GUARD === undefined) delete process.env.RENOR_SECRET_GUARD;
@@ -186,11 +186,18 @@ describe('a fact stores the name a path ends in', () => {
     const vault = mkdir('vault');
     const db = mkdb();
     const NAMES: Array<[string | undefined, string]> = [
-      ['claude', 'claude'], ['Claude Code', 'Claude Code'], ['mcp:remember', 'mcp:remember'], ['import:markdown', 'import:markdown'],
+      ['claude', 'claude'], ['Claude Code', 'Claude Code'], ['mcp:remember', 'mcp:remember'],
       ['claude.ai', 'claude.ai'], ['São Paulo', 'São Paulo'], [undefined, 'agent'],
     ];
     for (const [sent] of NAMES) await saveFact(db, vault, sent);
     expect(ledgerSources(vault)).toEqual(NAMES.map(([, stored]) => stored));
+  });
+
+  it('stores a caller source that claims the import prefix with a hyphen, so a save is never recorded as an import (PR 735)', async () => {
+    const vault = mkdir('vault');
+    const db = mkdb();
+    for (const sent of ['import:markdown', 'import:x']) await saveFact(db, vault, sent);
+    expect(ledgerSources(vault)).toEqual(['import-markdown', 'import-x']);
   });
 
   it('stores a source with no name in it as the default, like one that was not sent, never as a blank line', async () => {

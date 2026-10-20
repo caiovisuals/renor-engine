@@ -215,6 +215,7 @@ describe('finding 15: search_memory says which state the evidence second pass is
     const memoryDir = await vaultWithNote('# Mango notes\n\nRowan likes mango juice.\n', 'People/Rowan.md');
     process.env.RENOR_EVIDENCE_BASE_URL = `http://127.0.0.1:${chatPort}/v1`;
     process.env.RENOR_EVIDENCE_API_KEY = 'synthetic-local-key';
+    process.env.RENOR_EVIDENCE_MODE = 'always'; // the engine's unset default is off (src/evidence/gate.ts)
     const client = await searchService(memoryDir);
 
     const res = await call(client, 'search_memory', { query: 'favorite drink' });
@@ -261,6 +262,7 @@ describe('finding 15: search_memory says which state the evidence second pass is
     const memoryDir = await vaultWithNote('# Session\n\nWe went camping for 3 days near the lake.\n', 'Sessions/s.md');
     process.env.RENOR_EVIDENCE_BASE_URL = `http://127.0.0.1:${chatPort}/v1`;
     process.env.RENOR_EVIDENCE_API_KEY = 'synthetic-local-key';
+    process.env.RENOR_EVIDENCE_MODE = 'always'; // the engine's unset default is off (src/evidence/gate.ts)
     const client = await searchService(memoryDir);
 
     const res = await call(client, 'search_memory', { query: 'How many days was the camping trip?' });

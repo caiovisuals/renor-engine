@@ -178,7 +178,7 @@ describe('the plan (guard on): a note or fact that looks like a secret is left o
   it('is still the same plan for a bundle with nothing in it that looks like a secret', () => {
     const clean = bundleOf([note('A/a.md', '# A\n\nplain\n'), note('B/b.md', '# B\n\nalso plain\n')], [fact('Rowan', 'works_at', 'Memory Company')]);
     const guarded = buildImportPlan(clean, OPTIONS);
-    delete process.env.RENOR_SECRET_GUARD;
+    process.env.RENOR_SECRET_GUARD = '0';
     const open = buildImportPlan(clean, OPTIONS);
     expect(guarded.skipped.secretGuard).toEqual({ notes: [], events: [] });
     // The only difference is that the guarded plan says it screened.
@@ -186,7 +186,7 @@ describe('the plan (guard on): a note or fact that looks like a secret is left o
   });
 
   it('with the guard off leaves everything in, and the plan has no trace of the guard', () => {
-    delete process.env.RENOR_SECRET_GUARD;
+    process.env.RENOR_SECRET_GUARD = '0';
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const plan: ImportPlan = buildImportPlan(mixedBundle(), OPTIONS);
     expect(plan.notes).toHaveLength(9);
@@ -201,7 +201,7 @@ describe('apply (guard on): a plan that still holds one is refused whole, before
   /** What a caller that built its plan with the guard off, or by hand, would hand to apply. */
   function unscreenedPlan(bundle: ImportBundle): ImportPlan {
     const saved = process.env.RENOR_SECRET_GUARD;
-    delete process.env.RENOR_SECRET_GUARD;
+    process.env.RENOR_SECRET_GUARD = '0';
     try {
       return buildImportPlan(bundle, OPTIONS);
     } finally {
@@ -282,7 +282,7 @@ describe('apply (guard on): a plan that still holds one is refused whole, before
   });
 
   it('with the guard off, applies the same plan in full, which is what the guard was stopping', async () => {
-    delete process.env.RENOR_SECRET_GUARD;
+    process.env.RENOR_SECRET_GUARD = '0';
     const bundle = mixedBundle();
     const plan = buildImportPlan(bundle, OPTIONS);
     const memoryDir = mkdir('dest');
@@ -398,7 +398,7 @@ describe('the operator boundary (guard on): renor-import over a real folder, wit
   });
 
   it('with the guard off, imports all of it and says nothing about the guard', async () => {
-    delete process.env.RENOR_SECRET_GUARD;
+    process.env.RENOR_SECRET_GUARD = '0';
     const src = sourceFolder();
     const dest = mkdir('dest');
     const { code, said } = await cli(['--from', `markdown:${src}`, '--to', dest, '--apply', '--namespace', 'Imported/src']);

@@ -1,4 +1,5 @@
 import { defineConfig } from 'vitest/config';
+import DurationSequencer from './tests/setup/durationSequencer.mjs';
 
 export default defineConfig({
   test: {
@@ -6,6 +7,9 @@ export default defineConfig({
     environment: 'node',
     // The suite's fictional owner: identity aliases come from RENOR_OWNER_NAMES, which is unset by default.
     env: { RENOR_OWNER_NAMES: 'Rowan,Rowan Vale,Rowan Vale Holm' },
+    // Start the slowest files first (vitest's own cache, else the seconds recorded in tests/setup/test-durations.json), so no worker is
+    // left holding the longest file after the others are done. It only orders; it selects and skips nothing.
+    sequence: { sequencer: DurationSequencer },
     include: ['tests/**/*.test.ts'],
     // Every worker gets the backstop that kills process groups a suite left behind when the
     // runner is signalled (gate timeout, Ctrl-C) — the per-file afterEach cannot run in that case.

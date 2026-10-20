@@ -11,7 +11,7 @@ import { canonicalSubject, indexFactTerms, prepareOnce, statementTerms, unindexF
 import { MAX_STATEMENT_LENGTH } from './limits';
 import { appendConfined, createConfined, withConfinedFile } from './confinedWrite';
 import { isBlankOrInvisible } from './invisibleText';
-import { cleanSource } from './sourceName';
+import { savedSource } from './sourceName';
 import { displacementsAfter, hasOpenDisplacementBy, type ClosedFact } from './writerConflicts';
 import { withAppendLock } from './durableAppend';
 import { assertStorable, secretGuardEnabled, SecretRefusedError } from '../extraction/secretGuard';
@@ -1538,7 +1538,7 @@ async function repeatsCurrentEvent(
 }
 
 /**
- * RENOR_SECRET_GUARD (default OFF): refuse a write whose text looks like a secret, before the ledger or the
+ * RENOR_SECRET_GUARD (default ON): refuse a write whose text looks like a secret, before the ledger or the
  * index is touched. The subject, predicate and object are scanned as one line, "subject predicate: object",
  * because a credential is usually stated across them (predicate wifi_password, object the password) and
  * neither field carries the cue on its own.
@@ -1565,8 +1565,8 @@ async function rememberCritical(db: Database.Database, vaultPath: string, ledger
   // a long name is cut and control characters are dropped, before anything is judged, so the checks below and the secret
   // guard see the form that is stored and neither a long path nor a stray newline loses the whole save. A source with no
   // name left in it (blank, or only separators or controls) is stored as the default, like one that was not sent. A source
-  // that is not a string is left for validateField.
-  const args = typeof sent.source === 'string' ? { ...sent, source: cleanSource(sent.source) } : sent;
+  // that is not a string is left for validateField. The import prefix is an import's alone (savedSource).
+  const args = typeof sent.source === 'string' ? { ...sent, source: savedSource(sent.source) } : sent;
   validateLifecycleInput(args);
   refuseUnstorableFields(args);
   if (secretGuardEnabled()) await refuseSecrets(args);
@@ -1699,7 +1699,7 @@ export async function retireFact(db: Database.Database, vaultPath: string, ledge
     const ev: LedgerEvent = {
       id: newEventId(), at: new Date().toISOString(), kind: 'retire',
       subject: row.subject, predicate: row.predicate, object: '', closedEvent: null,
-      source: (source === undefined ? '' : cleanSource(source)) || 'agent', scope: row.scope, target,
+      source: (source === undefined ? '' : savedSource(source)) || 'agent', scope: row.scope, target,
     };
     await appendLedgerEvent(vaultPath, ledgerRelPath, ev);
     applyEvent(db, ev);
@@ -1710,9 +1710,12 @@ export async function retireFact(db: Database.Database, vaultPath: string, ledge
 /**
  * Brings a retired fact back exactly as it was: the same row, value and dates. It is the current value again unless a
  * value saved for the same subject, predicate and scope after it replaced it, as that save would have replaced it had it
- * never been retired; it is then history. RENOR_SECRET_GUARD (default OFF) screens it as a save.
+ * never been retired; it is then history. RENOR_SECRET_GUARD (default ON) screens it as a save.
  */
-export async function restoreFact(db: Database.Database, vaultPath: string, ledgerRelPath: string, id: string, source?: string): Promise<FactRetirementReceipt> {
+export async function restoreFact(
+  db: Database.Database, vaultPath: string, ledgerRelPath: string, id: string, source?: string,
+  validateAfterWrite?: () => void | Promise<void>,
+): Promise<FactRetirementReceipt> {
   return serializeLifecycleWrite(async () => {
     const target = factEventId(id);
     if (target === null) throw new LifecycleInputError('id', `not a fact id: ${JSON.stringify(id)} (a fact's id is fact: and its eventId)`, 'invalid_argument');
@@ -1728,10 +1731,21 @@ export async function restoreFact(db: Database.Database, vaultPath: string, ledg
     const ev: LedgerEvent = {
       id: newEventId(), at: new Date().toISOString(), kind: 'restore',
       subject: row.subject, predicate: row.predicate, object: '', closedEvent: null,
-      source: (source === undefined ? '' : cleanSource(source)) || 'agent', scope: row.scope, target,
+      source: (source === undefined ? '' : savedSource(source)) || 'agent', scope: row.scope, target,
     };
+    const ledgerPath = resolveLedgerPath(vaultPath, ledgerRelPath);
+    const priorBytes = await fs.stat(ledgerPath).then((stat) => stat.size, () => 0);
     await appendLedgerEvent(vaultPath, ledgerRelPath, ev);
-    applyEvent(db, ev);
+    db.exec('SAVEPOINT restore_storage_limit');
+    try {
+      applyEvent(db, ev);
+      await validateAfterWrite?.();
+      db.exec('RELEASE SAVEPOINT restore_storage_limit');
+    } catch (err) {
+      db.exec('ROLLBACK TO SAVEPOINT restore_storage_limit; RELEASE SAVEPOINT restore_storage_limit');
+      await fs.truncate(ledgerPath, priorBytes);
+      throw err;
+    }
     const back = prepareOnce(db, 'SELECT valid_to FROM facts WHERE event_id = ?').get(target) as { valid_to: string | null };
     return { ok: true, id: `fact:${target}`, action: 'restored', title: factTitle(row.subject, row.predicate, row.object_text), at: ev.at, eventId: ev.id, current: back.valid_to === null };
   });

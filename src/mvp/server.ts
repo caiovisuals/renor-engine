@@ -68,6 +68,7 @@ import { readerLayoutEnabled, readerLayoutEnabledFor, readerLayoutOf, readerTime
 import { readerDurationNamed } from '../retrieval/questionSpan';
 import { noteTurnsLoader, readerEventsEnabled, readerEventsNamed, turnScorer, vectorsMeanSomething } from '../retrieval/readerEvents';
 import type { RetrievalProbe } from '../retrieval/semantic';
+import { searchBestFirstEnabled } from '../retrieval/orchestrator';
 import { readBuildIdentity } from '../buildIdentity';
 import { hostHeaderValidation } from '@modelcontextprotocol/sdk/server/middleware/hostHeaderValidation.js';
 import { LOCAL_API_HOSTNAMES } from '../api/apiAuth';
@@ -78,6 +79,7 @@ import { DEFAULT_MAP_LIMIT, buildMemoryMap, findMemories, purgeRetired, readMemo
 import { IdleMonitor } from './idle';
 import { ACTIVITY_PATH, ActivityGauge } from './activity';
 import { StoredSizeGauge } from './storedSize';
+import { measureMarkdownBytes } from './storedSize';
 import { escapeInvisibleControls, sanitizeErrorMessage } from './sanitize';
 import { unstorableControls } from '../memory/controls';
 import { labelMemoryText } from './hiddenSpans';
@@ -305,6 +307,51 @@ const SCOPE_ARG = omittedWhenBlank(z.string().optional()).describe(
 /** What a client is told a `source` is: the name of the app or agent saving, never a path (memory/sourceName.ts). */
 const SOURCE_ARG_DESCRIPTION = 'Name of the app or agent saving this, for example claude-code. Leave it out to use the connecting client. Never a file path or document name.';
 
+const RESERVED_SOURCE_IDENTITIES = new Set(['system', 'developer', 'assistant', 'renor', 'admin', 'owner', 'tool']);
+const CALLER_SOURCE_ASCII = /^[A-Za-z0-9 _.:/@-]+$/;
+/** A User-Agent product keeps its punctuation (cleanSource folds it) but may hold no character outside printable ASCII. */
+const USER_AGENT_PRODUCT_ASCII = /^[\x20-\x7e]+$/;
+const SOURCE_IDENTITY_SEPARATORS = /[ ._-]/g;
+
+/** Return the reserved identity a writer spelling claims, including the import-style prefix form. */
+function reservedSourceIdentity(source: string): string | null {
+  const lower = source.toLowerCase();
+  const identity = lower.replace(SOURCE_IDENTITY_SEPARATORS, '');
+  const colon = lower.indexOf(':');
+  const authorityPrefix = colon < 0 ? null : lower.slice(0, colon).replace(SOURCE_IDENTITY_SEPARATORS, '');
+  return RESERVED_SOURCE_IDENTITIES.has(identity)
+    ? identity
+    : authorityPrefix !== null && RESERVED_SOURCE_IDENTITIES.has(authorityPrefix) ? authorityPrefix : null;
+}
+
+/**
+ * The reserved identity a writer name would store as, under any spelling a write persists: the typed one, the fact's
+ * cleanSource and the note's headerSource. Paths, URLs, truncation and punctuation folding cannot manufacture one past this.
+ */
+function reservedSourceIn(source: string): string | null {
+  for (const form of [source, cleanSource(source), headerSource(source)]) {
+    const reserved = reservedSourceIdentity(form);
+    if (reserved) return reserved;
+  }
+  return null;
+}
+
+/** Validate an untrusted writer name and every spelling either writer can persist. */
+function callerSource(source: string): string {
+  // Check what the caller actually supplied. Normalizing first would let fullwidth and other compatibility characters
+  // become ASCII before this boundary and defeat the rule that typed writer names are plain ASCII.
+  if (!CALLER_SOURCE_ASCII.test(source)) {
+    throw refusal('invalid_argument', 'writer names must be plain ASCII (letters, digits, spaces, and - _ . : / @ only)');
+  }
+  const reserved = reservedSourceIn(source);
+  if (reserved) throw refusal('invalid_argument', `source names a reserved identity (${reserved}); use an ordinary app or agent name, or leave source out`);
+  return source;
+}
+
+function markImportedOrigin<T extends Record<string, any>>(item: T, pathKey: 'notePath' | 'path'): T & { origin?: 'import' } {
+  return String(item[pathKey] ?? '').startsWith('Imported/') ? { ...item, origin: 'import' as const } : item;
+}
+
 /** What a tool call can tell about the request it came in on: the headers the transport saw (lower-case names). */
 type CallExtra = { requestInfo?: { headers?: Record<string, unknown> }; authInfo?: AuthInfo };
 
@@ -336,18 +383,35 @@ function trustedAgentRaw(extra: CallExtra | undefined, config: MvpConfig): strin
   return typeof agent === 'string' ? agent : undefined;
 }
 
+/**
+ * The hive identity of a trusted connection name, or "unnamed". A name that is a reserved identity is no name: a key label
+ * or a self-hosted OAuth client_name (which the client registers itself) must not make its saves read as `owner` or
+ * `system`, as a typed source or a User-Agent cannot. A hosted OAuth sign-in is `OAuth-<client>`, which never is one.
+ */
+function trustedIdentity(raw: string): string {
+  const identity = hiveIdentity(raw);
+  return identity === null || reservedSourceIn(identity) !== null ? 'unnamed' : identity;
+}
+
 function sourceOf(sent: string | undefined, extra: CallExtra | undefined, config: MvpConfig): string | undefined {
   // The gateway sets this from the connection key's name and overwrites a client-sent copy, so on a named
   // connection it is the author: a `source` the client types cannot write as another agent.
   // A present name that canonicalizes to no identity (punctuation-only, or `unnamed`) cannot take a typed source.
   const raw = trustedAgentRaw(extra, config);
-  if (typeof raw === 'string' && raw.trim() !== '') return hiveIdentity(raw) ?? 'unnamed';
+  if (typeof raw === 'string' && raw.trim() !== '') return trustedIdentity(raw);
   // Self-hosted always resolves a name for the verified client (the sign-in middleware sets the key, even
   // when the stored name renders empty). That connection is unnamed, and an unnamed connection cannot
   // choose an author, exactly as an unnamed stdio connection cannot.
   if (!config.gatewaySecret && extra?.authInfo?.extra && 'connectionName' in extra.authInfo.extra) return 'unnamed';
-  if (sent !== undefined && headerSource(sent) !== '') return sent;
-  return productFromUserAgent(extra?.requestInfo?.headers?.['user-agent']);
+  if (sent !== undefined) {
+    const normalized = callerSource(sent);
+    if (headerSource(normalized) !== '') return normalized;
+  }
+  // The User-Agent is the client's own text, never checked, so it takes the same ASCII-only and reserved-identity tests as a typed source (punctuation is still folded by cleanSource, not refused).
+  // A reserved product (`system/1.0`, `owner/2 (x)`, `https:system`) or a non-ASCII one (a lookalike such as `SYSTEΜ/1.0`) falls back
+  // to the tool's default instead of storing it.
+  const product = productFromUserAgent(extra?.requestInfo?.headers?.['user-agent']);
+  return product !== undefined && USER_AGENT_PRODUCT_ASCII.test(product) && reservedSourceIn(product) === null ? product : undefined;
 }
 
 /**
@@ -358,7 +422,7 @@ function sourceOf(sent: string | undefined, extra: CallExtra | undefined, config
 function agentOf(extra: CallExtra | undefined, config: MvpConfig): string {
   const raw = trustedAgentRaw(extra, config);
   if (typeof raw !== 'string' || raw.trim() === '') return 'unnamed';
-  return hiveIdentity(raw) ?? 'unnamed';
+  return trustedIdentity(raw);
 }
 
 /** Nameless connections must not share a feed, mark or inbox. */
@@ -875,7 +939,7 @@ function buildMcpServer(db: Database.Database, config: MvpConfig, engine: Engine
       const floor = searchHitFloor(engine.modelKey);
       const probe: RetrievalProbe = {};
       const laidOut = readerLayoutEnabledFor(args.query);
-      const body = await engineSearchMemory(db, engine, config.memoryDir, args.query, topK, args.scope, evidence, args.include_history === true, config.ledgerRelPath, probe, digests, undefined, floor > 0, laidOut);
+      const body = await engineSearchMemory(db, engine, config.memoryDir, args.query, topK, args.scope, evidence, args.include_history === true, config.ledgerRelPath, probe, digests, undefined, floor > 0, laidOut, searchBestFirstEnabled());
       let result: Record<string, unknown> = body;
       if (body.ok) {
         // Who saved each fact among the hits, marked before anything reads them (the verdict, the page, the floor).
@@ -912,7 +976,7 @@ function buildMcpServer(db: Database.Database, config: MvpConfig, engine: Engine
         // The event of a fact is read from the ledger's heading, which is taken off below.
         result = {
           ...body,
-          hits: readerLayoutOf(body.rankedBy, (await withReplacements(mapContext(), withoutLedgerMetadata(page, ledgerNoteMatcher(config)), { limit: Math.max(page.length, topK) })).map(labelMemoryText), ledgerNoteMatcher(config), { query: args.query, turnsOf: readerEventsEnabled() ? noteTurnsLoader(db) : undefined, scoreTurns: readerEventsEnabled() && vectorsMeanSomething(engine.provider?.identity?.kind) && probe.queryVector && engine.vectorIndex ? turnScorer(engine.vectorIndex, probe.queryVector) : undefined }, laidOut),
+          hits: readerLayoutOf(body.rankedBy, (await withReplacements(mapContext(), withoutLedgerMetadata(page, ledgerNoteMatcher(config)), { limit: Math.max(page.length, topK) })).map(labelMemoryText), ledgerNoteMatcher(config), { query: args.query, turnsOf: readerEventsEnabled() ? noteTurnsLoader(db) : undefined, scoreTurns: readerEventsEnabled() && vectorsMeanSomething(engine.provider?.identity?.kind) && probe.queryVector && engine.vectorIndex ? turnScorer(engine.vectorIndex, probe.queryVector) : undefined }, laidOut).map(hit => markImportedOrigin(hit, 'notePath')),
           ...indexNotice(db, true, config, args.scope),
           ...(shownVerdict.relevance ? { relevance: shownVerdict.relevance } : {}),
           ...(floored ? { floor: { similarity: floor, withheld: floored.withheld } } : {}),
@@ -946,10 +1010,10 @@ function buildMcpServer(db: Database.Database, config: MvpConfig, engine: Engine
         ? {
             ...body,
             // An added correction takes the place of a hit, so the page is no longer than top_k (or than it was, if it was longer).
-            results: await (async (dated) => withReplacements(mapContext(), dated, { limit: Math.max(dated.length, topK) }))(await withHitDates(db, config.memoryDir, withoutLedgerMetadata(
+            results: (await (async (dated) => withReplacements(mapContext(), dated, { limit: Math.max(dated.length, topK) }))(await withHitDates(db, config.memoryDir, withoutLedgerMetadata(
               withFactHits(db, config, body.results as any[], { query: args.query, scope: args.scope, match: 'all', limit: topK, dated: true, reader: readerOf(extra) }),
               ledgerNoteMatcher(config),
-            ))),
+            )))).map(hit => markImportedOrigin(hit, 'notePath')),
           }
         : body;
       return searchResult(body, result);
@@ -1062,13 +1126,21 @@ function buildMcpServer(db: Database.Database, config: MvpConfig, engine: Engine
     try { return jsonResult(await previewImport(mapContext(), args)); }
     catch (err) { return toolError(err); }
   });
+  const storageLimitOf = (headers: unknown): number | undefined => {
+    if (!headers || typeof headers !== 'object') return undefined;
+    const raw = (headers as Record<string, unknown>)['x-renor-storage-limit'];
+    const value = Array.isArray(raw) ? raw[0] : raw;
+    const parsed = typeof value === 'string' ? Number(value) : NaN;
+    return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : undefined;
+  };
+
   server.registerTool('apply_import', {
     title: 'Apply a previewed Markdown batch',
     annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     description: 'Apply preview_import batchId within 15 minutes (same tenant process). Additive: preserves existing different files and reports conflicts. Immediately keyword searchable; on a workspace with semantic search the new notes are then embedded in the background (memory_status says semantic: false until they are). No fact extraction. Returns batchId for undo_import; retries are idempotent.',
     inputSchema: importBatchSchema,
-  }, async ({ batchId }) => {
-    try { return jsonResult(await applyHostedImport(mapContext(), batchId)); }
+  }, async ({ batchId }, extra) => {
+    try { return jsonResult(await applyHostedImport(mapContext(), batchId, storageLimitOf(extra?.requestInfo?.headers))); }
     catch (err) { return toolError(err); }
     // The import wrote its chunks without vectors and marked the index unfinished (so does a run that failed after its
     // commit): the background job embeds them, once, now. It returns null when there is nothing to embed.
@@ -1105,13 +1177,15 @@ function buildMcpServer(db: Database.Database, config: MvpConfig, engine: Engine
         // The whole map holds things, facts, links and events too, and none of them is cut by scope: ignoring it would
         // answer for every scope.
         if (args.scope !== undefined) throw refusal('invalid_argument', 'memory_map takes a scope only with a query (words the memories contain): the whole map is not cut by scope');
-        return jsonResult(await buildMemoryMap(mapContext(), { limit: args.limit }));
+        const map = await buildMemoryMap(mapContext(), { limit: args.limit });
+        return jsonResult({ ...map, memories: map.memories.map(memory => markImportedOrigin(memory, 'path')) });
       }
       // Read the way the facts lane reads a query: stop words count only when nothing else is left.
       const terms = factQueryTerms(args.query);
       if (terms.length === 0) throw refusal('invalid_argument', 'query has no word to look for (two or more letters or digits)');
       const scope = args.scope === undefined ? undefined : normalizeScope(args.scope);
-      return jsonResult(await findMemories(mapContext(), { query: args.query, terms, limit: args.limit ?? DEFAULT_LOOKUP_LIMIT, scope }));
+      const found = await findMemories(mapContext(), { query: args.query, terms, limit: args.limit ?? DEFAULT_LOOKUP_LIMIT, scope });
+      return jsonResult({ ...found, memories: found.memories.map(memory => markImportedOrigin(memory, 'path')) });
     } catch (err) {
       return toolError(err);
     }
@@ -1129,7 +1203,13 @@ function buildMcpServer(db: Database.Database, config: MvpConfig, engine: Engine
       const index = await replacementIndex(mapContext());
       const replaced = index.replacedBy(args.id);
       const replaces = index.replaces(args.id);
-      return jsonResult({ ...labelMemoryText(memory), ...(replaced ? { replaced } : {}), ...(replaces.length > 0 ? { replaces } : {}) });
+      const labelled = labelMemoryText(memory);
+      return jsonResult({
+        ...labelled,
+        memory: markImportedOrigin(labelled.memory, 'path'),
+        ...(replaced ? { replaced } : {}),
+        ...(replaces.length > 0 ? { replaces } : {}),
+      });
     } catch (err) {
       return toolError(err);
     }
@@ -1155,7 +1235,17 @@ function buildMcpServer(db: Database.Database, config: MvpConfig, engine: Engine
     inputSchema: { id: retirableIdSchema },
   }, async (args, extra) => {
     try {
-      return jsonResult(await restoreMemory({ ...mapContext(), source: sourceOf(undefined, extra, config) }, args.id));
+      const storageLimit = storageLimitOf(extra?.requestInfo?.headers);
+      return jsonResult(await restoreMemory(
+        { ...mapContext(), source: sourceOf(undefined, extra, config) },
+        args.id,
+        storageLimit === undefined ? {} : { validateAfterWrite: async () => {
+          const bytes = await measureMarkdownBytes(config.memoryDir);
+          if (bytes > storageLimit) {
+            throw refusal('storage_limit', `Renor: this write would need ${bytes.toLocaleString('en-US')} bytes of Markdown storage and would not fit; the storage limit is ${storageLimit.toLocaleString('en-US')} bytes. This memory write was not run.`);
+          }
+        } },
+      ));
     } catch (err) {
       return toolError(err);
     }
@@ -1598,8 +1688,8 @@ export function createMvpApp(config: MvpConfig, engineOverride?: EmbeddingProvid
   const namesSeen = new Set<string>();
   const noteConnectionName = (raw: unknown): void => {
     const name = Array.isArray(raw) ? raw[0] : raw;
-    const identity = typeof name === 'string' ? hiveIdentity(name) : null;
-    if (!identity || namesSeen.has(identity)) return;
+    const identity = typeof name === 'string' ? trustedIdentity(name) : 'unnamed';
+    if (identity === 'unnamed' || namesSeen.has(identity)) return;
     try {
       noteKnownAgent(db, identity);
       namesSeen.add(identity);

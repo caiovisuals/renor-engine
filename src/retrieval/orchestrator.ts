@@ -55,6 +55,17 @@ function newestFirstEnabled(): boolean {
 }
 
 /**
+ * RENOR_SEARCH_BEST_FIRST (default off; `1` / `true` / `yes` / `on` turns it on): search_memory lays its window out best
+ * match first (`rankedBy: "score"`) instead of newest session first. It reaches only the reads that ask for it
+ * (`RetrieveOptions.bestFirst`, which only the search_memory tool sets): get_context, the CLI and RENOR_NEWEST_FIRST are
+ * untouched, and so is which chunks are selected. Every hit keeps its session_date. Measured on the agent-workflow eval.
+ */
+export function searchBestFirstEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  const v = (env.RENOR_SEARCH_BEST_FIRST ?? '').trim().toLowerCase();
+  return v === '1' || v === 'true' || v === 'yes' || v === 'on';
+}
+
+/**
  * Temporal ranking is product default (RenorBench prefer_current/prefer_historical
  * fix, 2026-09-17). Opt out with RENOR_TEMPORAL_RANKING=0/false/off — a kill
  * switch that reverts to pre-temporal ordering without a redeploy.
@@ -791,6 +802,8 @@ interface RetrieveOptions {
   scope?: ChunkScope;
   /** Default cap for this read when the environment is unset/empty. get_context passes 0; searches use 2. */
   noteCapWhenUnset?: number;
+  /** Lay the window out best match first whatever RENOR_NEWEST_FIRST says (search_memory under RENOR_SEARCH_BEST_FIRST). */
+  bestFirst?: boolean;
 }
 
 export async function retrieveContext(
@@ -821,7 +834,7 @@ export async function retrieveContext(
       })();
   // The window is ranked without waiting for anything, so it is read in one transaction (inReadSnapshot).
   const window = inReadSnapshot(db, () => rankWindow({ db, query, topK, priorityPaths, clock, opts, factHits, semanticHits }));
-  return finishContext({ db, vectorIndex, provider, query, queryProbe, window });
+  return finishContext({ db, vectorIndex, provider, query, queryProbe, window, bestFirst: opts.bestFirst === true });
 }
 
 /** The window of hits of a read: scored, with the graph of its notes, their facts and dates, live and capped per note. Waits for nothing. */
@@ -1107,8 +1120,9 @@ function rankWindow(read: {
 async function finishContext(read: {
   db: Database.Database; vectorIndex: VectorIndex | undefined; provider: ProviderLike | undefined; query: string; queryProbe: RetrievalProbe;
   window: ReturnType<typeof rankWindow>;
+  bestFirst: boolean;
 }): Promise<RetrievalResult> {
-  const { db, vectorIndex, provider, query, queryProbe, window } = read;
+  const { db, vectorIndex, provider, query, queryProbe, window, bestFirst } = read;
   const { noteRow, temporal, pastIntent, asofPast } = window;
   let { hits } = window;
   // A hit that is a ledger event is dated by the event, and one that is an entry of a daily note by the entry: each
@@ -1141,7 +1155,8 @@ async function finishContext(read: {
   // carry no past-intent cue words but ask about the old world all the same.
   // Either way the result says which key it is in order of (`rankedBy`): the order is a presentation
   // choice the agent cannot see from the hits alone, and hits[0] is not "the answer" unless that key is score.
-  const newestFirst = newestFirstEnabled() && !(temporal && pastIntent) && !asofPast;
+  // A read that asks for best match first (search_memory under RENOR_SEARCH_BEST_FIRST) is laid out by score.
+  const newestFirst = !bestFirst && newestFirstEnabled() && !(temporal && pastIntent) && !asofPast;
   const rankedBy: HitOrder = newestFirst ? 'session_date' : 'score';
   contentfulHeld.clear(); // nothing outlives the read it was worked out for
   return { query, hits: orderHits(hits, rankedBy), rankedBy };

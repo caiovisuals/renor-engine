@@ -190,6 +190,8 @@ async function workspace(fake: FakeExtractor, env: Record<string, string> = {}, 
   }
   process.env.RENOR_EVIDENCE_BASE_URL = fake.url;
   process.env.RENOR_EVIDENCE_API_KEY = 'synthetic-local-key';
+  // The engine's unset evidence mode is off (src/evidence/gate.ts): the pass is turned on, as hosted Renor does.
+  process.env.RENOR_EVIDENCE_MODE = 'always';
   Object.assign(process.env, env);
   const config = makeConfig(memoryDir, await freePort());
   if (idleExitMs !== undefined) config.idleExitMs = idleExitMs;

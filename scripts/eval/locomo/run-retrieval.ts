@@ -31,6 +31,7 @@ import { runMigrations } from '../../../src/db/schema';
 import { VectorIndex } from '../../../src/embeddings/vectorIndex';
 import { LocalEmbeddingProvider } from '../../../src/embeddings/local';
 import { VertexEmbeddingProvider } from '../../../src/embeddings/vertex';
+import { EvalHashEmbeddingProvider } from '../../../src/eval/hashEmbedding';
 import { CachingEmbeddingProvider, CountingEmbeddingProvider, embeddingCallStats, resolveEmbeddingCachePath } from '../../../src/embeddings/caching';
 import { buildCacheReport, emitCacheReport } from '../../../src/eval/cacheReport';
 import type { EmbeddingProvider } from '../../../src/embeddings/types';
@@ -66,7 +67,7 @@ async function main(): Promise<void> {
     .requiredOption('--output <dir>', 'output run directory')
     .option('--top-k <n>', 'retrieval depth', '20')
     .option('--concurrency <n>', 'index concurrency', '2')
-    .option('--provider <kind>', 'embedding provider: local or vertex', process.env.RENOR_EVAL_PROVIDER ?? 'vertex')
+    .option('--provider <kind>', 'embedding provider: local, vertex, or eval-hash (offline wiring smoke, never a score)', process.env.RENOR_EVAL_PROVIDER ?? 'vertex')
     .option('--model <name>', 'embedding model override')
     .option('--limit <n>', 'maximum cases to run (0 = all)', '0')
     .option('--offset <n>', 'offset into cases', '0')
@@ -125,7 +126,7 @@ async function main(): Promise<void> {
   }
 
   let baseProvider: EmbeddingProvider;
-  let providerMeta: { kind: 'local' | 'vertex'; model: string; dimensions: number; location?: string };
+  let providerMeta: { kind: 'local' | 'vertex' | 'eval-hash'; model: string; dimensions: number; location?: string };
   if (opts.provider === 'local') {
     const modelName = opts.model ?? 'Xenova/multilingual-e5-base';
     const p = new LocalEmbeddingProvider(modelName);
@@ -140,8 +141,12 @@ async function main(): Promise<void> {
       dimensions: p.dimensions,
       location: (p.describe() as { location?: string }).location,
     };
+  } else if (opts.provider === 'eval-hash') {
+    const p = new EvalHashEmbeddingProvider();
+    baseProvider = p;
+    providerMeta = { kind: 'eval-hash', model: p.identity.model, dimensions: p.dimensions };
   } else {
-    throw new Error(`Unsupported provider: ${opts.provider}; expected local or vertex`);
+    throw new Error(`Unsupported provider: ${opts.provider}; expected local, vertex or eval-hash`);
   }
 
   const cachePath = resolveEmbeddingCachePath();
@@ -236,7 +241,10 @@ async function main(): Promise<void> {
     },
     providerNote: opts.provider === 'vertex'
       ? 'Vertex AI gemini-embedding-001 (768-d) per canonical benchmark protocol'
-      : 'local e5 (Xenova/multilingual-e5-base 768-d)',
+      : opts.provider === 'eval-hash'
+        ? 'eval-hash lexical hash (256-d): offline wiring smoke only, no semantic-quality claim'
+        : 'local e5 (Xenova/multilingual-e5-base 768-d)',
+    qualityEligible: opts.provider !== 'eval-hash',
     topK,
     chunking: { maxTokens: 400, overlapTokens: 50 },
     corpusDirs: [...byCorpus.keys()],

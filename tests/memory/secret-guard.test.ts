@@ -66,9 +66,17 @@ afterEach(() => {
 });
 
 describe('the switch', () => {
-  it('is on for 1, true, yes and on, in any case, and off for everything else', () => {
-    for (const v of ['1', 'true', 'yes', 'on', 'TRUE', ' On ', 'YES']) expect(secretGuardEnabled({ RENOR_SECRET_GUARD: v }), v).toBe(true);
-    for (const v of [undefined, '', '0', 'false', 'no', 'off', '2', 'enabled', 'y', 'banana', '1 1']) expect(secretGuardEnabled({ RENOR_SECRET_GUARD: v }), String(v)).toBe(false);
+  it('is on by default: off only when set to 0, false, no or off, in any case; unset, empty and unknown values keep it on', () => {
+    for (const v of [undefined, '', '1', 'true', 'yes', 'on', 'TRUE', ' On ', 'YES', '2', 'enabled', 'y', 'banana', '1 1']) expect(secretGuardEnabled({ RENOR_SECRET_GUARD: v }), String(v)).toBe(true);
+    for (const v of ['0', 'false', 'no', 'off', 'OFF', ' No ', 'FALSE']) expect(secretGuardEnabled({ RENOR_SECRET_GUARD: v }), v).toBe(false);
+  });
+
+  it('screens a save when the variable is not set at all: the guard is on by default', async () => {
+    delete process.env.RENOR_SECRET_GUARD;
+    const vault = mkdir('vault');
+    const text = `deploy token ${KEY_SHAPES.github(new Rng(2))}`;
+    await expect(appendDailyMemory(vault, '2026-10-03', { text, source: 'claude' })).rejects.toBeInstanceOf(SecretRefusedError);
+    expect(fs.readdirSync(vault)).toEqual([]);
   });
 
   it('is read when a write happens, so the process environment is the one switch', async () => {
@@ -126,7 +134,7 @@ describe('the daily-note writer', () => {
     const open = mkdir('vault');
     const entry = { text: 'I moved to Lisbon in March and I work near the river.\n- a second line', source: 'claude' };
     await appendDailyMemory(guarded, '2026-10-03', entry);
-    process.env.RENOR_SECRET_GUARD = '';
+    process.env.RENOR_SECRET_GUARD = '0';
     await appendDailyMemory(open, '2026-10-03', entry);
     expect(tree(guarded)).toEqual(tree(open));
     expect(Object.keys(tree(guarded))).toEqual([path.join('Memory', 'Daily', '2026-10-03.md')]);
@@ -354,7 +362,7 @@ describe('what the operator sees', () => {
   it('logs nothing for a save it allows, or when the guard is off', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     await appendDailyMemory(mkdir('vault'), '2026-10-03', { text: 'a perfectly ordinary note', source: 'claude' });
-    process.env.RENOR_SECRET_GUARD = '';
+    process.env.RENOR_SECRET_GUARD = '0';
     await appendDailyMemory(mkdir('vault'), '2026-10-03', { text: `token ${KEY_SHAPES.github(new Rng(13))}`, source: 'claude' });
     expect(warn).not.toHaveBeenCalled();
   });
@@ -362,7 +370,7 @@ describe('what the operator sees', () => {
 
 describe('assertStorable', () => {
   it('does nothing and asks nothing when the guard is off', async () => {
-    process.env.RENOR_SECRET_GUARD = '';
+    process.env.RENOR_SECRET_GUARD = '0';
     const decide = vi.spyOn(SecretGuardDecisionModel.prototype, 'decide');
     const scan = vi.spyOn(scanner, 'scanSecrets');
     await assertStorable([{ field: 'x', text: `token ${KEY_SHAPES.github(new Rng(4))}` }]);

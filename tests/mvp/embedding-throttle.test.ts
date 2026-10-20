@@ -1,6 +1,6 @@
 import fs from 'fs';
 import path from 'path';
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi, beforeAll, afterAll } from 'vitest';
 import { chunksWithoutVectors } from '../../src/embeddings/rebuild';
 import type { EmbeddingProvider } from '../../src/embeddings/types';
 import { createEmbeddingProvider, runningBackgroundIndex, UNFINISHED_FILES } from '../../src/mvp/engine';
@@ -83,6 +83,12 @@ async function until(done: () => boolean, ms = 20_000): Promise<void> {
     await new Promise(resolve => setTimeout(resolve, 50));
   }
 }
+
+// The secret guard is on by default. These tests store fixture text that the guard refuses (a credential-shaped or an
+// identifier-shaped sentence that is incidental to what each test checks), so they run with it explicitly off.
+const SAVED_GUARD = process.env.RENOR_SECRET_GUARD;
+beforeAll(() => { process.env.RENOR_SECRET_GUARD = '0'; });
+afterAll(() => { if (SAVED_GUARD === undefined) delete process.env.RENOR_SECRET_GUARD; else process.env.RENOR_SECRET_GUARD = SAVED_GUARD; });
 
 describe('while the embedding service refuses (429)', () => {
   it('no tool waits on it: saves return with the memory kept, reads answer from keyword search, and a failed service is not asked again at once', async () => {

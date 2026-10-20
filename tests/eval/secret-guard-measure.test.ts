@@ -14,29 +14,37 @@ describe('the redactors', () => {
   const words = ['maple', 'orbit', 'canyon', 'velvet', 'harbor', 'copper', 'lantern', 'meadow', 'falcon', 'quartz', 'ember', 'willow'];
   const seed = `my wallet seed phrase: ${words.join(' ')}`;
 
-  it('a match-only redactor takes the first word of a seed phrase and leaves the other eleven', () => {
-    const out = redact(seed, false);
-    expect(out).toContain('[redacted]');
-    expect(words.filter(w => out.includes(w))).toHaveLength(11);
-  });
-
-  it('an extended redactor takes the rest of the line, and only that line', () => {
-    const out = redact(`${seed}\nthe next line is not a secret`, true);
-    expect(words.filter(w => out.includes(w))).toEqual([]);
-    expect(out).toContain('the next line is not a secret');
-  });
-
-  it('takes the body of a private key out in both: the text says "key", so each long line is flagged on its own', () => {
-    const body = Array.from({ length: 5 }, () => r.str(64));
-    const pem = `my deploy key:\n-----BEGIN RSA PRIVATE KEY-----\n${body.join('\n')}\n-----END RSA PRIVATE KEY-----\nthat was it`;
+  it('takes the whole seed phrase in both, because the scanner has a rule for the list (since 2026-10-13; the first word only before)', () => {
     for (const extend of [false, true]) {
-      const out = redact(pem, extend);
-      expect(body.filter(l => out.includes(l)), `extend=${extend}`).toEqual([]);
-      expect(out).toContain('that was it');
+      const out = redact(`${seed}\nthe next line is not a secret`, extend);
+      expect(out).toContain('[redacted]');
+      expect(words.filter(w => out.includes(w)), `extend=${extend}`).toEqual([]);
+      expect(out).toContain('the next line is not a secret');
     }
-    // the extension reaches the END line too, which a match-only redactor leaves
-    expect(redact(pem, false)).toContain('-----END RSA PRIVATE KEY-----');
-    expect(redact(pem, true)).not.toContain('-----END RSA PRIVATE KEY-----');
+  });
+
+  it('a match-only redactor takes the first password of a line and leaves the second; an extended one takes the rest of the line, and only that line', () => {
+    const text = 'the router password is Violet-maple-6705 and the backup is Harbor-hazel-2706\nthe next line is not a secret';
+    const matchOnly = redact(text, false), extended = redact(text, true);
+    expect(matchOnly).not.toContain('Violet-maple-6705');
+    expect(matchOnly).toContain('Harbor-hazel-2706');
+    expect(extended).not.toContain('Harbor-hazel-2706');
+    expect(extended).toContain('the next line is not a secret');
+  });
+
+  it('takes the header of a private key out in both and the whole block only when extended: the body lines hold no key word of their own', () => {
+    // Before 2026-10-13 a long line was refused anywhere in a text that said "key", so a match-only redactor also took each body line.
+    const body = Array.from({ length: 5 }, () => r.str(64));
+    const pem = `my deploy key:\n${'-----BEGIN ' + 'RSA PRIVATE KEY-----'}\n${body.join('\n')}\n-----END RSA PRIVATE KEY-----\nthat was it`;
+    const matchOnly = redact(pem, false), extended = redact(pem, true);
+    expect(matchOnly).not.toContain('BEGIN RSA PRIVATE KEY');
+    expect(body.filter(l => matchOnly.includes(l))).toHaveLength(5);
+    expect(body.filter(l => extended.includes(l))).toEqual([]);
+    expect(extended).toContain('that was it');
+    expect(matchOnly).toContain('-----END RSA PRIVATE KEY-----');
+    expect(extended).not.toContain('-----END RSA PRIVATE KEY-----');
+    // a refusal does not depend on any of this: the header is enough
+    expect(scanSecrets(pem)).not.toBeNull();
   });
 
   it('takes the user and password out of a URL in both, whatever the scheme looks like', () => {
@@ -71,11 +79,11 @@ describe('the redactors', () => {
   });
 
   it('merges spans that touch, so a text with two findings has one placeholder per run', () => {
-    const out = redact(`card 4242 4242 4242 4242 and mail jo.doe@example.com`, false);
+    const out = redact(`card 4111 1111 1111 1111 and call +55 11 91234-5678`, false);
     expect(out.match(/\[redacted\]/g)).toHaveLength(2);
-    expect(out).not.toContain('4242');
-    expect(out).not.toContain('jo.doe');
-    expect(out).toContain('mail ');
+    expect(out).not.toContain('4111');
+    expect(out).not.toContain('91234');
+    expect(out).toContain('call ');
   });
 });
 
@@ -91,20 +99,20 @@ describe('the numbers', () => {
 
   it('pins refuse against both redactors on the mirror set: redaction leaks, or it erases', () => {
     const r = measureSet('mirror:planted', buildPlantedSet());
-    expect(r.refuse.recall).toEqual([222, 243]);
-    expect(r.refuse.falseBlock).toEqual([12, 130]);
-    // Match spans: every flagged item is altered, and 10 of them still hold a planted value (seed phrases, code lists,
-    // a password after a second cue).
-    expect(r.redactMatch.detected).toEqual([222, 243]);
-    expect(r.redactMatch.leakFree).toEqual([212, 243]);
+    expect(r.refuse.recall).toEqual([221, 243]);
+    expect(r.refuse.falseBlock).toEqual([5, 130]);
+    // Match spans: every flagged item is altered, and 10 of them still hold a planted value (code lists, a password after
+    // a second cue, and "login is x with password y").
+    expect(r.redactMatch.detected).toEqual([221, 243]);
+    expect(r.redactMatch.leakFree).toEqual([211, 243]);
     expect(r.redactMatch.flaggedStillLeaking).toBe(10);
-    // Extended spans: no flagged item leaks, and a false positive loses more than half of its characters.
-    expect(r.redactExtended.leakFree).toEqual([222, 243]);
+    // Extended spans: no flagged item leaks. Before 2026-10-13 a false positive lost more than half of its characters, because the
+    // false positives were ordinary sentences; the 5 left are tracking numbers, a third of whose text is the number.
+    expect(r.redactExtended.leakFree).toEqual([221, 243]);
     expect(r.redactExtended.flaggedStillLeaking).toBe(0);
-    expect(r.redactExtended.falseRedact).toEqual([12, 130]);
-    const [replaced, chars] = r.redactExtended.alteredItemCharsReplaced;
-    expect(replaced / chars).toBeGreaterThan(0.5);
-    expect(r.redactMatch.alteredItemCharsReplaced[0]).toBeLessThan(replaced);
+    expect(r.redactExtended.falseRedact).toEqual([5, 130]);
+    expect(r.redactExtended.alteredItemCharsReplaced).toEqual([70, 210]);
+    expect(r.redactMatch.alteredItemCharsReplaced).toEqual([70, 210]);
     // A placeholder never flags itself.
     expect(r.redactMatch.residualFlagged).toBe(0);
     expect(r.redactExtended.residualFlagged).toBe(0);
@@ -121,8 +129,10 @@ describe('the numbers', () => {
   it('counts false blocks and the characters each redactor would replace in benign texts', () => {
     const quiet = measureTexts('quiet', NATURAL_BENIGN);
     expect(quiet).toMatchObject({ texts: 30, flagged: 0, byRule: {} });
-    const mixed = measureTexts('mixed', [...NATURAL_BENIGN, 'the secret is amazing, honestly, said the neighbour', 'Invoice 2023-4567-8901 is due on the 15th.']);
-    expect(mixed.texts).toBe(32);
+    // "the secret is amazing" was a false positive until 2026-10-13; the invoice number written like a phone number still is
+    const mixed = measureTexts('mixed', [...NATURAL_BENIGN, 'the secret is amazing, honestly, said the neighbour', 'Invoice 2023-4567-8901 is due on the 15th.',
+      'the router password is Violet-maple-6705 and the backup is Harbor-hazel-2706']);
+    expect(mixed.texts).toBe(33);
     expect(mixed.flagged).toBe(2);
     expect(mixed.byRule).toEqual({ 'credential-in-words': 1, phone: 1 });
     expect(mixed.charsReplaced.extended[0]).toBeGreaterThan(mixed.charsReplaced.match[0]);

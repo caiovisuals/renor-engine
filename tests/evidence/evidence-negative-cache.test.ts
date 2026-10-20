@@ -116,6 +116,8 @@ function productEnv(provider: { baseUrl: string }, dir: string): NodeJS.ProcessE
     RENOR_EVIDENCE_API_KEY: 'k',
     RENOR_EVIDENCE_MODEL: 'stub-extractor',
     RENOR_EVIDENCE_CACHE: path.join(dir, 'evidence-cache.db'),
+    // The engine's unset evidence mode is off (src/evidence/gate.ts): the pass is turned on, as hosted Renor does.
+    RENOR_EVIDENCE_MODE: 'always',
   };
 }
 
@@ -421,6 +423,8 @@ describe('with no evidence model configured nothing changes', () => {
     const ws = workspace();
     const env: NodeJS.ProcessEnv = { ...process.env };
     for (const name of EVIDENCE_PROVIDER_ENV) delete env[name];
+    // Turned on (the engine's unset default is off), so it is the missing model, not the mode, that keeps it from running.
+    env.RENOR_EVIDENCE_MODE = 'always';
     const options = resolveEvidenceToolOptions({ dbPath: path.join(ws.dir, 'index.db') }, env);
     expect(options.chat).toBeUndefined();
     const extractor = createEvidenceExtractor(options);

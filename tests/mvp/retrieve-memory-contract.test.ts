@@ -120,6 +120,12 @@ async function startWorkspace() {
 
 type Workspace = Awaited<ReturnType<typeof startWorkspace>>;
 
+// The secret guard is on by default. These tests store fixture text that the guard refuses (a credential-shaped or an
+// identifier-shaped sentence that is incidental to what each test checks), so they run with it explicitly off.
+const SAVED_GUARD = process.env.RENOR_SECRET_GUARD;
+beforeAll(() => { process.env.RENOR_SECRET_GUARD = '0'; });
+afterAll(() => { if (SAVED_GUARD === undefined) delete process.env.RENOR_SECRET_GUARD; else process.env.RENOR_SECRET_GUARD = SAVED_GUARD; });
+
 describe('retrieve_memory contract: a new user with nothing saved yet', () => {
   let ws: Workspace;
   beforeAll(async () => { ws = await startWorkspace(); }, HOOK_TIMEOUT_MS);

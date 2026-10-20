@@ -50,7 +50,8 @@ async function stub(reply: Parameters<typeof startStubChat>[0]): Promise<StubCha
 function envWith(values: Record<string, string>): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { ...process.env };
   for (const name of EVIDENCE_PROVIDER_ENV) delete env[name];
-  return { ...env, ...values };
+  // The engine's unset evidence mode is off (src/evidence/gate.ts): these cases turn the pass on, as hosted Renor does.
+  return { ...env, RENOR_EVIDENCE_MODE: 'always', ...values };
 }
 
 function vaultWithNote(): { vault: string; hits: Array<{ notePath: string; chunkId: number; headingPath: string; text: string; score: number; reason: string }> } {

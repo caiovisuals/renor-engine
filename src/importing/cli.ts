@@ -1,5 +1,5 @@
 import path from 'path';
-import { buildImportPlan } from './plan';
+import { assertImportNamespace, buildImportPlan } from './plan';
 import { readExistingStreams } from './existing';
 import { applyImportPlan } from './apply';
 import { readSource } from './source';
@@ -75,7 +75,8 @@ because they are the smallest and highest-value set. Exclude them with --exclude
   --limit <n>                      cap the number of selected notes.
 
 Writing:
-  --namespace <rel>                additive destination subdirectory (default Imported/<source>)
+  --namespace <rel>                additive destination subdirectory under Imported/
+                                   (default Imported/<source>)
   --apply                          perform the writes (default: plan only)
   --canonical-only                 write Markdown + ledger events only; copy no index rows
 
@@ -130,6 +131,7 @@ export function parseArgv(argv: string[]): CliOptions | { help: true } {
     }
   }
 
+  if (options.namespace) assertImportNamespace(options.namespace);
   if (!options.from) throw new Error('--from is required (see --help)');
   if (!options.to) throw new Error('--to is required (see --help)');
   if (options.limit !== undefined && (!Number.isInteger(options.limit) || options.limit < 0)) {

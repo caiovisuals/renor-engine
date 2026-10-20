@@ -35,6 +35,10 @@ import type { HitOrder } from './orchestrator';
  * Oldest first, the latest line marked, earlier lines kept. It quotes those turns and does not cut or reword an excerpt,
  * invent a value, or do arithmetic on a session header (a header date orders two different calendar days only; a shared
  * day is not a clock). A duration question or an order question is left untouched.
+ *
+ * Experimental, opt-in, and only on top of this layout (`RENOR_ROLE_AWARE_PAGE=1`; default off, so a layout-on page is
+ * byte-identical): a role-aware page. Unless the question refers to what the assistant said, each assistant turn on the
+ * page is clipped to its first 60 words; user turns, headings and dates are never touched (see roleAwarePage below).
  */
 
 export function readerLayoutEnabled(): boolean {
@@ -61,6 +65,147 @@ export function readerLayoutEnabledFor(query: string): boolean {
 export function readerTimelineEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
   const v = (env.RENOR_READER_TIMELINE ?? '').trim().toLowerCase();
   return v === '1' || v === 'true' || v === 'yes' || v === 'on';
+}
+
+/**
+ * RENOR_ROLE_AWARE_PAGE (default off, experimental; `1` / `true` / `yes` / `on` turns it on): a role-aware page. When the
+ * question does not refer to what the assistant said, each assistant turn of a conversation on the page is clipped to its
+ * first `ROLE_AWARE_ASSISTANT_WORDS` words, cut at a word boundary and marked "…". User turns, every heading, a session's
+ * header and `Timestamp:` line, the `[Session date: …]` and `[Counted from this session's date …]` lines and the hit's
+ * `session_date` are never touched. Off, the page is not looked at, so it is byte for byte the former one.
+ *
+ * Why (evidence analysis of the 2026-10-18 official LongMemEval run, not yet an answer measurement): in the multi-session,
+ * temporal, knowledge-update and preference questions the evidence is always a user turn, while assistant text is 28-39%
+ * of the page's words; clipping assistant turns to 60 words on those questions removes 21% of them. A question whose
+ * evidence is what the assistant said is kept whole by `refersToAssistant`.
+ *
+ * The speaker comes only from the turn heading (`### Turn N — Assistant`), never from a benchmark label. A hit that starts
+ * inside an assistant turn (the later chunk of a long answer, with no heading of its own) is known by its heading path.
+ */
+export const ROLE_AWARE_ASSISTANT_WORDS = 60;
+
+export function roleAwarePageEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  const v = (env.RENOR_ROLE_AWARE_PAGE ?? '').trim().toLowerCase();
+  return v === '1' || v === 'true' || v === 'yes' || v === 'on';
+}
+
+/** Phrasing that asks about what the assistant said; such a question keeps assistant turns whole. */
+const ASSISTANT_REFERENCE = new RegExp([
+  String.raw`\byou (?:had |just |once )?(?:recommended|suggested|told me|said|mentioned|gave me|provided|listed)\b`,
+  String.raw`\bdid you (?:recommend|suggest|tell me|say|mention|give me|provide|list)\b`,
+  String.raw`\bour (?:previous|last|earlier|past|prior) (?:conversation|chat|discussion)s?\b`,
+  String.raw`\bremind me (?:again )?(?:what|which|of what|how|where|who) you\b`,
+  String.raw`\bearlier,? you\b`,
+].join('|'), 'i');
+
+export function refersToAssistant(query: string): boolean {
+  return ASSISTANT_REFERENCE.test(query.replace(/[\u2018\u2019]/g, "'"));
+}
+
+const LAYOUT_HEADING = /^(#{1,6})[ \t]+(.*?)[ \t]*\r?$/;
+const TURN_ROLE = /^Turn[ \t]+\d+[ \t]+[—–-][ \t]+(\S.*)$/i;
+/** Lines the layout itself writes, which date what is around them: kept whole, and their words are not the turn's. */
+const DATE_LINE = /^\[(?:Session date: |Counted from this session's date)/;
+
+/** For a heading's text: 'assistant' or 'other' when it is a turn heading, null when it is not one. */
+function turnRole(heading: string): 'assistant' | 'other' | null {
+  const role = TURN_ROLE.exec(heading.trim())?.[1];
+  if (role === undefined) return null;
+  return /^assistant$/i.test(role.trim()) ? 'assistant' : 'other';
+}
+
+/** At most `budget` words of `body`, cut at a word boundary and marked "…"; its leading and trailing whitespace is kept. */
+function takeWords(body: string, budget: number): { text: string; used: number } {
+  const words = [...body.matchAll(/\S+/g)];
+  if (words.length <= budget) return { text: body, used: words.length };
+  const end = budget === 0 ? (/^\s*/.exec(body)?.[0].length ?? 0) : (words[budget - 1].index ?? 0) + words[budget - 1][0].length;
+  const trailing = /\s*$/.exec(body)?.[0] ?? '';
+  return { text: `${body.slice(0, end)}${budget === 0 ? '' : ' '}…${trailing}`, used: budget };
+}
+
+/** The first `limit` words of `body`, cut at a word boundary and marked " …"; a body that fits is returned as is. */
+export function clipWords(body: string, limit = ROLE_AWARE_ASSISTANT_WORDS): string {
+  return takeWords(body, limit).text;
+}
+
+/** What is left of an assistant turn's words at the end of a text: null when the text ends outside an assistant turn. */
+function clipFrom(text: string, limit: number, start: number | null): { text: string; budget: number | null } {
+  const out: string[] = [];
+  let budget = start;
+  let body: string[] = [];
+  const flush = () => {
+    if (body.length === 0) return;
+    const joined = body.join('\n');
+    if (budget === null) out.push(joined);
+    else {
+      const taken = takeWords(joined, budget);
+      budget -= taken.used;
+      out.push(taken.text);
+    }
+    body = [];
+  };
+  for (const line of text.split('\n')) {
+    if (DATE_LINE.test(line)) { flush(); out.push(line); continue; }
+    const heading = LAYOUT_HEADING.exec(line);
+    if (!heading) { body.push(line); continue; }
+    flush();
+    const role = turnRole(heading[2]);
+    if (role !== null) budget = role === 'assistant' ? limit : null;
+    else if (heading[1].length <= 2) budget = null;
+    out.push(line);
+  }
+  flush();
+  // Each piece was one or more whole lines; joining them with '\n' restores the line breaks between them.
+  return { text: out.join('\n'), budget };
+}
+
+/**
+ * Clip each assistant turn of `text` to its first `limit` words. A turn runs from its `### Turn N — Assistant` heading to
+ * the next turn heading (or the next `#`/`##` heading); a smaller heading inside it is kept and its words count toward
+ * the same turn. Every heading line, every date line and everything outside an assistant turn (a user turn, a session
+ * header) is left byte for byte. `inAssistant`: the text starts inside an assistant turn.
+ */
+export function clipAssistantTurns(text: string, limit = ROLE_AWARE_ASSISTANT_WORDS, inAssistant = false): string {
+  return clipFrom(text, limit, inAssistant ? limit : null).text;
+}
+
+function headingPathOf(hit: object): string {
+  const value = (hit as { headingPath?: unknown }).headingPath;
+  return typeof value === 'string' ? value : '';
+}
+
+function startsInAssistantTurn(headingPath: string): boolean {
+  return headingPath.split(' > ').map(turnRole).filter(role => role !== null).pop() === 'assistant';
+}
+
+/** One hit on its own: its assistant turns clipped (its heading path says whether it starts inside one), every other field as it was. */
+export function clipAssistantHit<T extends { text: string }>(hit: T, limit = ROLE_AWARE_ASSISTANT_WORDS): T {
+  const text = clipAssistantTurns(hit.text, limit, startsInAssistantTurn(headingPathOf(hit)));
+  return text === hit.text ? hit : { ...hit, text };
+}
+
+/**
+ * The chunks of a page with their assistant turns clipped, before the layout joins them. A long answer is stored as several
+ * chunks and its heading as one more, which may not reach the page; so each chunk is read with its own heading path, in
+ * its note's order, and a turn that runs on into the next chunk carries the words it has left: the turn, not each chunk,
+ * keeps its first `limit` words. Hits that are no chunk, and their order, are untouched.
+ */
+export function clipAssistantChunks<T extends LayoutHit>(hits: T[], chunk: (hit: T) => boolean, limit = ROLE_AWARE_ASSISTANT_WORDS): T[] {
+  const order = hits.map((_, i) => i).filter(i => chunk(hits[i]))
+    .sort((a, b) => (hits[a].notePath < hits[b].notePath ? -1 : hits[a].notePath > hits[b].notePath ? 1 : (hits[a].chunkId ?? 0) - (hits[b].chunkId ?? 0)));
+  const left = new Map<string, number>();
+  const out = hits.slice();
+  for (const i of order) {
+    const hit = hits[i];
+    const headingPath = headingPathOf(hit);
+    const key = `${hit.notePath}\u0000${headingPath}`;
+    const start = startsInAssistantTurn(headingPath) ? (left.get(key) ?? limit) : null;
+    const clipped = clipFrom(hit.text, limit, start);
+    if (clipped.budget === null) left.delete(key);
+    else left.set(key, clipped.budget);
+    if (clipped.text !== hit.text) out[i] = { ...hit, text: clipped.text };
+  }
+  return out;
 }
 
 // A duration or an order stays byte-identical. "Ago" and "last Tuesday" are a point in the past, not a changed value.
@@ -274,7 +419,11 @@ export interface ReaderEventsInput {
 
 export function layoutHitsForReader<T extends LayoutHit>(hits: T[], opts: { rankedBy: HitOrder | undefined; isLedger: (notePath: string) => boolean; isConversation?: (notePath: string) => boolean } & ReaderEventsInput): T[] {
   const chunk = (hit: T): boolean => isNoteChunk(hit, opts.isLedger) && (opts.isConversation?.(hit.notePath) ?? true);
-  let laid = hits.map(hit => (chunk(hit) ? { ...hit, text: withRelativeTimeHints(hit.text, hit.session_date) } : hit));
+  // RENOR_ROLE_AWARE_PAGE (default off): assistant turns clipped to 60 words unless the question refers to what the assistant
+  // said. Chunk by chunk, before anything joins them, since a chunk's heading path is what says it is part of an answer.
+  const roleAware = roleAwarePageEnabled() && opts.query !== undefined && !refersToAssistant(opts.query);
+  const page = roleAware ? clipAssistantChunks(hits, chunk) : hits;
+  let laid = page.map(hit => (chunk(hit) ? { ...hit, text: withRelativeTimeHints(hit.text, hit.session_date) } : hit));
   if (opts.rankedBy === 'session_date') laid = mergeRuns(groupByNote(laid, chunk), chunk);
   laid = laid.map(hit => (chunk(hit) && hit.session_date && !hit.text.includes('Timestamp:')
     ? { ...hit, text: `[Session date: ${hit.session_date}]\n${hit.text}` }

@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, beforeAll, afterAll } from 'vitest';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
@@ -145,6 +145,12 @@ const factLine = (f: { subject: string; predicate: string }) => `${f.subject} / 
 const today = () => new Date().toISOString().slice(0, 10);
 
 // --- D7 -------------------------------------------------------------------------------------------------------------
+
+// The secret guard is on by default. These tests store fixture text that the guard refuses (a credential-shaped or an
+// identifier-shaped sentence that is incidental to what each test checks), so they run with it explicitly off.
+const SAVED_GUARD = process.env.RENOR_SECRET_GUARD;
+beforeAll(() => { process.env.RENOR_SECRET_GUARD = '0'; });
+afterAll(() => { if (SAVED_GUARD === undefined) delete process.env.RENOR_SECRET_GUARD; else process.env.RENOR_SECRET_GUARD = SAVED_GUARD; });
 
 describe('D7: the facts lane looks a fact up by the words that say what it is about', () => {
   it('a pronoun, an auxiliary, a quantifier or a negation finds no fact', async () => {

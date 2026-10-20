@@ -205,7 +205,7 @@ describe('RENOR_SECRET_GUARD through the MCP tools', () => {
   }, HOOK_TIMEOUT_MS);
 
   it('with the guard off: the same calls succeed, and the secrets are stored, which is what the guard was stopping', async () => {
-    delete process.env.RENOR_SECRET_GUARD;
+    process.env.RENOR_SECRET_GUARD = '0';
     expect(await ws.call('remember', { statement: `the staging key is ${key}, keep it somewhere safe` })).toMatchObject({ ok: true, mode: 'note' });
     expect(await ws.call('remember', { statement: `my live Stripe key is ${stripe}`, subject: 'Rowan', predicate: 'uses', object: 'Stripe' })).toMatchObject({ ok: true, mode: 'fact' });
     expect(await ws.call('save_memory', { subject: 'github', predicate: 'access', object: token })).toMatchObject({ ok: true, action: 'store' });
@@ -218,7 +218,7 @@ describe('RENOR_SECRET_GUARD through the MCP tools', () => {
   }, HOOK_TIMEOUT_MS);
 
   it('with the guard on again: retire_memory and restore_memory refuse what was stored before it, and change nothing', async () => {
-    delete process.env.RENOR_SECRET_GUARD;
+    process.env.RENOR_SECRET_GUARD = '0';
     const map = await ws.call('memory_map') as { memories: Array<{ id: string; kind: string; title: string; excerpt: string }> };
     const flagged = map.memories.find(m => m.kind === 'entry' && /staging key/.test(m.title + m.excerpt))!;
     expect(flagged, 'the entry saved while the guard was off').toBeDefined();
@@ -230,7 +230,7 @@ describe('RENOR_SECRET_GUARD through the MCP tools', () => {
     expect(noRetire.length).toBeLessThan(410);
     expect(ws.storedText()).toBe(stored); // not journaled, not removed from its daily file
 
-    delete process.env.RENOR_SECRET_GUARD;
+    process.env.RENOR_SECRET_GUARD = '0';
     expect(await ws.call('retire_memory', { id: flagged.id })).toMatchObject({ ok: true, action: 'retired' });
     process.env.RENOR_SECRET_GUARD = '1';
     const retired = ws.storedText();
@@ -238,7 +238,7 @@ describe('RENOR_SECRET_GUARD through the MCP tools', () => {
     expect(noRestore).toMatch(/^Error: Nothing was changed: the memory appears to contain a credential .*was not restored/);
     expect(ws.storedText()).toBe(retired); // still in the retired store, still out of the live daily file
 
-    delete process.env.RENOR_SECRET_GUARD;
+    process.env.RENOR_SECRET_GUARD = '0';
     expect(await ws.call('restore_memory', { id: flagged.id })).toMatchObject({ ok: true, action: 'restored' });
     for (const text of [noRetire, noRestore]) for (const secret of [key]) expect(text).not.toContain(tail(secret));
   }, HOOK_TIMEOUT_MS);

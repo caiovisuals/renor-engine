@@ -926,6 +926,9 @@ export async function runProductBenchmark(
   }
   // The session router's knobs (src/router/sessionRouter.ts), passed and recorded the same way.
   // The write-time digest knobs (src/digests/digests.ts), passed and recorded the same way.
+  // The self-hosted engine's unset evidence mode is off (src/evidence/gate.ts); the benchmark measures hosted Renor,
+  // whose unit sets always (scripts/alpha/provision-renor-tenant.sh). An operator's own value still passes through.
+  if (!childEnv.RENOR_EVIDENCE_MODE?.trim()) childEnv.RENOR_EVIDENCE_MODE = 'always';
   for (const name of ['RENOR_DIGESTS', 'RENOR_DIGEST_MODEL', 'RENOR_DIGEST_REASONING_EFFORT', 'RENOR_DIGEST_CACHE', 'RENOR_DIGEST_CACHE_ONLY', 'RENOR_DIGEST_TOKENS', 'RENOR_DIGEST_RETRIES', 'RENOR_DIGEST_BASE_URL', 'RENOR_DIGEST_API_KEY', 'RENOR_DIGEST_API_KEYS']) {
     if (process.env[name] !== undefined) childEnv[name] = process.env[name] as string;
   }

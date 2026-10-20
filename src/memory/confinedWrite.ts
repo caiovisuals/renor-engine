@@ -17,7 +17,7 @@ import { markUnrecoverable, syncDirectory, unrecoverableReason, withAppendLock }
  * The walk and the open are two steps, so a process that can write inside the vault could swap a directory for a link
  * between them. After the open and before the first byte, `assertHandleInside` asks the kernel where the open file really
  * is (/proc/self/fd/<fd>) and refuses unless that is under the vault's real root. Node has no openat2(RESOLVE_BENEATH) and
- * /proc exists on Linux only; elsewhere that race stays open (engine/README.public.md says so).
+ * /proc exists on Linux only; elsewhere that race stays open (engine/docs/self-hosting.md says so).
  *
  * Files are created 0600 and directories 0700: the vault holds the owner's statements in plain text.
  *
