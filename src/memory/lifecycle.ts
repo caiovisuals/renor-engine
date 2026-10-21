@@ -12,10 +12,12 @@ import { MAX_STATEMENT_LENGTH } from './limits';
 import { appendConfined, createConfined, withConfinedFile } from './confinedWrite';
 import { isBlankOrInvisible } from './invisibleText';
 import { savedSource } from './sourceName';
-import { displacementsAfter, hasOpenDisplacementBy, type ClosedFact } from './writerConflicts';
-import { withAppendLock } from './durableAppend';
+import { displacementsAfter, hasOpenDisplacementBy, writerOf, type ClosedFact, type OpenDisplacement } from './writerConflicts';
+import { syncDirectory, withAppendLock } from './durableAppend';
+import { withDailyFileLock } from './writer';
 import { assertStorable, secretGuardEnabled, SecretRefusedError } from '../extraction/secretGuard';
 import { markErrorReason, refusalReason, type ToolErrorReason } from '../toolRefusal';
+import type { IndexOptions } from '../indexer/pipeline';
 
 // ---------------------------------------------------------------------------
 // Lifecycle layer — the piece that turns OSM from an index into a memory.
@@ -87,6 +89,14 @@ interface LedgerEvent {
   writer?: string;
   /** retire and restore only: the fact event they take out of recall or bring back. */
   target?: string;
+  /** erase only: digest of the fact event before its content was scrubbed. */
+  originalDigest?: string;
+  /**
+   * erase only: the fact events the erased fact had closed, and the time it closed them (its own original time). No content:
+   * ids and a time. Without them a full rebuild would see nothing close those facts, and an older value would be current again.
+   */
+  closes?: string[];
+  closedAt?: string;
 }
 
 /** Reserved synthetic note path owning lifecycle entities (never a real vault file). */
@@ -100,7 +110,7 @@ const EVENT_HEADER_RE = /^## (mem_[A-Za-z0-9]+) · (.+?)[ \t]*$/i;
 // `.` otherwise refuses U+2028/U+2029 (and a lone \r), which JavaScript calls line terminators and this
 // ledger does not: one such character in a value used to make the whole ledger unreadable at startup.
 const FIELD_RE = /^- ([A-Za-z][\w-]*): (.*)$/s;
-const KNOWN_FIELDS = new Set(['kind', 'subject', 'predicate', 'object', 'closed_event', 'source', 'scope', 'statement', 'writer', 'target']);
+const KNOWN_FIELDS = new Set(['kind', 'subject', 'predicate', 'object', 'closed_event', 'source', 'scope', 'statement', 'writer', 'target', 'original_digest', 'closes', 'closed_at']);
 const REQUIRED_FIELDS = ['subject', 'predicate', 'object'] as const;
 /**
  * retire takes one fact out of recall and restore brings it back (retireFact, restoreFact). Each names the fact's own
@@ -109,7 +119,8 @@ const REQUIRED_FIELDS = ['subject', 'predicate', 'object'] as const;
  * is written.
  */
 const RETIREMENT_KINDS = new Set(['retire', 'restore']);
-const KNOWN_KINDS = new Set(['store', 'supersede', ...RETIREMENT_KINDS]);
+const ERASE_KIND = 'erase';
+const KNOWN_KINDS = new Set(['store', 'supersede', ...RETIREMENT_KINDS, ERASE_KIND]);
 const CONTROL_CHARS = /[\u0000-\u001F\u007F]/;
 export const FIELD_LIMITS: Record<string, number> = { subject: 512, predicate: 256, object: 8192, source: 256, scope: 80, statement: MAX_STATEMENT_LENGTH, writer: 256 };
 
@@ -297,6 +308,21 @@ function validateLedgerEvent(ev: LedgerEvent): void {
     throw new Error(`ledger event ${ev.id} has an unsupported timestamp representation ${JSON.stringify(ev.at)}: the canonical format emitted by the writer is exact UTC ISO (YYYY-MM-DDTHH:mm:ss.sssZ, e.g. 2026-09-09T00:00:00.000Z); repair the ledger entry`);
   }
   if (!KNOWN_KINDS.has(ev.kind)) throw new Error(`ledger corruption in event ${ev.id}: unknown kind "${ev.kind}"`);
+  if (ev.kind === ERASE_KIND) {
+    if (!/^[0-9a-f]{64}$/.test(ev.originalDigest ?? '')) throw new Error(`ledger corruption in event ${ev.id}: an erase tombstone needs the original event digest`);
+    if (ev.subject || ev.predicate || ev.object || ev.statement !== undefined || ev.writer !== undefined || ev.target !== undefined || ev.closedEvent !== null || ev.source !== 'erased') {
+      throw new Error(`ledger corruption in event ${ev.id}: an erase tombstone carries no memory content`);
+    }
+    // The closing link is ids and a time, both checked, so it cannot carry text either.
+    if ((ev.closes === undefined) !== (ev.closedAt === undefined)) throw new Error(`ledger corruption in event ${ev.id}: an erase tombstone's closes and closed_at go together`);
+    if (ev.closes !== undefined) {
+      if (ev.closes.length === 0 || ev.closes.some(id => !/^MEM_[A-Z0-9]+$/.test(id))) throw new Error(`ledger corruption in event ${ev.id}: an erase tombstone closes event ids only`);
+      if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(ev.closedAt!) || new Date(ev.closedAt!).toISOString() !== ev.closedAt) {
+        throw new Error(`ledger corruption in event ${ev.id}: an erase tombstone's closed_at is not an exact UTC ISO time`);
+      }
+    }
+    return;
+  }
   const retirement = RETIREMENT_KINDS.has(ev.kind);
   validateField('subject', ev.subject, true);
   validateField('predicate', ev.predicate, true);
@@ -332,6 +358,7 @@ function validateLedgerEvent(ev: LedgerEvent): void {
 }
 
 function eventDigest(ev: LedgerEvent): string {
+  if (ev.kind === ERASE_KIND) return ev.originalDigest!;
   const parts: string[] = [
     ev.id, ev.at, ev.kind, ev.subject, ev.predicate, ev.object, ev.closedEvent ?? '', ev.source ?? 'ledger',
   ];
@@ -406,25 +433,13 @@ export async function appendLedgerEvent(
   ev: LedgerEvent,
 ): Promise<string> {
   validateLedgerEvent(ev);
+  // An erasure is a rewrite of the whole ledger (eraseRetiredFact), never an append.
+  if (ev.kind === ERASE_KIND) throw new Error(`ledger event ${ev.id}: an erase tombstone is written only by erasing a retired fact`);
   const resolved = resolveLedgerPath(vaultPath, ledgerRelPath);
-  const lines = [
-    `\n## ${ev.id} · ${ev.at}`,
-    `- kind: ${ev.kind}`,
-    `- subject: ${ev.subject}`,
-    `- predicate: ${ev.predicate}`,
-  ];
-  if (ev.target !== undefined) lines.push(`- target: ${ev.target}`);
-  else lines.push(`- object: ${ev.object}`);
-  if (ev.closedEvent) lines.push(`- closed_event: ${ev.closedEvent}`);
-  const scope = normalizeScope(ev.scope);
-  if (scope !== 'global') lines.push(`- scope: ${scope}`);
-  if (ev.statement !== undefined) lines.push(`- statement: ${encodeStatement(ev.statement)}`);
-  if (ev.writer !== undefined) lines.push(`- writer: ${ev.writer}`);
-  lines.push(`- source: ${ev.source}`, ``);
   // Confined and durable in one append (confinedWrite.ts): a link, a hard link or a FIFO planted in the vault is refused,
   // never followed, and a failed write is cut back, so the ledger never keeps a fragment of an event whose save the caller
   // was told failed. A new ledger starts with its header.
-  await appendConfined(vaultPath, path.relative(path.resolve(vaultPath), resolved), lines.join('\n'), LEDGER_HEADER);
+  await appendConfined(vaultPath, path.relative(path.resolve(vaultPath), resolved), ledgerEventBlock(ev), LEDGER_HEADER);
   return resolved;
 }
 
@@ -552,6 +567,22 @@ async function readLedgerForReplay(
   }));
 }
 
+/** Remove private rewrite files left by a process that died before replacing the ledger. */
+async function removeStaleEraseTemps(filePath: string): Promise<void> {
+  const dir = path.dirname(filePath);
+  const prefix = `${path.basename(filePath)}.erase-`;
+  let names: string[];
+  try {
+    names = await fs.readdir(dir);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return;
+    throw err;
+  }
+  await Promise.all(names
+    .filter(name => name.startsWith(prefix) && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.tmp$/i.test(name.slice(prefix.length)))
+    .map(name => fs.rm(path.join(dir, name), { force: true })));
+}
+
 /**
  * Strict line-oriented parser for the ledger format. Returns the events in
  * append order. Throws (never silently skips) on event-shaped corruption:
@@ -600,6 +631,7 @@ export function parseLedgerEvents(content: string, options: { finalEventKnown?: 
     }
     const kind = fields.kind ?? 'store';
     for (const req of REQUIRED_FIELDS) {
+      if (kind === ERASE_KIND) continue;
       if (req === 'object' && RETIREMENT_KINDS.has(kind)) continue; // a retirement carries no value
       if (fields[req] === undefined || fields[req] === '') {
         throw new Error(`ledger corruption in event ${id}: missing required field "${req}"`);
@@ -609,6 +641,9 @@ export function parseLedgerEvents(content: string, options: { finalEventKnown?: 
       id, at,
       ...(fields.statement !== undefined ? { statement: decodeStatement(fields.statement, id) } : {}),
       ...(fields.target !== undefined ? { target: fields.target } : {}),
+      ...(fields.original_digest !== undefined ? { originalDigest: fields.original_digest } : {}),
+      ...(fields.closes !== undefined ? { closes: fields.closes.split(',').map(part => part.trim().toUpperCase()) } : {}),
+      ...(fields.closed_at !== undefined ? { closedAt: fields.closed_at } : {}),
       kind,
       subject: fields.subject,
       predicate: fields.predicate,
@@ -953,12 +988,18 @@ function requireLedgerPosition(positions: Map<string, number>, eventId: string):
  * spellings never touch, so each spelling's chain is exactly the per-spelling
  * chain this function computed before scopes were one slug.
  */
-function reconcileStreamCurrent(db: Database.Database, lifecycleId: number, predicate: string, positions: Map<string, number>, scope: NormalizedScope = 'global', closedBy: Map<string, string> = new Map()): void {
-  transactionOnce(db, reconcileStreamCurrentBody)(lifecycleId, predicate, positions, scope, closedBy);
+/**
+ * What an erased fact closed, by its event id: from its tombstone's closing link, or from the link erased_facts kept when a
+ * lost rename left its content event in the ledger. Ids and a time only.
+ */
+type ErasedClosers = Map<string, { closes: string[]; closedAt: string }>;
+
+function reconcileStreamCurrent(db: Database.Database, lifecycleId: number, predicate: string, positions: Map<string, number>, scope: NormalizedScope = 'global', closedBy: Map<string, string> = new Map(), closers: ErasedClosers = new Map()): void {
+  transactionOnce(db, reconcileStreamCurrentBody)(lifecycleId, predicate, positions, scope, closedBy, closers);
 }
 
 /** The body of reconcileStreamCurrent's transaction: a module-level function so replay wraps it once per connection (transactionOnce). */
-function reconcileStreamCurrentBody(db: Database.Database, lifecycleId: number, predicate: string, positions: Map<string, number>, scope: NormalizedScope, closedBy: Map<string, string>): void {
+function reconcileStreamCurrentBody(db: Database.Database, lifecycleId: number, predicate: string, positions: Map<string, number>, scope: NormalizedScope, closedBy: Map<string, string>, closers: ErasedClosers): void {
   const inStream = savedScopeSqlPredicate(scope, 'scope');
   // A retired fact keeps its place in the stream (retireFact): it is hidden, not undone, so the value it closed stays
   // closed and the value saved after it closes it, exactly as if it had never been retired.
@@ -984,7 +1025,24 @@ function reconcileStreamCurrentBody(db: Database.Database, lifecycleId: number, 
   // a state a fresh replay could not produce. (Equal timestamps are legal.)
   const current = new Map<string, (typeof canonical)[number]>();
   const closeAt = new Map<number, string>();
-  for (const row of canonical) {
+  // An erased fact has no row any more, but at its place in the ledger it still closes what it closed, at its own time, as a
+  // fresh replay of its tombstone does (applyEvent); it never becomes current itself.
+  const inChain = new Set(canonical.map(row => row.event_id));
+  const links = [...closers]
+    .filter(([id, link]) => positions.has(id) && link.closes.some(closed => inChain.has(closed)))
+    .map(([id, link]) => ({ pos: positions.get(id)!, ...link }));
+  const steps = [...canonical.map(row => ({ pos: row.pos, row })), ...links.map(link => ({ pos: link.pos, link }))]
+    .sort((x, y) => x.pos - y.pos);
+  for (const step of steps) {
+    if ('link' in step) {
+      for (const [spelling, open] of [...current]) {
+        if (!step.link.closes.includes(open.event_id)) continue;
+        closeAt.set(open.id, maxInstant(step.link.closedAt, open.valid_from));
+        current.delete(spelling);
+      }
+      continue;
+    }
+    const row = step.row;
     const named = closedBy.get(row.event_id);
     const across = named === undefined ? undefined
       : [...current.values()].find(r => r.scope !== row.scope && r.event_id === named);
@@ -1028,14 +1086,14 @@ function reconcileStreamCurrentBody(db: Database.Database, lifecycleId: number, 
  * The transaction applyEvent runs for an event that is already projected: re-home a fact still attached to a disposable entity,
  * then reconcile its stream. A module-level function so replay wraps it once per connection (transactionOnce).
  */
-function reconcileProjectedEvent(db: Database.Database, ev: LedgerEvent, factId: number, rehome: boolean, positions: Map<string, number>, lifecycleId: number, closedBy: Map<string, string> | undefined): void {
+function reconcileProjectedEvent(db: Database.Database, ev: LedgerEvent, factId: number, rehome: boolean, positions: Map<string, number>, lifecycleId: number, closedBy: Map<string, string> | undefined, closers: ErasedClosers | undefined): void {
   if (rehome) {
     rehomeLifecycleFact(db, ev, factId, positions, lifecycleId);
   }
   // Do not preserve stale winner/valid_to flags merely because the event
   // is already projected: recompute the chain from canonical ledger order
   // so the upgraded cache is equivalent to a fresh replay of the ledger.
-  reconcileStreamCurrent(db, lifecycleId, ev.predicate, positions, normalizeScope(ev.scope), closedBy);
+  reconcileStreamCurrent(db, lifecycleId, ev.predicate, positions, normalizeScope(ev.scope), closedBy, closers);
 }
 
 /**
@@ -1044,13 +1102,71 @@ function reconcileProjectedEvent(db: Database.Database, ev: LedgerEvent, factId:
  * Idempotent by event id + digest; a reused id with a conflicting payload is
  * explicit corruption; a failed insert can never leave a partial supersession.
  */
-function applyEvent(db: Database.Database, ev: LedgerEvent, positions?: Map<string, number>, index?: ReplayEntityIndex, closedBy?: Map<string, string>): { applied: boolean; factId: number | null } {
+function applyEvent(db: Database.Database, ev: LedgerEvent, positions?: Map<string, number>, index?: ReplayEntityIndex, closedBy?: Map<string, string>, closers?: ErasedClosers): { applied: boolean; factId: number | null } {
   validateLedgerEvent(ev);
   const digest = eventDigest(ev);
 
   const seen = prepareOnce(db, 'SELECT digest FROM applied_ledger_events WHERE event_id = ?').get(ev.id) as { digest: string } | undefined;
   if (seen && seen.digest !== digest) {
     throw new Error(`ledger event id ${ev.id} was reused with a conflicting payload; refusing to apply (corruption)`);
+  }
+
+  if (ev.kind === ERASE_KIND) {
+    db.transaction(() => {
+      const entityIds = db.prepare('SELECT subject_entity_id FROM facts WHERE event_id = ? UNION SELECT subject_entity_id FROM retired_facts WHERE event_id = ?')
+        .pluck().all(ev.id, ev.id) as number[];
+      const ids = db.prepare('SELECT id FROM facts WHERE event_id = ? UNION SELECT id FROM retired_facts WHERE event_id = ?')
+        .all(ev.id, ev.id) as Array<{ id: number }>;
+      // The erased value can also live on in the writer conflicts (writerConflicts.ts): a later fact that replaced it keeps
+      // it as an open displacement, carried forward by its writer's next saves. Drop those and the erased fact's own row.
+      const gone = db.prepare('SELECT object_text, valid_from, author FROM facts WHERE event_id = ? UNION SELECT object_text, valid_from, author FROM retired_facts WHERE event_id = ?')
+        .get(ev.id, ev.id) as { object_text: string; valid_from: string; author: string | null } | undefined;
+      if (gone) {
+        const goneWriter = writerOf(db, ev.id, gone.author).writer;
+        const rows = db.prepare(`SELECT event_id, displaced FROM fact_writers WHERE displaced <> '[]'`).all() as Array<{ event_id: string; displaced: string }>;
+        for (const row of rows) {
+          const displaced = JSON.parse(row.displaced) as OpenDisplacement[];
+          const kept = displaced.filter(d => !(d.object === gone.object_text && d.validFrom === gone.valid_from && d.writer === goneWriter));
+          if (kept.length !== displaced.length) db.prepare('UPDATE fact_writers SET displaced = ? WHERE event_id = ?').run(JSON.stringify(kept), row.event_id);
+        }
+      }
+      db.prepare('DELETE FROM fact_writers WHERE event_id = ?').run(ev.id);
+      for (const row of ids) db.prepare('DELETE FROM fact_terms WHERE fact_id = ?').run(row.id);
+      db.prepare('DELETE FROM facts WHERE event_id = ?').run(ev.id);
+      db.prepare('DELETE FROM retired_facts WHERE event_id = ?').run(ev.id);
+      db.prepare('DELETE FROM fact_retirements WHERE target = ?').run(ev.id);
+      db.prepare(`DELETE FROM write_events WHERE note_path = '_memory_ledger_' AND action IN ('retire', 'restore')
+        AND json_valid(summary) AND json_extract(summary, '$.id') = ?`).run(`fact:${ev.id}`);
+      for (const entityId of entityIds) {
+        const used = db.prepare('SELECT 1 FROM facts WHERE subject_entity_id = ? UNION SELECT 1 FROM retired_facts WHERE subject_entity_id = ? LIMIT 1').get(entityId, entityId);
+        if (!used) db.prepare(`DELETE FROM entities WHERE id = ? AND source_note = '_mcp_'`).run(entityId);
+      }
+      // What the erased fact closed stays closed: on a rebuild nothing else in the ledger closes it any more. A fact still open
+      // here (a fresh replay) is closed at the erased fact's own time; one already closed, or gone, is left as it is.
+      if (ev.closes !== undefined) {
+        for (const closed of ev.closes) {
+          for (const table of ['facts', 'retired_facts']) {
+            db.prepare(`UPDATE ${table} SET valid_to = ?, updated_at = ? WHERE event_id = ? AND valid_to IS NULL`).run(ev.closedAt, ev.closedAt, closed);
+          }
+        }
+      }
+      // Store the old digest under the old id: verification still detects a changed pre-erasure event, while no payload remains.
+      db.prepare('INSERT OR REPLACE INTO applied_ledger_events (event_id, digest, applied_at) VALUES (?, ?, ?)')
+        .run(ev.id, ev.originalDigest, ev.at);
+      // A tombstone without a closing link (written before there was one) keeps a link already recorded here.
+      db.prepare(`INSERT INTO erased_facts (event_id, original_digest, erased_at, closes, closed_at) VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT(event_id) DO UPDATE SET original_digest = excluded.original_digest, erased_at = excluded.erased_at,
+          closes = COALESCE(excluded.closes, erased_facts.closes), closed_at = COALESCE(excluded.closed_at, erased_facts.closed_at)`)
+        .run(ev.id, ev.originalDigest, ev.at, ev.closes !== undefined ? ev.closes.join(',') : null, ev.closedAt ?? null);
+    })();
+    return { applied: seen === undefined, factId: null };
+  }
+
+  // An erased fact's own event, or a retirement of it, that turns up again (a stale copy, a restored fragment): its digest
+  // is the one the tombstone kept, so the check above passes, and the missing-fact repair below would project it again.
+  // Erasure is final: skip it, whichever came first in this ledger.
+  if (prepareOnce(db, 'SELECT 1 FROM erased_facts WHERE event_id IN (?, ?)').get(ev.id, ev.target?.toUpperCase() ?? ev.id)) {
+    return { applied: false, factId: null };
   }
 
   if (RETIREMENT_KINDS.has(ev.kind)) {
@@ -1081,7 +1197,7 @@ function applyEvent(db: Database.Database, ev: LedgerEvent, positions?: Map<stri
     // transactions become savepoints): a rejected ledger (out-of-order chain,
     // absent-from-ledger contradiction) rolls the reconciliation back and
     // leaves the cache exactly as it was held — never partially reconciled.
-    transactionOnce(db, reconcileProjectedEvent)(ev, factRow.id, liveRow !== undefined && owner?.source_note !== LIFECYCLE_NOTE_PATH, positions, lifecycleId, closedBy);
+    transactionOnce(db, reconcileProjectedEvent)(ev, factRow.id, liveRow !== undefined && owner?.source_note !== LIFECYCLE_NOTE_PATH, positions, lifecycleId, closedBy, closers);
     // If it predates the digest table (migration 6), backfill the digest so
     // future replays can tell identical dedup from conflicts (the legacy
     // payload itself can no longer be verified).
@@ -1319,6 +1435,7 @@ export async function replayLedger(
   options: { setTornTailAside?: boolean } = {},
 ): Promise<number> {
   const filePath = resolveLedgerPath(vaultPath, ledgerRelPath); // shared confinement, before any read
+  if (options.setTornTailAside === true) await removeStaleEraseTemps(filePath);
   let content: string;
   let finalEventKnown = false;
   try {
@@ -1363,19 +1480,26 @@ export async function replayLedger(
   const positions = new Map<string, number>();
   // Each event's closed_event: reconciling a stream replays the facts closed across spellings (reconcileStreamCurrent).
   const closedBy = new Map<string, string>();
+  // What each erased fact closed (reconcileStreamCurrent): its tombstone's link, or, when a lost rename left its content event
+  // in the ledger, the link the index kept for it.
+  const closers: ErasedClosers = new Map();
   for (let i = 0; i < events.length; i++) {
     if (positions.has(events[i].id)) continue;
     positions.set(events[i].id, i);
     const closed = events[i].closedEvent;
     if (closed) closedBy.set(events[i].id, closed.toUpperCase());
+    if (events[i].kind === ERASE_KIND && events[i].closes !== undefined) closers.set(events[i].id, { closes: events[i].closes!, closedAt: events[i].closedAt! });
     // A retirement names a fact event written before it.
     const target = events[i].target?.toUpperCase();
     if (target !== undefined) {
       const at = positions.get(target);
-      if (at === undefined || RETIREMENT_KINDS.has(events[at].kind)) {
+      if (at === undefined || RETIREMENT_KINDS.has(events[at].kind) || events[at].kind === ERASE_KIND) {
         throw new Error(`ledger corruption in event ${events[i].id}: its target ${target} is no fact event before it in the ledger`);
       }
     }
+  }
+  for (const kept of prepareOnce(db, 'SELECT event_id, closes, closed_at FROM erased_facts WHERE closes IS NOT NULL AND closed_at IS NOT NULL').all() as Array<{ event_id: string; closes: string; closed_at: string }>) {
+    if (positions.has(kept.event_id) && !closers.has(kept.event_id)) closers.set(kept.event_id, { closes: kept.closes.split(','), closedAt: kept.closed_at });
   }
 
   // GLOBAL preflight (K13): every event-backed canonical projection in the
@@ -1403,7 +1527,7 @@ export async function replayLedger(
 
   const index = replayEntityIndex(db);
   for (const ev of events) {
-    if (applyEvent(db, ev, positions, index, closedBy).applied) applied++;
+    if (applyEvent(db, ev, positions, index, closedBy, closers).applied) applied++;
   }
   settleRetirements(db, events);
   backfillStatementWords(db, events);
@@ -1648,6 +1772,141 @@ async function rememberCritical(db: Database.Database, vaultPath: string, ledger
   };
 }
 
+/** One event as the ledger stores it: what an append writes, and what an erasure's rewrite writes for every event it keeps. */
+function ledgerEventBlock(ev: LedgerEvent): string {
+  const lines = [`\n## ${ev.id} · ${ev.at}`, `- kind: ${ev.kind}`];
+  if (ev.kind === ERASE_KIND) {
+    const closing = ev.closes !== undefined ? [`- closes: ${ev.closes.join(', ')}`, `- closed_at: ${ev.closedAt}`] : [];
+    return [...lines, `- original_digest: ${ev.originalDigest}`, ...closing, '- source: erased', ''].join('\n');
+  }
+  lines.push(`- subject: ${ev.subject}`, `- predicate: ${ev.predicate}`);
+  if (ev.target !== undefined) lines.push(`- target: ${ev.target}`); else lines.push(`- object: ${ev.object}`);
+  if (ev.closedEvent) lines.push(`- closed_event: ${ev.closedEvent}`);
+  const scope = normalizeScope(ev.scope);
+  if (scope !== 'global') lines.push(`- scope: ${scope}`);
+  if (ev.statement !== undefined) lines.push(`- statement: ${encodeStatement(ev.statement)}`);
+  if (ev.writer !== undefined) lines.push(`- writer: ${ev.writer}`);
+  lines.push(`- source: ${ev.source}`, '');
+  return lines.join('\n');
+}
+
+export interface FactErasureReceipt { ok: true; action: 'deleted'; ids: string[]; freedBytes: 0; at: string }
+
+/** Atomically replace a retired fact and its retire/restore events with one content-free, digest-bearing tombstone. */
+export async function eraseRetiredFact(
+  db: Database.Database, vaultPath: string, ledgerRelPath: string, id: string,
+  vectorIndex: IndexOptions['vectorIndex'] | undefined,
+): Promise<FactErasureReceipt> {
+  return serializeLifecycleWrite(async () => {
+    const target = factEventId(id);
+    if (target === null) throw new LifecycleInputError('id', 'a live memory is retired first; pass a retired fact id', 'invalid_argument');
+    const row = db.prepare(`SELECT r.subject_entity_id FROM retired_facts r WHERE r.event_id = ?`).get(target) as
+      { subject_entity_id: number } | undefined;
+    const erased = db.prepare('SELECT original_digest, erased_at, closes FROM erased_facts WHERE event_id = ?').get(target) as
+      { original_digest: string; erased_at: string; closes: string | null } | undefined;
+    if (!row && !erased) {
+      if (db.prepare('SELECT 1 FROM facts WHERE event_id = ?').get(target)) throw new LifecycleInputError('id', 'that fact is still live; retire it before deleting it permanently', 'invalid_argument');
+      throw new LifecycleInputError('id', 'no retired fact has that id', 'memory_not_found');
+    }
+    const file = resolveLedgerPath(vaultPath, ledgerRelPath);
+    const rel = path.relative(path.resolve(vaultPath), file);
+    // The append lock keeps every ledger writer out; the per-file lock the indexer holds for a whole pass (indexFile) keeps
+    // out an index pass that read the ledger before this rewrite and would otherwise commit its chunks after the derived
+    // note is dropped below, putting the erased text back into search. Always in this order: the indexer takes no append lock.
+    return withAppendLock(file, () => withDailyFileLock(file, async () => {
+      const events = parseLedgerEvents(await fs.readFile(file, 'utf8'));
+      const original = events.find(ev => ev.id === target);
+      if (original?.kind === ERASE_KIND || (!original && erased)) {
+        // The ledger already holds the tombstone (a retry, or a crash after the rename): settle the projection and the audit.
+        const at = original?.at ?? erased!.erased_at;
+        const ledgerChunkIds = ledgerChunks(db, file, rel);
+        db.transaction(() => {
+          db.prepare('DELETE FROM notes WHERE path IN (?, ?)').run(file, rel);
+          if (original) applyEvent(db, original);
+          const audit = db.prepare(`SELECT 1 FROM write_events WHERE note_path = '_retired_' AND action = 'delete' AND summary = 'deleted permanently: 1 fact' AND created_at = ?`).get(at);
+          if (!audit) db.prepare(`INSERT INTO write_events (note_path, action, summary, created_at) VALUES ('_retired_', 'delete', 'deleted permanently: 1 fact', ?)`).run(at);
+        })();
+        for (const chunkId of ledgerChunkIds) vectorIndex?.delete(chunkId);
+        return { ok: true, action: 'deleted', ids: [`fact:${target}`], freedBytes: 0, at };
+      }
+      if (!original || RETIREMENT_KINDS.has(original.kind)) throw new Error(`ledger corruption: retired fact ${target} has no content-bearing event`);
+      // The index says the fact was erased, yet the ledger still holds it: the rename was lost (a power loss after the index
+      // committed, before the directory reached the disk). Redo the rewrite with the erasure's own digest and time.
+      if (erased && eventDigest(original) !== erased.original_digest) {
+        throw new Error(`ledger corruption: erased fact ${target} is back in the ledger with a different payload`);
+      }
+      const at = erased?.erased_at ?? new Date().toISOString();
+      const subjectEntityId = row?.subject_entity_id ?? resolveLifecycleEntity(db, original.subject, original.at, false);
+      // A redo after a lost rename reuses the link the first erasure recorded: a restart in between replays the old ledger
+      // without the erased fact and may have reopened what it closed, so the facts tables alone no longer show it.
+      const closes = [...new Set([...(erased?.closes ? erased.closes.split(',') : []), ...factsClosedBy(db, original, subjectEntityId)])].sort();
+      const tombstone: LedgerEvent = {
+        id: target, at, kind: ERASE_KIND, subject: '', predicate: '', object: '', closedEvent: null, source: 'erased',
+        originalDigest: eventDigest(original),
+        ...(closes.length > 0 ? { closes, closedAt: original.at } : {}),
+      };
+      const kept = events.filter(ev => !(RETIREMENT_KINDS.has(ev.kind) && ev.target?.toUpperCase() === target)).map(ev => ev.id === target ? tombstone : ev);
+      // Activity is derived, so scrub it before the canonical commit. A crash here still has the complete retired fact
+      // in its ledger/table; replay does not depend on activity rows. Nothing content-bearing remains after the rename.
+      const erasedEvents = events.filter(ev => ev.id === target || (RETIREMENT_KINDS.has(ev.kind) && ev.target?.toUpperCase() === target));
+      const activityRows = db.prepare(`SELECT id, summary FROM write_events
+        WHERE note_path = '_memory_ledger_' AND action = ? AND created_at = ?
+          AND (author IS NULL OR author = ?) AND (scope IS NULL OR scope = ?)`);
+      const deleteActivity = db.prepare('DELETE FROM write_events WHERE id = ?');
+      db.transaction(() => {
+        for (const ev of erasedEvents) {
+          const expected = ev.target !== undefined
+            ? JSON.stringify({ id: `fact:${ev.target.toUpperCase()}`, title: `${ev.subject} ${ev.predicate}` })
+            : `${ev.subject} ${ev.predicate} → ${ev.object}`;
+          const rows = activityRows.all(ev.kind, ev.at, ev.source, ev.scope ?? 'global') as Array<{ id: number; summary: string }>;
+          for (const activity of rows) {
+            // The erased event's own line, or that line with the facts it closed: never another line of the same length.
+            const suffix = activity.summary.slice(expected.length);
+            const isWriterSummary = activity.summary === expected
+              || (activity.summary.startsWith(expected) && /^ \(closed facts? [0-9]+(?:, [0-9]+)*\)$/.test(suffix));
+            if (isWriterSummary) deleteActivity.run(activity.id);
+          }
+        }
+      })();
+      const tmp = await createConfined(vaultPath, `${rel}.erase-${crypto.randomUUID()}.tmp`, Buffer.from(LEDGER_HEADER + kept.map(ledgerEventBlock).join(''), 'utf8'));
+      try { await fs.rename(tmp, file); } catch (err) { await fs.rm(tmp, { force: true }); throw err; }
+      // The rename is the commit point, so it reaches the disk before the index records the erasure as done: otherwise a power
+      // loss could leave the old ledger, with the erased content, under an index that says it is gone.
+      await syncDirectory(path.dirname(file));
+      const ledgerChunkIds = ledgerChunks(db, file, rel);
+      db.transaction(() => {
+        // The Markdown index may have chunked the old ledger bytes. Drop that derived note atomically; the watcher may
+        // index the content-free tombstone later, but no read can serve a stale subject/value chunk meanwhile.
+        db.prepare('DELETE FROM notes WHERE path IN (?, ?)').run(file, rel);
+        applyEvent(db, tombstone);
+        const audit = db.prepare(`SELECT 1 FROM write_events WHERE note_path = '_retired_' AND action = 'delete' AND summary = 'deleted permanently: 1 fact' AND created_at = ?`).get(at);
+        if (!audit) db.prepare(`INSERT INTO write_events (note_path, action, summary, created_at) VALUES ('_retired_', 'delete', 'deleted permanently: 1 fact', ?)`).run(at);
+      })();
+      for (const chunkId of ledgerChunkIds) vectorIndex?.delete(chunkId);
+      return { ok: true, action: 'deleted', ids: [`fact:${target}`], freedBytes: 0, at };
+    }));
+  });
+}
+
+/**
+ * The fact events `ev` closed when it was saved, read from the index: the ones on its subject, predicate and scope whose value
+ * ended at its own time, and the one its closed_event names. Ids only; they go in its erasure tombstone.
+ */
+function factsClosedBy(db: Database.Database, ev: LedgerEvent, subjectEntityId: number | null): string[] {
+  const query = (table: string) => `SELECT event_id FROM ${table} WHERE event_id IS NOT NULL AND event_id <> ? AND valid_to = ?
+    AND ((subject_entity_id = ? AND predicate = ? AND scope = ?) OR event_id = ?)`;
+  const args = [ev.id, ev.at, subjectEntityId ?? -1, ev.predicate, normalizeScope(ev.scope), ev.closedEvent?.toUpperCase() ?? ''];
+  const ids = new Set<string>();
+  for (const table of ['facts', 'retired_facts']) {
+    for (const closed of db.prepare(query(table)).pluck().all(...args) as string[]) ids.add(closed.toUpperCase());
+  }
+  return [...ids].sort();
+}
+
+function ledgerChunks(db: Database.Database, absolute: string, relative: string): number[] {
+  return (db.prepare('SELECT id FROM chunks WHERE note_path IN (?, ?)').all(absolute, relative) as Array<{ id: number }>).map(chunk => chunk.id);
+}
+
 /** What retire_memory and restore_memory answer for a fact (memorymap/memoryMap.ts gives the same shape for notes). */
 export interface FactRetirementReceipt {
   ok: true;
@@ -1719,6 +1978,9 @@ export async function restoreFact(
   return serializeLifecycleWrite(async () => {
     const target = factEventId(id);
     if (target === null) throw new LifecycleInputError('id', `not a fact id: ${JSON.stringify(id)} (a fact's id is fact: and its eventId)`, 'invalid_argument');
+    if (prepareOnce(db, 'SELECT 1 FROM erased_facts WHERE event_id = ?').get(target)) {
+      throw new LifecycleInputError('id', 'that fact was permanently erased and cannot be restored', 'memory_not_found');
+    }
     const row = prepareOnce(db, 
       `SELECT r.predicate, r.object_text, r.scope, e.canonical_name AS subject
          FROM retired_facts r JOIN entities e ON e.id = r.subject_entity_id WHERE r.event_id = ?`

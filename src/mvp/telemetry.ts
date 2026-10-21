@@ -1,4 +1,5 @@
 import { createHash, randomBytes } from 'node:crypto';
+import { PHASE_NAMES, type PhaseReport } from '../callPhases';
 import { isToolErrorReason, type ToolErrorReason } from '../toolRefusal';
 
 /**
@@ -27,6 +28,12 @@ export type TelemetryEvent =
        * so a message, a statement or a path can never arrive here as a "reason".
        */
       error_reason?: ToolErrorReason;
+      /**
+       * Where a get_context or search_memory call spent its time (callPhases.ts): milliseconds per phase, from a closed list of
+       * names, numbers and nothing else. For the local log only: it is not forwarded to PostHog, Sentry or Langfuse, which get
+       * this event exactly as they did before phases existed.
+       */
+      phases?: PhaseReport;
     }
   | {
       event: 'auth';
@@ -156,6 +163,27 @@ export function isSafeArgName(name: unknown): name is string {
   return typeof name === 'string' && SAFE_ARG.test(name);
 }
 
+/** The longest a phase may have taken, a day: anything above it is not a duration anyone measured. */
+const MAX_PHASE_MS = 86_400_000;
+
+/**
+ * `value` as a NEW object of phase timings, or undefined. Each name of the closed list is read once and kept only as a finite
+ * number in range, rounded to a tenth of a millisecond; a name nobody listed is not read at all. One value that fails its
+ * check drops the whole report (the call itself is still counted), never part of it.
+ */
+function cleanPhases(value: unknown): PhaseReport | undefined {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return undefined;
+  const given = value as Record<string, unknown>;
+  const phases: PhaseReport = {};
+  for (const name of PHASE_NAMES) {
+    const ms: unknown = given[name];
+    if (ms === undefined) continue;
+    if (!isFiniteNumber(ms) || ms < 0 || ms > MAX_PHASE_MS) return undefined;
+    phases[name] = Math.round(ms * 10) / 10;
+  }
+  return Object.keys(phases).length > 0 ? phases : undefined;
+}
+
 /** The member of `allowed` that `value` is, or undefined. Only a string can be one, and what comes back is the list's own string. */
 function oneOf<T extends string>(value: unknown, allowed: readonly T[]): T | undefined {
   return typeof value === 'string' ? allowed.find(member => member === value) : undefined;
@@ -193,7 +221,7 @@ function cleanEvent(payload: TelemetryEvent): TelemetryEvent | null {
   const fields = payload as unknown as Record<string, unknown>;
   switch (fields.event) {
     case 'tool_use': {
-      const { tool, ok, ms, error_kind, error_reason } = fields;
+      const { tool, ok, ms, error_kind, error_reason, phases: rawPhases } = fields;
       if (!isSafeTool(tool) || typeof ok !== 'boolean' || !isFiniteNumber(ms)) return null;
       const errorKind = error_kind === undefined ? undefined : oneOf(error_kind, TOOL_ERROR_KINDS);
       if (error_kind !== undefined && !errorKind) return null;
@@ -201,6 +229,8 @@ function cleanEvent(payload: TelemetryEvent): TelemetryEvent | null {
       // rather than logged, so no code can be a message, a statement or a path however it was produced. A
       // dropped reason leaves the call counted, exactly as it was before reasons existed.
       const errorReason = isToolErrorReason(error_reason) ? error_reason : undefined;
+      // Likewise a report that does not check is dropped and the call is still counted, as it was before phases existed.
+      const phases = rawPhases === undefined ? undefined : cleanPhases(rawPhases);
       return {
         event: 'tool_use',
         tool,
@@ -208,6 +238,7 @@ function cleanEvent(payload: TelemetryEvent): TelemetryEvent | null {
         ms,
         ...(errorKind ? { error_kind: errorKind } : {}),
         ...(errorReason ? { error_reason: errorReason } : {}),
+        ...(phases ? { phases } : {}),
       };
     }
     case 'auth': {
@@ -517,6 +548,13 @@ export function telemetryInstanceId(): string {
   return /^[a-z0-9_-]{1,32}$/.test(raw) ? raw : 'unknown';
 }
 
+/** The line as the remote sinks get it: phase timings are for the local log, so the event leaves exactly as it always did. */
+function forRemote(line: TelemetryLine): TelemetryLine {
+  if (line.event !== 'tool_use' || line.phases === undefined) return line;
+  const { phases: _local, ...rest } = line;
+  return rest;
+}
+
 export function emitTelemetry(payload: TelemetryEvent): void {
   try {
     const event = cleanEvent(payload);
@@ -527,7 +565,7 @@ export function emitTelemetry(payload: TelemetryEvent): void {
       ...event,
     };
     console.log(JSON.stringify(line));
-    dispatchRemote(line);
+    dispatchRemote(forRemote(line));
   } catch {
     // Telemetry must never break the product.
   }

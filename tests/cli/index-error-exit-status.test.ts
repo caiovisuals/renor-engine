@@ -34,7 +34,10 @@ import { latin1, rawPath, supportsNonUtf8Names } from '../helpers/nonUtf8Names';
 // testTimeout (the root config's 15s is not what the engine gate loads), so each
 // case carries an explicit budget rather than relying on the 5s default.
 const REPO_ROOT = path.resolve(__dirname, '..', '..');
-const TSX = path.join(REPO_ROOT, 'node_modules', '.bin', 'tsx');
+// The compiled `renor` bin (package.json `bin`), which the suite builds before any test file loads
+// (tests/globalSetup.ts): the surface a user runs, and without paying tsx's transform on every
+// spawn. Same spawn as tests/digests/digests-cli.test.ts, which switched for the same reason.
+const CLI = path.join(REPO_ROOT, 'dist', 'cli.js');
 const tmpDirs: string[] = [];
 
 /**
@@ -78,7 +81,7 @@ function runCli(
   extraEnv: Record<string, string> = {},
 ): Promise<{ code: number | null; stdout: string; stderr: string }> {
   return new Promise((resolve) => {
-    execFile(TSX, ['src/cli.ts', ...args], {
+    execFile(process.execPath, [CLI, ...args], {
       cwd: REPO_ROOT,
       env: cliEnv(vault, extraEnv),
       timeout,

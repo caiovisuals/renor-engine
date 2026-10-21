@@ -11,13 +11,15 @@ import Database from 'better-sqlite3';
  * background promise), and `rebuild` must replay the ledger after clearing the
  * derived tables or it would silently drop every lifecycle fact.
  *
- * Spawns the actual CLI (`tsx src/cli.ts`) with synthetic temp vaults, a
+ * Spawns the actual CLI (the compiled `dist/cli.js`) with synthetic temp vaults, a
  * dummy OpenAI key and no embedding calls (the synthetic vault ignores the
  * System/ dir via .semanticignore, so indexVault walks zero files).
  */
 
 const REPO_ROOT = path.resolve(__dirname, '..', '..');
-const TSX = path.join(REPO_ROOT, 'node_modules', '.bin', 'tsx');
+// The compiled `renor` bin (package.json `bin`), built by tests/globalSetup.ts before any test
+// file loads: the surface a user runs, and without paying tsx's transform on every spawn.
+const CLI = path.join(REPO_ROOT, 'dist', 'cli.js');
 const LEDGER = 'System/Memory Events Ledger.md';
 const tmpDirs: string[] = [];
 
@@ -53,7 +55,7 @@ function cliEnv(vault: string): NodeJS.ProcessEnv {
 
 function runCli(command: string, vault: string): Promise<{ code: number; stdout: string; stderr: string }> {
   return new Promise((resolve) => {
-    execFile(TSX, ['src/cli.ts', command], {
+    execFile(process.execPath, [CLI, command], {
       cwd: REPO_ROOT,
       env: cliEnv(vault),
       timeout: 90_000,
@@ -71,7 +73,7 @@ function runCliWithEnv(command: string, vault: string, overrides: NodeJS.Process
     const env = cliEnv(vault);
     delete env.EMBEDDING_PROVIDER;
     Object.assign(env, overrides);
-    execFile(TSX, ['src/cli.ts', command], { cwd: REPO_ROOT, env, timeout: 90_000 }, (err, stdout, stderr) => {
+    execFile(process.execPath, [CLI, command], { cwd: REPO_ROOT, env, timeout: 90_000 }, (err, stdout, stderr) => {
       resolve({
         code: err && typeof (err as any).code === 'number' ? (err as any).code : (err ? 1 : 0),
         stdout: String(stdout), stderr: String(stderr),

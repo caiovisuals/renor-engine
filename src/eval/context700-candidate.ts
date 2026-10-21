@@ -18,7 +18,7 @@
  *      header stubs (they carry session dates), recency-ordered like N22.
  *   3. Fill remaining budget by rank; no minimum raw count (tables win ties).
  */
-import { encode } from 'gpt-tokenizer';
+import { countTextTokens } from './textTokens';
 
 export interface CompilerHit {
   text: string | null;
@@ -152,7 +152,7 @@ export function compileContext(args: {
       return `- ${f.value} ${f.unit ?? ''} ${f.object ?? ''}${f.event ? ` — ${f.event}` : ''}${co}`.replace(/\s+/g, ' ').trim();
     });
     const block = `Numeric facts:\n${lines.join('\n')}\nCite only values present here; otherwise use excerpts.`;
-    const blockTokens = encode(block).length;
+    const blockTokens = countTextTokens(block);
     if (blockTokens <= remaining) {
       excerpts.push({ text: block, date: null });
       tokens += blockTokens;
@@ -164,7 +164,7 @@ export function compileContext(args: {
   if (chronScored.length) {
     const lines = chronScored.map(({ row: e }) => `- ${e.when ?? ''}: ${e.event ?? ''}`.replace(/\s+/g, ' ').trim());
     const block = `Events:\n${lines.join('\n')}\nCite only events present here; otherwise use excerpts.`;
-    const blockTokens = encode(block).length;
+    const blockTokens = countTextTokens(block);
     if (blockTokens <= remaining) {
       excerpts.push({ text: block, date: null });
       tokens += blockTokens;
@@ -176,7 +176,7 @@ export function compileContext(args: {
   if (prefScored.length) {
     const lines = prefScored.map(({ row: p }) => `- ${p.statement ?? ''}`.replace(/\s+/g, ' ').trim());
     const block = `Standing preferences:\n${lines.join('\n')}\nApply matching entries; otherwise use excerpts.`;
-    const blockTokens = encode(block).length;
+    const blockTokens = countTextTokens(block);
     if (blockTokens <= remaining) {
       excerpts.push({ text: block, date: null });
       tokens += blockTokens;
@@ -203,7 +203,7 @@ export function compileContext(args: {
   for (const raw of raws) {
     const dateMark = raw.date ? `(${compactDate(raw.date)}) ` : '';
     const candidate = `${dateMark}${raw.text}`;
-    const candidateTokens = encode(candidate).length;
+    const candidateTokens = countTextTokens(candidate);
     if (tokens + candidateTokens > maxContextTokens) break;
     tokens += candidateTokens;
     excerpts.push({ text: candidate, date: raw.date });

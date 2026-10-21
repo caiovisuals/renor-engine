@@ -9,12 +9,20 @@ import ts from 'typescript';
  * fresh checkout has none, and a suite that passed only because an earlier build had left one
  * behind is not a verdict on the tree (#357 merged green that way and failed on a fresh clone).
  *
- * So the suite compiles the tree it is about to test, once, before any test file loads. `tsc`
- * rewrites the output of every current source, and before compiling this removes the orphans:
- * `.js`, `.d.ts` and `.map` files in the tsconfig's `outDir` whose source under its `rootDir` no
- * longer exists (`tsc` never prunes, so a deleted or renamed source would otherwise keep a stale
- * output that a test can still load). Nothing else in `dist/` is touched, and the directory is
- * never removed, because parallel gates may share it.
+ * So the suite compiles the tree it is about to test, once, before any test file loads.
+ *
+ * The compile is `tsc -b tsconfig.json`, the incremental build driver: `tsconfig.json` carries
+ * `incremental: true`, so the second and later invocations of the same tree (a re-gate, a
+ * single-file iteration, the gate's own `npm run build` right after this one) are a buildinfo
+ * check — fractions of a CPU-second when nothing changed — instead of a full `tsc` (~20 CPU-s).
+ * The buildinfo is written only by a successful build, and tsc re-checks a project whose last
+ * build had errors, so a tree that does not compile still fails here first (#357: the suite must
+ * never run against a `dist/` that no current compile produced).
+ *
+ * Before compiling, this removes the orphans: `.js`, `.d.ts` and `.map` files in the tsconfig's
+ * `outDir` whose source under its `rootDir` no longer exists (`tsc` never prunes, so a deleted or
+ * renamed source would otherwise keep a stale output that a test can still load). Nothing else in
+ * `dist/` is touched, and the directory is never removed, because parallel gates may share it.
  */
 
 const OUTPUT_SUFFIXES = ['.d.ts.map', '.js.map', '.d.ts', '.js'];
@@ -50,12 +58,66 @@ export function pruneOrphanOutputs(tsconfigPath: string): string[] {
   return orphans;
 }
 
+/**
+ * The outputs `tsc -b` would consider current but which are not on disk.
+ *
+ * Build mode decides from the buildinfo alone: `rm -rf dist` leaves it intact, so the project
+ * reads "up to date" and nothing is emitted — the suite would then load a `dist/` that does not
+ * exist. #357 is why that must not pass: the suite compiles the tree it tests, and "compiled"
+ * means the outputs are present. This lists every source's expected output that is missing from
+ * `outDir`; a non-empty list turns the compile into `tsc -b --force`.
+ *
+ * The mapping is tsc's own emit table, one output per input: `.ts`/`.tsx`/`.js`/`.jsx` -> `.js`,
+ * `.mts`/`.mjs` -> `.mjs`, `.cts`/`.cjs` -> `.cjs`, any other included file (a `.json`) -> the
+ * same relative path, and a **declaration input** (`.d.ts`, `.d.cts`, `.d.mts`) -> nothing at
+ * all. Declarations must be skipped or the list says "missing" forever for a file that is never
+ * emitted: `src/memory/hiveNameHeader.d.cts` (#532) did exactly that, which a gate caught as a
+ * `--force` on every run.
+ *
+ * Fails in the slow direction only: a file this cannot map is treated as missing, which costs one
+ * full rebuild, never a skipped one.
+ */
+const DECLARATION_INPUT = /\.d\.(ts|cts|mts)$/;
+const EMIT_EXTENSION: Record<string, string> = {
+  '.ts': '.js', '.tsx': '.js', '.js': '.js', '.jsx': '.js',
+  '.mts': '.mjs', '.mjs': '.mjs', '.cts': '.cjs', '.cjs': '.cjs',
+};
+
+export function missingOutputs(tsconfigPath: string): string[] {
+  const read = ts.readConfigFile(tsconfigPath, ts.sys.readFile);
+  if (read.error) throw new Error(`cannot read ${tsconfigPath}: ${ts.flattenDiagnosticMessageText(read.error.messageText, '\n')}`);
+  const parsed = ts.parseJsonConfigFileContent(read.config, ts.sys, path.dirname(tsconfigPath));
+  const { outDir, rootDir } = parsed.options;
+  if (!outDir || !rootDir) throw new Error(`${tsconfigPath} must name outDir and rootDir`);
+  const out = path.resolve(outDir);
+  const root = path.resolve(rootDir);
+  const missing: string[] = [];
+  for (const file of parsed.fileNames) {
+    if (DECLARATION_INPUT.test(file)) continue; // type-only inputs emit nothing
+    const relative = path.relative(root, file);
+    if (relative.startsWith('..')) continue; // outside rootDir: tsc would not emit it either
+    const extension = path.extname(relative);
+    const emitted = EMIT_EXTENSION[extension]
+      ? path.join(out, relative.slice(0, -extension.length) + EMIT_EXTENSION[extension])
+      : path.join(out, relative);
+    if (!fs.existsSync(emitted)) missing.push(emitted);
+  }
+  return missing.sort();
+}
+
 export default function setup(): void {
   const engineDir = path.resolve(__dirname, '..');
   const tsconfig = path.join(engineDir, 'tsconfig.json');
   pruneOrphanOutputs(tsconfig);
   const tsc = path.join(engineDir, 'node_modules', 'typescript', 'bin', 'tsc');
-  const res = spawnSync(process.execPath, [tsc, '-p', tsconfig], {
+  // Build mode is trustworthy about sources but not about outputs: force a full rebuild the moment
+  // an expected output is missing (the buildinfo cannot know `dist/` was removed by hand).
+  const missing = missingOutputs(tsconfig);
+  const force = missing.length > 0;
+  // `-b` (build mode): trust the buildinfo only when it matches this tree; a missing or stale one
+  // is a full compile, and one whose last build failed is compiled again. `-p` would always
+  // re-check every file even when the buildinfo is current.
+  const res = spawnSync(process.execPath, [tsc, '-b', ...(force ? ['--force'] : []), tsconfig], {
     cwd: engineDir,
     encoding: 'utf8',
     timeout: 300_000,

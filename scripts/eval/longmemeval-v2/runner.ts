@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { performance } from 'node:perf_hooks';
-import { encode } from 'gpt-tokenizer';
+import { countTextTokens } from '../../../src/eval/textTokens';
 import { openDb } from '../../../src/db/client';
 import { runMigrations } from '../../../src/db/schema';
 import { VectorIndex } from '../../../src/embeddings/vectorIndex';
@@ -217,7 +217,7 @@ export async function runRetrievalStage(opts: RetrievalStageOptions) {
           const notePath = hit.notePath.startsWith('_renor/') ? hit.notePath : path.relative(vaultDir, hit.notePath).replaceAll(path.sep, '/');
           return { text: hit.text ?? '', notePath, trajectoryId: trajectoryByNote.get(notePath) ?? null, score: hit.score };
         });
-        const contextTokens = encode(hits.map(hit => hit.text).join('\n\n')).length;
+        const contextTokens = countTextTokens(hits.map(hit => hit.text).join('\n\n'));
         const result: V2ResultRow = { id: question.id, hits, latencyMs, contextTokens };
         results.push(result);
         if (ledgerRecord) archiveRow(ledgerRecord, JSON.stringify(result));
@@ -428,7 +428,7 @@ export function assembleContext(hits: V2Hit[], maxContextTokens: number): { cont
     const text = hit.text.trim();
     if (!text || seen.has(text)) continue;
     const block = `[Excerpt ${parts.length + 1}]\n${text}`;
-    const blockTokens = encode(block).length;
+    const blockTokens = countTextTokens(block);
     if (tokens + blockTokens > maxContextTokens) { truncated = true; break; }
     seen.add(text);
     parts.push(block);

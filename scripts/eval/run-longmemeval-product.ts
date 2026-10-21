@@ -31,7 +31,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { Command } from 'commander';
-import { encode } from 'gpt-tokenizer';
+import { countTextTokens } from '../../src/eval/textTokens';
 import {
   assertGoldIsolatedRuntimeInputs,
   assertNoSidecarFlags,
@@ -643,7 +643,7 @@ export function assembleClientContext(hits: PublicHit[], maxContextTokens: numbe
     const candidate = options?.stripExcerptMeta === true
       ? `${dateLine}${strippedText}` // strip mode: no [Excerpt N] marker (P1); date always kept
       : `${dateLine}[Excerpt ${excerpts.length + 1}]\n${strippedText}`;
-    const candidateTokens = encode(candidate).length;
+    const candidateTokens = countTextTokens(candidate);
     if (tokens + candidateTokens > maxContextTokens) break;
     seen.add(text);
     excerpts.push(candidate);
@@ -1146,7 +1146,7 @@ export async function runProductBenchmark(
         .filter(s => s?.included && s?.name !== 'excerpts' && typeof s?.text === 'string')
         .map(s => s.text!)
         .join('\n\n');
-      const composedTokens = composedText ? encode(composedText).length : 0;
+      const composedTokens = composedText ? countTextTokens(composedText) : 0;
       const excerptBudget = Math.max(0, opts.maxContextTokens - composedTokens);
       const assembled = assembleClientContext(hits, excerptBudget, { contextDates: opts.contextDates === true, stripExcerptMeta: opts.stripExcerptMeta === true });
       const context = composedText ? `${composedText}\n\n${assembled.context}` : assembled.context;

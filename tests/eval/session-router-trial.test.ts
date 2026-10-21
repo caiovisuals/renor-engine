@@ -19,6 +19,11 @@ import { SESSIONS } from '../router/fixtureSessions';
  */
 
 const REPO_ROOT = path.resolve(__dirname, '..', '..');
+// The trial refuses any Node major but the engine's pin (mise.toml), as the agent gate does: a measurement run on another
+// major would fail native modules for the wrong reason. So the tests that get past that refusal run only on the pinned
+// major (the public CI's Node 24 job skips them); the refusals themselves are tested on every Node.
+const PINNED_NODE = /^node\s*=\s*"?(\d+)/m.exec(fs.readFileSync(path.join(REPO_ROOT, 'mise.toml'), 'utf8'))?.[1];
+const ON_PINNED_NODE = process.versions.node.split('.')[0] === PINNED_NODE;
 
 function dataset(root: string): string {
   const row = (id: string, question: string, answer: string, gold: string[]) => ({
@@ -138,7 +143,7 @@ describe('session-router trial command (offline smoke)', () => {
     expect(signTestP(13, 3)).toBeCloseTo(0.02127, 4); // the scout's Tu vs Bev
   });
 
-  it('stops before the summary phase could exceed --warm-max-calls (exit 3, no arm runs), and a rerun continues', async () => {
+  it.runIf(ON_PINNED_NODE)('stops before the summary phase could exceed --warm-max-calls (exit 3, no arm runs), and a rerun continues', async () => {
     const stub = await startStubServer();
     const root = await fsp.mkdtemp(path.join(os.tmpdir(), 'renor-router-warm-'));
     try {
@@ -167,7 +172,7 @@ describe('session-router trial command (offline smoke)', () => {
     }
   }, 300_000);
 
-  it('--vertex-roles sends the summaries, the router and the reader through the Vertex chat proxy, and never the judge', async () => {
+  it.runIf(ON_PINNED_NODE)('--vertex-roles sends the summaries, the router and the reader through the Vertex chat proxy, and never the judge', async () => {
     const vertex = await startStubServer(); // stands in for Vertex's OpenAI-compatible endpoint
     const judge = await startStubServer();
     const root = await fsp.mkdtemp(path.join(os.tmpdir(), 'renor-router-vertex-'));
@@ -213,7 +218,7 @@ describe('session-router trial command (offline smoke)', () => {
     }
   }, 300_000);
 
-  it('runs replace, union and control through the product client and writes the paired report', async () => {
+  it.runIf(ON_PINNED_NODE)('runs replace, union and control through the product client and writes the paired report', async () => {
     const stub = await startStubServer();
     const summaries = await startStubServer(); // the summary phase's own endpoint (as --vertex-summaries gives it)
     const root = await fsp.mkdtemp(path.join(os.tmpdir(), 'renor-router-trial-'));

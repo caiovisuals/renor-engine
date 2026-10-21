@@ -6,7 +6,7 @@ import { labelMemoryText } from './hiddenSpans';
 import { engineSearchMemory, engineSearchText, type Engine } from './engine';
 import { leadingSummaryHits } from '../digests/digests';
 import { normalizeScope, savedScopeMatches, savedScopeSqlPredicate } from './scope';
-import { eventMarker, factAuthorsByEvent } from './factMarkers';
+import { claimsReservedEntrySource, eventMarker, factAuthorsByEvent } from './factMarkers';
 import { authorMarker } from '../memory/sourceName';
 import type { HitOrder } from '../retrieval/orchestrator';
 import { orderHits, SESSION_EXPAND_REASON, sessionDateMs } from '../retrieval/orchestrator';
@@ -38,6 +38,7 @@ import { prepareOnce } from '../db/statements';
 import { assessQueryRelevance, CALIBRATED_BARS, contextRelevanceEnabled, renderFactForRelevance, resolveRelevanceBar, similaritiesTo, type ContextRelevance } from './contextRelevance';
 import type { RetrievalProbe } from '../retrieval/semantic';
 import { hasReplacements, withReplacements, type ReplacedLabel, type ReplacementPair } from '../memorymap/replacements';
+import { markRetrieved } from '../callPhases';
 
 export interface AgentContextOptions {
   query?: string;
@@ -788,6 +789,8 @@ function normalizeMemory(hit: any, fallbackReason: string, reader?: string): Age
     // byte. The marker's tokens are budget tokens like any other item's (applyBudget `cost`).
     ...(reason.split('+').includes(SESSION_EXPAND_REASON) ? { matched: false } : {}),
     ...(IMPORTED_PATH.test(String(hit.notePath ?? '')) ? { origin: 'import' as const } : {}),
+    // A daily-log chunk an entry of which claims a reserved source (factMarkers.ts): marked here, before the budget counts it.
+    ...(claimsReservedEntrySource(hit.notePath, hit.text) ? { untrusted: true as const } : {}),
   };
 }
 
@@ -1476,6 +1479,7 @@ export async function buildAgentContext(
   // fails, by words alone (permissionMeaning).
   const meaning = query ? await permissionMeaning(db, engine, query, scopeNorm, probe.queryVector) : undefined;
   const facts = inReadSnapshot(db, () => currentFactMatches(db, query, scopeNorm, query ? 12 : 20, meaning));
+  markRetrieved(); // the matches and the facts are in hand: what follows builds the reply (callPhases.ts)
 
   // After the keyword matches, so a statement a keyword search also found is that match, not the added copy.
   const merged = dedupeMemories([...memories, ...added]);

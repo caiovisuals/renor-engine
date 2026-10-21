@@ -179,11 +179,16 @@ export function mountOptionsIn(mounts: string, dir: string): string[] | null {
   return best?.options ?? null;
 }
 
-function realProbes(): Probes {
+export function realProbes(shm = '/dev/shm'): Probes {
+  try {
+    shm = fs.realpathSync(shm);
+  } catch {
+    // Leave an unavailable path for fsOf to reject without aborting setup.
+  }
   return {
     env: process.env,
     tmpdir: os.tmpdir(),
-    shm: '/dev/shm',
+    shm,
     uid: process.getuid?.() ?? null,
     fsOf(dir) {
       try {

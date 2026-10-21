@@ -5,7 +5,7 @@ import crypto from 'crypto';
 import { DAILY_FILE_RE, entryInstant } from '../memory/dailyNote';
 import { notePathMatchesScope, type NormalizedScope } from '../mvp/scope';
 import { refusal } from '../toolRefusal';
-import { headerSource } from '../memory/sourceName';
+import { headerSource, isReservedSource } from '../memory/sourceName';
 import { createNoteTimeBound, resolveSessionDate } from '../retrieval/orchestrator';
 import {
   NOFOLLOW, RETIRED_DIR, activeRetired, ensureRealDir, openConfined, parseEntries, parseMemoryId, readJournal, readPrefix,
@@ -62,6 +62,8 @@ export interface ReplacedLabel {
   source?: string;
   /** Set when the correction's source differs from the replaced memory's source: says so plainly, and names that source. */
   note?: string;
+  /** Set when the correction's source is a reserved identity (a record saved before the rule, or by hand): only a claim. */
+  untrusted?: true;
 }
 
 export interface ReplacementIndex {
@@ -100,7 +102,7 @@ function sourceForLabel(source: string | null | undefined): string | null {
  */
 function labelOf(replaced: ReplacementRecord, correction: ReplacementRecord): ReplacedLabel {
   const saver = sourceForLabel(correction.source);
-  const label: ReplacedLabel = { by: correction.by, at: correction.at, ...(saver ? { source: saver } : {}) };
+  const label: ReplacedLabel = { by: correction.by, at: correction.at, ...(saver ? { source: saver } : {}), ...(isReservedSource(saver) ? { untrusted: true as const } : {}) };
   if (replaced.oldSource === undefined) return label;
   const from = sourceForLabel(replaced.oldSource);
   if (saver === from) return label;

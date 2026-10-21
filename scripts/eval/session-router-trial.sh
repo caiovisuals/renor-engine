@@ -52,6 +52,8 @@
 # Exit status: 0 when every arm completed and the report was written; 2 for a usage or environment error; 3 when the
 # summary phase stopped at --warm-max-calls; otherwise the failing step's status.
 set -euo pipefail
+# Bash 3.2 (macOS /bin/bash) treats "${arr[@]}" of an empty array as unbound under set -u, so an array that can be empty
+# is expanded as ${arr[@]+"${arr[@]}"}: nothing when empty, every element quoted otherwise, as bash 4.4+ does.
 
 ENGINE="$(cd "$(dirname "$0")/../.." && pwd)"
 usage() { awk 'NR > 1 && /^#/ { sub(/^# ?/, ""); print; next } NR > 1 { exit }' "$0"; }
@@ -117,7 +119,7 @@ case "$EVIDENCE" in on|off) ;; *) fail "--evidence must be on or off" ;; esac
 case "$CONTEXT_DATES" in on|off) ;; *) fail "--context-dates must be on or off" ;; esac
 case "$ANSWER_STYLE" in direct|bestguess|count) ;; *) fail "--answer-style must be direct, bestguess or count" ;; esac
 IFS=',' read -r -a ARM_LIST <<< "$ARMS"
-for arm in "${ARM_LIST[@]}"; do
+for arm in ${ARM_LIST[@]+"${ARM_LIST[@]}"}; do
   case "$arm" in control|replace|union) ;; *) fail "unknown arm '$arm' (control, replace, union)" ;; esac
 done
 case ",$ARMS," in
@@ -127,7 +129,7 @@ esac
 [ -z "$BASELINE_RUN" ] || BASELINE_RUN="$(cd "$BASELINE_RUN" && pwd)"
 IFS=',' read -r -a VERTEX_LIST <<< "$VERTEX_ROLES"
 on_vertex() { case ",$VERTEX_ROLES," in *",$1,"*) return 0 ;; *) return 1 ;; esac; }
-for role in "${VERTEX_LIST[@]}"; do
+for role in ${VERTEX_LIST[@]+"${VERTEX_LIST[@]}"}; do
   case "$role" in summaries|router|reader) ;; *) fail "unknown --vertex-roles role '$role' (summaries, router, reader)" ;; esac
 done
 need_key() { [ -n "${!1:-}" ] || fail "the $2 key env $1 is not set in this shell"; }
@@ -311,7 +313,7 @@ run_arm() {
   echo "session-router-trial: arm $arm -> $OUT/$arm"
   env -i PATH="$NODE_BIN:/usr/bin:/bin" HOME="$HOME" TMPDIR="${TMPDIR:-/tmp}" \
     RENOR_TRIAL_READER_KEY="$READER_KEY" RENOR_TRIAL_JUDGE_KEY="${!JUDGE_KEY_ENV}" \
-    "${armenv[@]}" \
+    ${armenv[@]+"${armenv[@]}"} \
     node --import tsx scripts/eval/run-longmemeval-product.ts \
       --dataset "$DATASET" --output "$OUT/$arm" "${embedding[@]}" --top-k 20 --max-context-tokens 6000 \
       --limit "$LIMIT" "${slice[@]}" "${cache[@]}" --max-live-calls "$MAX_LIVE_CALLS" \
@@ -319,7 +321,7 @@ run_arm() {
       --judge-model "$JUDGE_MODEL" --judge-base-url "$JUDGE_BASE_URL" --judge-api-key-env RENOR_TRIAL_JUDGE_KEY
 }
 
-for arm in "${ARM_LIST[@]}"; do run_arm "$arm"; done
+for arm in ${ARM_LIST[@]+"${ARM_LIST[@]}"}; do run_arm "$arm"; done
 
 report=(--out "$OUT" --dataset "$DATASET" --arms "$ARMS")
 [ -z "$STRATA" ] || report+=(--strata "$STRATA")

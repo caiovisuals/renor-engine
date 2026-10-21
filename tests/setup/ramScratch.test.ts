@@ -3,7 +3,7 @@ import os from 'os';
 import path from 'path';
 import { afterEach, describe, expect, it } from 'vitest';
 import config from '../../vitest.config';
-import { applyScratchPlan, createRunDir, MOVED_FROM_VAR, mountOptionsIn, OPT_OUT_VAR, planScratch, startTicks, sweepDeadRuns, useRealTmpdir, type Probes } from './ramScratch';
+import { applyScratchPlan, createRunDir, MOVED_FROM_VAR, mountOptionsIn, OPT_OUT_VAR, planScratch, realProbes, startTicks, sweepDeadRuns, useRealTmpdir, type Probes } from './ramScratch';
 
 /**
  * The scratch placement (ramScratch.ts): a run whose temp directory is on a disk writes its fixtures to RAM instead, when
@@ -113,6 +113,23 @@ describe('planScratch: when a run moves to RAM', () => {
 
   it('does not move when the mount table cannot be read, since it cannot say whether scripts can run there', () => {
     expect(planScratch(machine({ mountOptions: () => null }))).toEqual({ move: false, reason: 'mount-unknown' });
+  });
+});
+
+describe('shared-memory symlinks', () => {
+  it('uses the target mount options rather than the symlink parent mount', () => {
+    const home = tmp('ram-scratch-link-');
+    const target = path.join(home, 'run-shm');
+    const link = path.join(home, 'dev-shm');
+    fs.mkdirSync(target);
+    fs.symlinkSync(target, link);
+    const mounts = `root / ext4 rw 0 0\nshm ${fs.realpathSync(target)} tmpfs rw,noexec 0 0\n`;
+    const real = realProbes(link);
+    const p = machine({
+      shm: real.shm,
+      mountOptions: (dir) => mountOptionsIn(mounts, dir),
+    });
+    expect(planScratch(p)).toEqual({ move: false, reason: 'shm-noexec' });
   });
 });
 
@@ -232,7 +249,9 @@ describe('sweepDeadRuns: a killed run does not keep RAM', () => {
     return dir;
   };
 
-  it('removes the directory of a process that is gone, and keeps the directory of one that is running', () => {
+  // startTicks reads a process's start time from /proc/<pid>/stat, which only Linux has: elsewhere a live run's owner file
+  // cannot name its start time, so its directory is judged by age and this pair cannot be told apart (the macOS job).
+  it.runIf(process.platform === 'linux')('removes the directory of a process that is gone, and keeps the directory of one that is running', () => {
     const parent = base();
     const mine = run(parent, `run-${process.pid}-aaaaaa`, `${process.pid} ${startTicks(process.pid)}\n`);
     const gone = run(parent, 'run-999999999-bbbbbb', `999999999 ${startTicks(process.pid)}\n`);

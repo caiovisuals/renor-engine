@@ -10,6 +10,9 @@
 # .smoke/ holds local smoke-run state, including client auth files.
 .smoke/
 
+# The incremental compile state (`tsconfig.json` is `incremental`, and this
+# file ships as the exported tree's .gitignore).
+*.tsbuildinfo
 .pi-glla/
 .semantic-memory/
 data/

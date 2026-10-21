@@ -26,7 +26,8 @@ function resolveRepoRoot(): string {
     if (fs.existsSync(pkgPath)) {
       try {
         const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8')) as { name?: string };
-        if (pkg.name === 'renor') return dir;
+        // renor-engine since PR 761; renor before it.
+        if (pkg.name === 'renor-engine' || pkg.name === 'renor') return dir;
       } catch {
         /* keep walking */
       }

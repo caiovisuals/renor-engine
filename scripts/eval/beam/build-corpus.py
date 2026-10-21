@@ -33,6 +33,19 @@ def parse_beam_date(date_str: str) -> tuple[datetime, str]:
     formatted = f"{dt.year:04d}/{dt.month:02d}/{dt.day:02d} ({dow_str}) 12:00"
     return dt, formatted
 
+def flatten_plan_layout(items):
+    """The 10M layout wraps its batches in plan lists, [{"plan-1": [batch, ...]}, ...]; the 100K and 1M layouts are a
+    plain list of batches. Flatten the plans in order and renumber the batches 1..N, because batch numbers restart in
+    each plan and session ids are built from them. Any other layout is returned unchanged."""
+    plans = [x for x in items if isinstance(x, dict) and len(x) == 1 and next(iter(x)).startswith("plan-")]
+    if not plans or len(plans) != len(items):
+        return items
+    flat = [batch for plan in plans for batch in next(iter(plan.values()))]
+    for number, batch in enumerate(flat, 1):
+        batch["batch_number"] = number
+    return flat
+
+
 def extract_expected_answer(q_obj: dict) -> str:
     """Extract reference answer across varying field names in BEAM capabilities."""
     for field in ('ideal_response', 'ideal_answer', 'answer', 'expected_compliance', 'ideal_summary'):
@@ -77,7 +90,7 @@ def main():
             continue
 
         with open(chat_json_path, "r", encoding="utf-8") as f:
-            chat_batches = json.load(f)
+            chat_batches = flatten_plan_layout(json.load(f))
 
         haystack_session_ids = []
         haystack_dates = []

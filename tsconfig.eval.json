@@ -3,6 +3,7 @@
   // tests/** run under Vitest, whose module graph is ESM: a test may import the ESM gateway app, which
   // Node16 module mode rejects (TS1479) but nodenext (require(esm), Node 22) accepts. `build` still
   // compiles src/** under Node16, so this widens nothing for shipped code.
-  "compilerOptions": { "rootDir": ".", "noEmit": true, "module": "nodenext", "moduleResolution": "nodenext" },
+  // Its own buildinfo, so the eval project never overwrites the build's state in dist/.
+  "compilerOptions": { "rootDir": ".", "noEmit": true, "module": "nodenext", "moduleResolution": "nodenext", "tsBuildInfoFile": "dist/tsconfig.eval.tsbuildinfo" },
   "include": ["src/**/*", "scripts/eval/**/*.ts", "scripts/bench/**/*.ts", "tests/**/*.ts"]
 }

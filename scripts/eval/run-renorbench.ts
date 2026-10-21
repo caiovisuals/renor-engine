@@ -3,7 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { performance } from 'node:perf_hooks';
 import { Command } from 'commander';
-import { encode } from 'gpt-tokenizer';
+import { countTextTokens } from '../../src/eval/textTokens';
 import { openDb } from '../../src/db/client';
 import { runMigrations } from '../../src/db/schema';
 import { VectorIndex } from '../../src/embeddings/vectorIndex';
@@ -271,7 +271,7 @@ async function main(): Promise<void> {
       const started = performance.now();
       const result = await retrieveContext(db!, vectorIndex, embeddingProvider, test.query, topK, [], { nowMs: EVAL_NOW });
       const latencyMs = performance.now() - started;
-      const contextTokens = encode(result.hits.map(hit => hit.text).join('\n\n')).length;
+      const contextTokens = countTextTokens(result.hits.map(hit => hit.text).join('\n\n'));
       if (result.hits.slice(0, 3).some(h => h.reason === 'fact')) factCardPrependedCases += 1;
       results.push({
         id: test.id,

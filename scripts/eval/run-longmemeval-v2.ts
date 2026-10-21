@@ -4,6 +4,7 @@ import { Command } from 'commander';
 import { LocalEmbeddingProvider } from '../../src/embeddings/local';
 import { OpenAIEmbeddingProvider } from '../../src/embeddings/openai';
 import { VertexEmbeddingProvider } from '../../src/embeddings/vertex';
+import { MetadataVertexEmbeddingProvider } from './benchmark-embed-vertex';
 import { resolveEmbeddingCachePath } from '../../src/embeddings/caching';
 import type { EmbeddingProvider } from '../../src/embeddings/types';
 import { EvalHashEmbeddingProvider } from '../../src/eval/hashEmbedding';
@@ -34,6 +35,17 @@ function makeProvider(kind: string, modelArg?: string): { provider: EmbeddingPro
   if (kind === 'vertex') {
     const provider = new VertexEmbeddingProvider();
     return { provider, meta: { kind: 'vertex', model: provider.model, dimensions: provider.dimensions, location: provider.describe().location } };
+  }
+  if (kind === 'metadata') {
+    // Benchmark sweep VM only: the same Vertex model through the instance's service account (no key file). The
+    // retrieval stage still wraps it in the embedding cache, so a cached text makes no call; a miss is billed, so
+    // RENOR_EVAL_MAX_EMBED_TOKENS bounds it.
+    const provider = new MetadataVertexEmbeddingProvider({
+      project: process.env.RENOR_EVAL_VERTEX_PROJECT ?? '',
+      location: process.env.RENOR_EVAL_VERTEX_LOCATION ?? '',
+      maxInputTokens: Number(process.env.RENOR_EVAL_MAX_EMBED_TOKENS ?? 80_000_000),
+    });
+    return { provider, meta: { kind: 'metadata-vertex', model: provider.identity.model, dimensions: provider.dimensions, location: process.env.RENOR_EVAL_VERTEX_LOCATION ?? '' } };
   }
   if (kind === 'openai') {
     const keys = (process.env.RENOR_EVAL_EMBEDDING_API_KEY ?? process.env.MVP_EMBEDDING_API_KEY ?? process.env.OPENAI_API_KEY ?? '')
@@ -75,7 +87,7 @@ program.command('retrieve')
   .requiredOption('--data-root <dir>', 'LongMemEval-V2 data root (questions.jsonl, trajectories.jsonl, haystacks/); kept outside git')
   .requiredOption('--domain <domain>', 'web or enterprise (upstream runs each domain separately)')
   .option('--tier <tier>', 'haystack tier: small or medium', 'small')
-  .option('--provider <kind>', 'embedding provider: vertex (default, cached), local, openai, or hash (no network, no quality claim)', process.env.RENOR_EVAL_PROVIDER ?? 'vertex')
+  .option('--provider <kind>', 'embedding provider: vertex (default, cached), metadata (benchmark sweep VM: the instance service account, cached), local, openai, or hash (no network, no quality claim)', process.env.RENOR_EVAL_PROVIDER ?? 'vertex')
   .option('--model <name>', 'embedding model override')
   .option('--top-k <n>', 'retrieval depth', '20')
   .option('--limit <n>', 'maximum selected questions; 0 = all', '20')

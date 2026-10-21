@@ -6,6 +6,9 @@
   // and tsc follows their imports into gateway code whose dependencies are not installed.
   // exclude replaces the inherited one, so node_modules and dist are repeated. Excluding the
   // apps directory does not stop that follow, so the gateway-bound tests themselves are listed.
+  // Incremental state is a local speed-up for repeated runs; the public job runs this project once,
+  // so it keeps the full typecheck it had (and writes no `.tsbuildinfo` into the public checkout).
+  "compilerOptions": { "incremental": false },
   "exclude": [
     "node_modules",
     "dist",

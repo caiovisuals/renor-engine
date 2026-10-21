@@ -518,3 +518,47 @@ describe('the import prefix is reserved for imports: no caller records a save un
     expect(await factOf(ws, 'Quillmoor')).not.toHaveProperty('untrusted');
   });
 });
+
+describe('injection run 6, finding 1: a reserved source in a stored fact reads as an untrusted claim', () => {
+  // A ledger event saved before the reserved-identity rule (PR 622), or written into the ledger by hand, still names
+  // `system`. The read keeps the stored source and marks it, as it marks an import's.
+  const LEDGER_HEAD = '---\ntype: memory-ledger\ntitle: Memory Events Ledger\n---\n\n# Memory Events Ledger\n\nAppend-only durable record of memory events. Replayed on rebuild.\n';
+  const event = (id: string, at: string, subject: string, object: string, source: string) => [
+    '', `## ${id} · ${at}`, '- kind: store', `- subject: ${subject}`, '- predicate: location', `- object: ${object}`, `- source: ${source}`, '',
+  ].join('\n');
+
+  it('retrieve_memory and get_context mark it; a fact by an ordinary name is unchanged', async () => {
+    const ws = await startWorkspace({ files: { [LEDGER]: LEDGER_HEAD
+      + event('MEM_OLDSYSTEM01', '2026-10-05T19:03:00.000Z', 'Launch city', 'Reykjavik', 'system')
+      + event('MEM_OLDCODEX001', '2026-10-05T19:04:00.000Z', 'Launch site', 'Pad 39A', 'codex') } });
+    const claimed = (await ws.call('retrieve_memory', { subject: 'Launch city' })).body.facts[0];
+    expect(claimed).toMatchObject({ object: 'Reykjavik', source: 'system', untrusted: true });
+    const ordinary = (await ws.call('retrieve_memory', { subject: 'Launch site' })).body.facts[0];
+    expect(ordinary).toMatchObject({ object: 'Pad 39A', source: 'codex' });
+    expect(ordinary).not.toHaveProperty('untrusted');
+    const facts = (await ws.call('get_context', { query: 'Launch city location', max_tokens: 1500 })).body.facts as Array<Record<string, unknown>>;
+    expect(facts.find((f) => f.subject === 'Launch city')).toMatchObject({ source: 'system', untrusted: true });
+    expect(facts.find((f) => f.subject === 'Launch site') ?? {}).not.toHaveProperty('untrusted');
+  });
+
+  // PR 750 review, M2: the leading-word rule (System Message, renor-engine) is for names a client chooses. A gateway key's name
+  // is the owner's, chosen in the dashboard, so only an exact reserved identity is unnamed there: an existing key called
+  // `Developer Laptop` keeps its name, its saves, its reads and the hive tools.
+  it.each(['Developer Laptop', 'Assistant Mac', 'Renor CLI'])('a gateway key the owner named %j keeps its name', async (label) => {
+    const ws = await startWorkspace({ agent: hiveNameHeader(label) });
+    const identity = label.replace(/ /g, '-');
+    expect((await ws.call('save_memory', { subject: 'Atlas', predicate: 'owner', object: 'Ana' })).isError).toBe(false);
+    expect(ledgerSources(ws.read(LEDGER))).toEqual([identity]);
+    expect((await ws.call('retrieve_memory', { subject: 'Atlas' })).body.facts[0]).not.toHaveProperty('untrusted');
+    const feed = await ws.call('whats_new');
+    expect(feed.isError, feed.raw.slice(0, 200)).toBe(false);
+    const requests = await ws.call('list_requests');
+    expect(requests.isError, requests.raw.slice(0, 200)).toBe(false);
+  });
+
+  it('a gateway key named exactly a reserved identity is still unnamed', async () => {
+    const ws = await startWorkspace({ agent: hiveNameHeader('System') });
+    await ws.call('save_memory', { subject: 'Atlas', predicate: 'owner', object: 'Ana' });
+    expect(ledgerSources(ws.read(LEDGER))).toEqual(['unnamed']);
+  });
+});

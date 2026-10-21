@@ -1,11 +1,12 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import fs from 'fs';
+import fsp from 'fs/promises';
 import os from 'os';
 import path from 'path';
 import Database from 'better-sqlite3';
 import { openDb } from '../../src/db/client';
 import { runMigrations } from '../../src/db/schema';
-import { appendLedgerEvent, replayLedger } from '../../src/memory/lifecycle';
+import { appendLedgerEvent, parseLedgerEvents, replayLedger } from '../../src/memory/lifecycle';
 import { readBundleSource, readSource } from '../../src/importing/source';
 import { buildImportPlan } from '../../src/importing/plan';
 import { applyImportPlan, ImportStorageLimitError } from '../../src/importing/apply';
@@ -418,6 +419,134 @@ async function rejectionOf(promise: Promise<unknown>): Promise<Error> {
 /* ------------------------------------------------------------ F2: rejection compensation */
 
 describe('import safety — a rejected import leaves nothing it created (F2)', () => {
+  it.each([
+    ['opening', 1],
+    ['opening', 2],
+    ['appending', 1],
+    ['appending', 2],
+  ] as const)('restores the ledger when %s fails on carried event %i', async (failure, failAt) => {
+    const file = writeBundle([
+      noteRecord('Projects/Import/new.md'),
+      ledgerFactRecord('aa_first', 'first carried value', '2026-01-10T00:00:00.000Z'),
+      ledgerFactRecord('bb_second', 'second carried value', '2026-01-11T00:00:00.000Z'),
+    ]);
+    const destination = buildEmptyWorkspace();
+    await seedLedgerFact(destination, {
+      id: 'mem_seed0001', subject: 'Renor', predicate: 'zz_existing', object: 'keep me',
+      validFrom: '2026-01-09T00:00:00.000Z',
+    });
+    const ledgerPath = ledgerPathOf(destination.memoryDir);
+    const ledgerBefore = fs.readFileSync(ledgerPath, 'utf8');
+    const countsBefore = countsAt(destination.dbPath);
+    const bundle = readSource(`bundle:${file}`, { include: [], exclude: [] });
+    const plan = buildImportPlan(bundle, { namespace: 'Imported/src', label: 'src', eventSource: 'import:src' });
+    const realOpen = fsp.open.bind(fsp);
+    let ledgerOpen = 0;
+    vi.spyOn(fsp, 'open').mockImplementation((async (...args: Parameters<typeof fsp.open>) => {
+      const handle = await (realOpen as (...openArgs: Parameters<typeof fsp.open>) => ReturnType<typeof fsp.open>)(...args);
+      if (path.resolve(String(args[0])) !== path.resolve(ledgerPath) || ++ledgerOpen !== failAt) return handle;
+      if (failure === 'opening') {
+        await handle.close();
+        throw Object.assign(new Error('ENOSPC: no space left on device, open'), { code: 'ENOSPC' });
+      }
+      return new Proxy(handle, {
+        get(target, prop) {
+          if (prop === 'appendFile') {
+            return async () => { throw Object.assign(new Error('ENOSPC: no space left on device, write'), { code: 'ENOSPC' }); };
+          }
+          const value = Reflect.get(target, prop);
+          return typeof value === 'function' ? value.bind(target) : value;
+        },
+      });
+    }) as typeof fsp.open);
+
+    const err = await rejectionOf(applyImportPlan(plan, bundle, destination));
+
+    expect(err.message).toMatch(/appending the carried events to the ledger failed/);
+    expect(err.message).toMatch(/the ledger was restored/);
+    expect(err.message).not.toMatch(/refusing to overwrite newer canonical memory/);
+    expect(fs.readFileSync(ledgerPath, 'utf8')).toBe(ledgerBefore);
+    expect(listImportedMarkdown(destination.memoryDir)).toEqual([]);
+    expect(countsAt(destination.dbPath)).toEqual(countsBefore);
+  });
+
+  it('never restores a pre-erasure ledger snapshot when erasure wins during rollback', async () => {
+    const file = writeBundle([ledgerFactRecord('zz_contested', 'old value', '2026-01-01T00:00:00.000Z')]);
+    const destination = buildEmptyWorkspace();
+    await seedLedgerFact(destination, {
+      id: 'mem_seed0001', subject: 'Renor', predicate: 'zz_contested', object: 'newer value',
+      validFrom: '2026-01-09T00:00:00.000Z',
+    });
+    const bundle = readSource(`bundle:${file}`, { include: [], exclude: [] });
+    const plan = buildImportPlan(bundle, { namespace: 'Imported/src', label: 'src', eventSource: 'import:src' });
+    const ledgerPath = ledgerPathOf(destination.memoryDir);
+    const exec = Database.prototype.exec;
+    vi.spyOn(Database.prototype, 'exec').mockImplementation(function (this: Database.Database, sql: string) {
+      const result = exec.call(this, sql);
+      if (sql === 'ROLLBACK') {
+        const current = fs.readFileSync(ledgerPath, 'utf8');
+        const erased = current.replace(
+          /\n## mem_seed0001 · [^\n]+\n[\s\S]*?(?=\n## |$)/,
+          '\n## mem_seed0001 · 2026-10-14T12:00:00.000Z\n- kind: erase\n- original_digest: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n- source: erased\n',
+        );
+        fs.writeFileSync(ledgerPath, erased, 'utf8');
+      }
+      return result;
+    });
+
+    const err = await rejectionOf(applyImportPlan(plan, bundle, destination));
+
+    expect(err.message).toMatch(/refusing to overwrite newer canonical memory/);
+    expect(parseLedgerEvents(fs.readFileSync(ledgerPath, 'utf8'))).toContainEqual(expect.objectContaining({
+      id: 'MEM_SEED0001', kind: 'erase', originalDigest: 'a'.repeat(64),
+    }));
+  });
+
+  it('never restores a pre-erasure ledger snapshot when erasure lands between the snapshot and the first append', async () => {
+    // The import reads its rollback snapshot before it appends. An erasure that rewrites the ledger in between leaves a
+    // ledger that ends in this import's appends (so the "changed after this import appended" check passes), while the
+    // snapshot still holds the erased fact. Restoring it would write the erased content back.
+    const file = writeBundle([
+      ledgerFactRecord('aa_first', 'first carried value', '2026-01-10T00:00:00.000Z'),
+      ledgerFactRecord('bb_second', 'second carried value', '2026-01-11T00:00:00.000Z'),
+    ]);
+    const destination = buildEmptyWorkspace();
+    await seedLedgerFact(destination, {
+      id: 'mem_seed0001', subject: 'Renor', predicate: 'zz_erased', object: 'erased secret value',
+      validFrom: '2026-01-09T00:00:00.000Z',
+    });
+    const bundle = readSource(`bundle:${file}`, { include: [], exclude: [] });
+    const plan = buildImportPlan(bundle, { namespace: 'Imported/src', label: 'src', eventSource: 'import:src' });
+    const ledgerPath = ledgerPathOf(destination.memoryDir);
+    const realOpen = fsp.open.bind(fsp);
+    let ledgerOpen = 0;
+    vi.spyOn(fsp, 'open').mockImplementation((async (...args: Parameters<typeof fsp.open>) => {
+      if (path.resolve(String(args[0])) === path.resolve(ledgerPath)) {
+        ledgerOpen += 1;
+        if (ledgerOpen === 1) {
+          // The erasure wins the race: the fact's event becomes a content-free tombstone before the first append.
+          const current = fs.readFileSync(ledgerPath, 'utf8');
+          fs.writeFileSync(ledgerPath, current.replace(
+            /\n## mem_seed0001 · [^\n]+\n[\s\S]*?(?=\n## |$)/,
+            '\n## mem_seed0001 · 2026-10-14T12:00:00.000Z\n- kind: erase\n- original_digest: ' + 'a'.repeat(64) + '\n- source: erased\n',
+          ), 'utf8');
+        }
+        if (ledgerOpen === 2) throw Object.assign(new Error('ENOSPC: no space left on device, open'), { code: 'ENOSPC' });
+      }
+      return (realOpen as (...openArgs: Parameters<typeof fsp.open>) => ReturnType<typeof fsp.open>)(...args);
+    }) as typeof fsp.open);
+
+    const err = await rejectionOf(applyImportPlan(plan, bundle, destination));
+
+    expect(err.message).toMatch(/appending the carried events to the ledger failed/);
+    const after = fs.readFileSync(ledgerPath, 'utf8');
+    expect(after).not.toContain('erased secret value');
+    expect(parseLedgerEvents(after)).toContainEqual(expect.objectContaining({ id: 'MEM_SEED0001', kind: 'erase' }));
+    expect(err.message).toMatch(/refusing to overwrite newer canonical memory/);
+    // The report names the likely causes, so an operator does not read it as corruption.
+    expect(err.message).toMatch(/another save, or an erasure/);
+  });
+
   it('removes the note files and the directories this run created when the replay rejects', async () => {
     const file = writeBundle([
       noteRecord('Projects/Alpha/plan.md'),

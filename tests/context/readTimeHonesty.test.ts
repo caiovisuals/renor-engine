@@ -900,7 +900,9 @@ async function getContextArmed(
 }
 
 const REPO_ROOT = path.resolve(__dirname, '..', '..');
-const TSX = path.join(REPO_ROOT, 'node_modules', '.bin', 'tsx');
+// The compiled `renor` bin (package.json `bin`), built by tests/globalSetup.ts before any test
+// file loads: the surface a user runs, and without paying tsx's transform on every spawn.
+const CLI = path.join(REPO_ROOT, 'dist', 'cli.js');
 
 function runCli(
   command: string,
@@ -922,7 +924,7 @@ function runCli(
     env.EMBEDDING_PROVIDER = 'eval-hash';
     env.MEMORY_LEDGER = LEDGER;
     Object.assign(env, extraEnv);
-    execFile(TSX, ['src/cli.ts', command, ...args], { cwd: REPO_ROOT, env, timeout: 120_000 },
+    execFile(process.execPath, [CLI, command, ...args], { cwd: REPO_ROOT, env, timeout: 120_000 },
       (err, stdout, stderr) => {
         resolve({
           code: err && typeof (err as any).code === 'number' ? (err as any).code : (err ? 1 : 0),

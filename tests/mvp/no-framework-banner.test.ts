@@ -62,9 +62,10 @@ describe('the tenant engine does not advertise its framework (live-security F5)'
     ['the loopback build-identity probe', () => request(app()).get(MVP_VERSION_PATH), 200],
     ["the gateway's loopback mint", () => request(app()).post('/internal/gateway-token').set('x-renor-gateway-secret', GATEWAY_SECRET).send({}), 200],
     ['an unknown path', () => request(app()).get('/no-such-route'), 404],
-  ])('sends no X-Powered-By on %s', async (_label, call, status) => {
+  ])('sends nosniff and no X-Powered-By on %s', async (_label, call, status) => {
     const res = await call();
     expect(res.status).toBe(status);
     expect(res.headers['x-powered-by']).toBeUndefined();
+    expect(res.headers['x-content-type-options']).toBe('nosniff');
   });
 });

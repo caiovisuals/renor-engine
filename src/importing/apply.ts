@@ -7,6 +7,7 @@ import { runMigrations } from '../db/schema';
 import { hashContent } from '../indexer/hasher';
 import { markVectorsUnfinished } from '../embeddings/vectorIndex';
 import { assertConfinedTarget, assertHandleInside } from '../memory/confinedWrite';
+import { withAppendLock } from '../memory/durableAppend';
 import { appendLedgerEvent, parseLedgerEvents, replayLedger, DEFAULT_LEDGER_REL } from '../memory/lifecycle';
 import { ImportPlan, PlannedEvent, PlannedNote } from './plan';
 import { ImportBundle } from './types';
@@ -135,6 +136,7 @@ export async function applyImportPlan(
   const created: CreatedPaths = { files: [], dirs: [] };
   let phase: ApplyPhase = 'notes';
   let priorLedger: string | null = null;
+  let appendedLedger: string | null = null;
   // Set immediately before this invocation's first append. A failed read or parse must
   // never enter ledger compensation: no ledger bytes have been touched yet.
   let ledgerTouched = false;
@@ -234,19 +236,26 @@ export async function applyImportPlan(
     // `appendLedgerEvent` creates the ledger's directory chain itself. Record the
     // directories that are missing now, so a rollback cannot leave an empty tree behind.
     for (const dir of missingDirsUnder(memoryDir, path.dirname(ledgerPath))) created.dirs.push(dir);
-    for (const event of plan.events) {
-      const eventKey = event.id.toUpperCase();
-      if (existingLedgerIds.has(eventKey)) {
-        eventsAlreadyPresent += 1;
-        continue;
+    try {
+      for (const event of plan.events) {
+        const eventKey = event.id.toUpperCase();
+        if (existingLedgerIds.has(eventKey)) {
+          eventsAlreadyPresent += 1;
+          continue;
+        }
+        // From this point the durable bytes may change, so and only so can rollback restore
+        // the prior snapshot (or remove a ledger this invocation created from an absent path).
+        phase = 'ledger';
+        ledgerTouched = true;
+        await appendLedgerEvent(memoryDir, ledgerRelPath, toLedgerEvent(event));
+        existingLedgerIds.add(eventKey);
+        eventsAppended += 1;
       }
-      // From this point the durable bytes may change, so and only so can rollback restore
-      // the prior snapshot (or remove a ledger this invocation created from an absent path).
-      phase = 'ledger';
-      ledgerTouched = true;
-      await appendLedgerEvent(memoryDir, ledgerRelPath, toLedgerEvent(event));
-      existingLedgerIds.add(eventKey);
-      eventsAppended += 1;
+    } finally {
+      // Capture what this run actually left behind even when an append rejects. The
+      // compare-before-restore guard must compare against these bytes, not `null`, after
+      // an earlier event in the same plan was appended successfully.
+      if (ledgerTouched) appendedLedger = readFileOrNull(ledgerPath);
     }
 
     phase = 'index';
@@ -311,7 +320,7 @@ export async function applyImportPlan(
     // did not create — unchanged notes, conflicts, the operator's own files — are never
     // touched, and pruning is limited to directories that are empty afterwards.
     const restore: LedgerRestore = ledgerTouched
-      ? restoreLedger(ledgerPath, priorLedger)
+      ? await restoreLedger(ledgerPath, priorLedger, appendedLedger)
       : { restored: false };
     // A ledger that could not be restored still holds its carried events, and those events
     // are canonical: removing the notes they describe would leave a ledger pointing at
@@ -552,8 +561,26 @@ interface LedgerRestore {
  * Returns the OUTCOME rather than swallowing it: a run that could not restore the ledger
  * still holds the carried events, and must say so instead of claiming a clean rollback.
  */
-function restoreLedger(ledgerPath: string, prior: string | null): LedgerRestore {
+function restoreLedger(ledgerPath: string, prior: string | null, appended: string | null): Promise<LedgerRestore> {
+  // Under the lock every ledger writer takes (appends, and the erasure's rewrite in lifecycle.ts), so no writer can
+  // change the ledger between the checks below and the restore.
+  return withAppendLock(ledgerPath, async () => restoreLedgerLocked(ledgerPath, prior, appended));
+}
+
+function restoreLedgerLocked(ledgerPath: string, prior: string | null, appended: string | null): LedgerRestore {
   try {
+    // Compensation owns only the bytes it appended. If another lifecycle writer changed the
+    // ledger afterwards (especially by replacing a fact with an erase tombstone), restoring
+    // this import's older snapshot would resurrect that writer's deleted canonical content.
+    if (readFileOrNull(ledgerPath) !== appended) {
+      return { restored: false, error: 'the ledger changed while this import ran (another save, or an erasure); refusing to overwrite newer canonical memory' };
+    }
+    // The snapshot was read before the appends, without the lock. Only appends may have happened since: then the snapshot
+    // is a prefix of what this run left. Anything else (an erasure rewrote the ledger in between) makes the snapshot stale,
+    // and restoring it would write erased content back.
+    if (prior !== null && (appended === null || !appended.startsWith(prior))) {
+      return { restored: false, error: 'the ledger changed while this import ran (another save, or an erasure); refusing to overwrite newer canonical memory' };
+    }
     if (prior === null) {
       if (fsSync.existsSync(ledgerPath)) fsSync.unlinkSync(ledgerPath);
       return { restored: !fsSync.existsSync(ledgerPath) };

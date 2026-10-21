@@ -1,9 +1,9 @@
 {
   "schema": 1,
   "benchmark": "renorbench-docs-product",
-  "reason": "The evidence-mode default became off for the self-hosted engine; scripts/eval/run-longmemeval-product.ts and run-longmemeval.ts (evaluator sources) now set RENOR_EVIDENCE_MODE=always for their product child, which moves the evaluator hash. This arm has no evidence model, so its replies and scores are unchanged.",
-  "recordedAt": "2026-10-19T18:58:37.002Z",
-  "gitSha": "665ff99058884f753e283e10973272294c3bfc61",
+  "reason": "Evaluator identity only: every runner counts tokens through src/eval/textTokens.ts (special-token spellings as text; the 2026-10-21 LongMemEval-S nightly crashed on <|endoftext|>), which joins EVALUATOR_SOURCES. Counts of text without such a spelling are unchanged, and so is every number.",
+  "recordedAt": "2026-10-21T12:35:03.695Z",
+  "gitSha": "98e4393ff47fc63bc0f8c7285da40b0415e834bf",
   "manifest": {
     "benchmark": "renorbench-docs-product",
     "casesSha256": "d592cd89e3411f1bf1829ddfbbbd87da2f0e6e8554dde971ca369e4ea0c33da2",
@@ -15,7 +15,7 @@
       "qualityEligible": false
     },
     "qualityEligible": false,
-    "evaluatorSha256": "2bd71cec9a2a313f2fd4f72190a2a029409f1f9e111137cfce288b0c198fbe94",
+    "evaluatorSha256": "7f3c56fdb63df5fdfd29b8b1f5a6602139875c91ba87adab4f0fd85dddec49d4",
     "chunking": {
       "maxTokens": 400,
       "overlapTokens": 0

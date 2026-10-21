@@ -636,6 +636,32 @@ const migrations: Migration[] = [
     },
   },
 
+  {
+    version: 27,
+    name: '27_erased_facts',
+    up: (db: Database.Database) => {
+      // Content-free receipts for fact erasures. The authoritative tombstone is in the ledger; this projection makes
+      // retries and restore refusals cheap without retaining subject, predicate, object, statement, scope, or source.
+      db.exec(`CREATE TABLE IF NOT EXISTS erased_facts (
+        event_id TEXT PRIMARY KEY,
+        original_digest TEXT NOT NULL,
+        erased_at TEXT NOT NULL
+      )`);
+    },
+  },
+
+  {
+    version: 28,
+    name: '28_erased_facts_closes',
+    up: (db: Database.Database) => {
+      // The closing link of an erasure (event ids and a time, no content), kept here as well as in the tombstone: a retry that
+      // has to redo a lost rewrite cannot read it from the facts tables, which a restart may have reconciled without it.
+      const cols = db.prepare('PRAGMA table_info(erased_facts)').all() as Array<{ name: string }>;
+      if (!cols.some(c => c.name === 'closes')) db.exec('ALTER TABLE erased_facts ADD COLUMN closes TEXT');
+      if (!cols.some(c => c.name === 'closed_at')) db.exec('ALTER TABLE erased_facts ADD COLUMN closed_at TEXT');
+    },
+  },
+
 ];
 
 export function runMigrations(db: Database.Database): void {

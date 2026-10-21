@@ -17,7 +17,9 @@ import { FACTS_MODEL } from '../../src/extraction/typedFacts';
  */
 
 const REPO_ROOT = path.resolve(__dirname, '..', '..');
-const TSX = path.join(REPO_ROOT, 'node_modules', '.bin', 'tsx');
+// The compiled `renor` bin (package.json `bin`), built by tests/globalSetup.ts before any test
+// file loads: the surface a user runs, and without paying tsx's transform on every spawn.
+const CLI = path.join(REPO_ROOT, 'dist', 'cli.js');
 const tmpDirs: string[] = [];
 const API_TOKEN = 'synthetic-api-token-for-the-serve-command';
 
@@ -62,7 +64,7 @@ function runCli(
   timeout = 30_000,
 ): Promise<{ code: number | null; stdout: string; stderr: string; signal: NodeJS.Signals | null }> {
   return new Promise((resolve) => {
-    const child = execFile(TSX, ['src/cli.ts', ...args], {
+    const child = execFile(process.execPath, [CLI, ...args], {
       cwd: REPO_ROOT,
       env: armedEnv(vault),
       timeout,
@@ -364,13 +366,13 @@ describe('structured-row arm without a provider', () => {
         probe.close(() => resolve(chosen));
       });
     });
-    const serve = execFileTree(TSX, ['src/cli.ts', 'serve', '--port', String(port)], {
+    const serve = execFileTree(process.execPath, [CLI, 'serve', '--port', String(port)], {
       cwd: REPO_ROOT,
       env: { ...armedEnv(vault), RENOR_API_TOKEN: API_TOKEN },
     });
     const mcpEnv = armedEnv(vault);
     mcpEnv.DB_PATH = path.join(vault, '.semantic-memory', 'mcp.db');
-    const mcp = execFileTree(TSX, ['src/cli.ts', 'mcp'], {
+    const mcp = execFileTree(process.execPath, [CLI, 'mcp'], {
       cwd: REPO_ROOT,
       env: mcpEnv,
     });

@@ -355,7 +355,9 @@ describe('POST /retrieve-context keeps the ledger out', () => {
 // ─── 3. `renor search`, spawned as a user runs it ────────────────────────────
 
 const REPO_ROOT = path.resolve(__dirname, '..', '..');
-const TSX = path.join(REPO_ROOT, 'node_modules', '.bin', 'tsx');
+// The compiled `renor` bin (package.json `bin`), built by tests/globalSetup.ts before any test file
+// loads: the surface a user runs, and without paying tsx's transform on every spawn.
+const CLI = path.join(REPO_ROOT, 'dist', 'cli.js');
 
 function cliEnv(vault: string, ledgerRel: string): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { ...process.env };
@@ -374,7 +376,7 @@ function cliEnv(vault: string, ledgerRel: string): NodeJS.ProcessEnv {
 
 function renor(args: string[], env: NodeJS.ProcessEnv): Promise<{ code: number; stdout: string; stderr: string }> {
   return new Promise((resolve) => {
-    execFile(TSX, ['src/cli.ts', ...args], { cwd: REPO_ROOT, env, timeout: 120_000 }, (err, stdout, stderr) => resolve({
+    execFile(process.execPath, [CLI, ...args], { cwd: REPO_ROOT, env, timeout: 120_000 }, (err, stdout, stderr) => resolve({
       code: err && typeof (err as { code?: number }).code === 'number' ? (err as { code: number }).code : (err ? 1 : 0),
       stdout: String(stdout),
       stderr: String(stderr),

@@ -1,7 +1,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import type Database from 'better-sqlite3';
-import { countO200kStrict } from '../indexer/o200k';
+import { countO200k } from '../indexer/o200k';
 import { parseNote } from '../indexer/parser';
 import { noteContentHash } from '../indexer/dailyEntries';
 import { createOllamaChat } from '../evidence/ollamaChat';
@@ -536,7 +536,7 @@ function rowTokens(item: EvidenceItem): number {
   const action = item.action?.trim() ? ` | ${item.action.trim()}` : '';
   const amount = item.amount?.trim() ? ` | ${item.amount.trim()}` : '';
   const date = item.date?.trim() ? ` | ${item.date.trim()}` : '';
-  return countO200kStrict(`- ${item.item}${action}${amount}${date}\n`);
+  return countO200k(`- ${item.item}${action}${amount}${date}\n`);
 }
 
 /**
@@ -613,7 +613,7 @@ export async function digestTable(args: {
     const ranked = candidates
       .map(candidate => ({ candidate, score: cosine(queryVector, candidate.vector) }))
       .sort((a, b) => b.score - a.score || a.candidate.order - b.candidate.order || a.candidate.index - b.candidate.index);
-    const frame = countO200kStrict(renderEvidenceTable([]));
+    const frame = countO200k(renderEvidenceTable([]));
     let used = frame;
     const chosen: typeof candidates = [];
     for (const { candidate } of ranked) {
@@ -627,7 +627,7 @@ export async function digestTable(args: {
     report.status = items.length > 0 ? 'ok' : 'skipped';
     report.itemsRendered = items.length;
     report.text = items.length > 0 ? renderEvidenceTable(items) : '';
-    report.tokens = items.length > 0 ? countO200kStrict(report.text) : 0;
+    report.tokens = items.length > 0 ? countO200k(report.text) : 0;
     report.items = chosen.map(c => ({ notePath: c.notePath, source: c.item.source, item: c.item.item }));
     return { items, report };
   } finally {

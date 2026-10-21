@@ -12,6 +12,8 @@ import { rebuildEmbeddings, embedMissingVectors, chunksWithoutVectors, sleep, ty
 import { OpenAIEmbeddingProvider } from '../embeddings/openai';
 import { LocalEmbeddingProvider } from '../embeddings/local';
 import { VertexEmbeddingProvider } from '../embeddings/vertex';
+import { poolFetch } from '../net/poolFetch';
+import { recordPhase } from '../callPhases';
 import { CachingEmbeddingProvider } from '../embeddings/caching';
 import { InteractiveEmbeddingProvider } from '../embeddings/interactive';
 import { CoalescingEmbeddingProvider } from '../embeddings/coalescing';
@@ -168,6 +170,12 @@ export function createEmbeddingProvider(
   config: MvpConfig,
   /** A test points the Vertex endpoint at a local stub and shortens its retry waits; production passes nothing. */
   vertexSeam?: Pick<NonNullable<ConstructorParameters<typeof VertexEmbeddingProvider>[0]>, 'baseUrl' | 'retry'>,
+  /**
+   * The service keeps its connection to the embedding service across the pauses between two reads, up to three minutes
+   * (src/net/poolFetch.ts). A bench or a command that builds the stack for one run leaves it off: it makes its requests
+   * back to back and gains nothing from a pool that would outlive it, and it keeps the plain `fetch` it was measured with.
+   */
+  pooled = false,
 ): EmbeddingProvider | null {
   if (config.embeddingProvider === 'none') return null;
   if (config.embeddingProvider === 'local') {
@@ -188,6 +196,9 @@ export function createEmbeddingProvider(
       model: config.embeddingModel,
       dimensions: config.embeddingDims,
       ...vertexSeam,
+      // An embedding is a pure function of its text, so a request whose idle connection the service closed meanwhile is sent again.
+      // A connection it has to open for a read is told to that read's log line (callPhases.ts `connect`).
+      ...(pooled ? { request: poolFetch({ retryOnReset: true, onConnect: ms => recordPhase('connect', ms) }) } : {}),
     }))), config, `p-${served}`);
   }
   const keys = (config.embeddingApiKey ?? '').split(',').map(k => k.trim()).filter(Boolean);
@@ -204,7 +215,7 @@ export function attachEngine(
   config: MvpConfig,
   override?: EmbeddingProvider | null,
 ): Engine {
-  const provider = override === undefined ? createEmbeddingProvider(config) : override;
+  const provider = override === undefined ? createEmbeddingProvider(config, undefined, true) : override;
   if (!provider) {
     // What this process saves gets no vector: an index that has a model's vectors is marked unfinished first.
     if (markVectorsUnfinished(db)) {

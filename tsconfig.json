@@ -8,7 +8,14 @@
     "strict": true,
     "esModuleInterop": true,
     "resolveJsonModule": true,
-    "skipLibCheck": true
+    "skipLibCheck": true,
+    // Incremental state lives inside outDir, so it never outlives or escapes `dist/`: the deploy tarball
+    // excludes `dist`, and `rm -rf dist` removes the state with the outputs it describes. The suite's
+    // globalSetup compiles the tree with `tsc -b` before every vitest invocation, and `npm run build`
+    // compiles it again later in the gate. Unchanged files are not re-checked or re-emitted, so the
+    // second compile of the same tree costs seconds instead of a full tsc, and an unchanged tree costs none of it.
+    "incremental": true,
+    "tsBuildInfoFile": "dist/.tsbuildinfo"
   },
   "include": ["src/**/*"],
   "exclude": ["node_modules", "dist"]

@@ -12,7 +12,7 @@ import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { performance } from 'node:perf_hooks';
-import { encode } from 'gpt-tokenizer';
+import { countTextTokens } from '../../../src/eval/textTokens';
 import { openDb } from '../../../src/db/client';
 import { runMigrations } from '../../../src/db/schema';
 import { VectorIndex } from '../../../src/embeddings/vectorIndex';
@@ -183,7 +183,7 @@ async function main(): Promise<void> {
           notePath: path.relative(vaultDir, hit.notePath).replaceAll(path.sep, '/'),
           score: hit.score,
         }));
-        const contextTokens = encode(hits.map(hit => hit.text ?? '').join('\n\n')).length;
+        const contextTokens = countTextTokens(hits.map(hit => hit.text ?? '').join('\n\n'));
         const result = { id: row.id, hits, latencyMs: Math.round(latencyMs * 1000) / 1000, contextTokens };
         fs.appendFileSync(checkpoint, JSON.stringify(result) + '\n', 'utf8');
         fs.appendFileSync(perCasePath, JSON.stringify({

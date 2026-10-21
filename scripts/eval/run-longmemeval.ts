@@ -5,7 +5,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { performance } from 'node:perf_hooks';
 import { Command } from 'commander';
-import { encode } from 'gpt-tokenizer';
+import { countTextTokens } from '../../src/eval/textTokens';
 import { openDb } from '../../src/db/client';
 import { runMigrations } from '../../src/db/schema';
 import { VectorIndex } from '../../src/embeddings/vectorIndex';
@@ -351,8 +351,8 @@ async function main(): Promise<void> {
       });
       const hits = attached.hits.map(toEvalHit);
       const retrievalHits = retrieved.hits.map(toEvalHit);
-      const contextTokens = encode(hits.map(hit => hit.text ?? '').join('\n\n')).length;
-      const retrievalContextTokens = encode(retrievalHits.map(hit => hit.text ?? '').join('\n\n')).length;
+      const contextTokens = countTextTokens(hits.map(hit => hit.text ?? '').join('\n\n'));
+      const retrievalContextTokens = countTextTokens(retrievalHits.map(hit => hit.text ?? '').join('\n\n'));
       if (attached.evidence.status === 'ok' && attached.evidence.items) {
         evidenceFacts[row.question_id] = evidenceItemsToFactRows(attached.evidence.items);
       }

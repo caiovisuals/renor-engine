@@ -443,6 +443,8 @@ function gitDirtyLike(value: unknown): boolean {
 export const EVALUATOR_SOURCES = [
   'src/eval/hashEmbedding.ts',
   'src/eval/evalCache.ts',
+  // How every runner counts a context's tokens (special-token spellings as text): it decides what fits a token cap.
+  'src/eval/textTokens.ts',
   'scripts/eval/run-longmemeval-qa.ts',
   'scripts/eval/score-longmemeval-qa.ts',
   'scripts/eval/run-longmemeval-product.ts',

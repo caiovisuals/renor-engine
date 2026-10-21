@@ -34,6 +34,7 @@ export function readExistingStreams(dbPath: string, ledgerPath: string): Set<str
   try {
     const content = fs.readFileSync(ledgerPath, 'utf8');
     for (const event of parseLedgerEvents(content)) {
+      if (event.kind === 'erase') continue; // an erasure tombstone keeps no subject or predicate: it declares no stream
       streams.add(streamKey(event.subject, event.predicate, event.scope ?? 'global'));
     }
   } catch {

@@ -189,8 +189,90 @@ export function savedSource(source: string): string {
 }
 
 /**
+ * The identities no caller may write as: the roles a model reads as authority (system, developer, assistant), Renor itself,
+ * and the workspace's admin, owner and tools. A typed source or a User-Agent product that names one is refused or dropped
+ * (mvp/server.ts callerSource and sourceOf), and a trusted connection name that names one is unnamed.
+ */
+const RESERVED_SOURCE_IDENTITIES = new Set(['system', 'developer', 'assistant', 'renor', 'admin', 'owner', 'tool']);
+/**
+ * The reserved identities a name a CLIENT chooses may not even start with: `System Message`, `system-prompt`,
+ * `developer note`, `renor-engine` and `Renor Support` read as the role or as Renor. Only a whole first word counts
+ * (`system2`, `ecosystem` and `my-system` are ordinary names), and admin, owner and tool are reserved as whole names only
+ * (`Admin Bot`, `toolbox`). A name the OWNER chose (a gateway key's, from the dashboard) is held to the exact rule only, so a
+ * key called `Developer Laptop` or `Renor CLI` keeps its name, and so does what a read shows of a stored source.
+ */
+const RESERVED_LEADING_WORDS = new Set(['system', 'developer', 'assistant', 'renor']);
+const SOURCE_IDENTITY_SEPARATORS = /[ ._-]/g;
+/** The digits and signs a typed name can stand in for a letter with (`SYST3M`, `0wner`). `1` is tried as both i and l. */
+const DIGIT_LOOKALIKES: Record<string, string> = { '0': 'o', '3': 'e', '4': 'a', '5': 's', '7': 't', '@': 'a', '$': 's' };
+
+/**
+ * Which spellings of a reserved identity a check refuses. `exact` (always): the whole name, or its `role:` prefix, once
+ * compatibility forms (fullwidth `ｓｙｓｔｅｍ`) and accents (`Sýstem`) are folded. `leadingWords`: also a name whose first
+ * word is system, developer, assistant or renor. `digits`: also with digit look-alikes folded first.
+ */
+interface ReservedRule { leadingWords: boolean; digits: boolean }
+const EXACT_RULE: ReservedRule = { leadingWords: false, digits: false };
+const CLIENT_RULE: ReservedRule = { leadingWords: true, digits: true };
+
+/** The lower-case forms a name is judged in: NFKC, accents dropped, and (with `digits`) its digit look-alikes read as letters. */
+function judgedForms(source: string, digits: boolean): string[] {
+  const base = source.normalize('NFKC').normalize('NFD').replace(/\p{M}+/gu, '').toLowerCase();
+  if (!digits) return [base];
+  const letters = base.replace(/[03457@$]/g, ch => DIGIT_LOOKALIKES[ch]);
+  return [...new Set([letters.replace(/1/g, 'i'), letters.replace(/1/g, 'l')])];
+}
+
+/** The reserved identity a writer spelling claims under `rule`: the whole name, its `role:` prefix, or its first word. */
+function reservedSourceIdentity(source: string, rule: ReservedRule): string | null {
+  for (const lower of judgedForms(source, rule.digits)) {
+    const identity = lower.replace(SOURCE_IDENTITY_SEPARATORS, '');
+    if (RESERVED_SOURCE_IDENTITIES.has(identity)) return identity;
+    const colon = lower.indexOf(':');
+    const authorityPrefix = colon < 0 ? null : lower.slice(0, colon).replace(SOURCE_IDENTITY_SEPARATORS, '');
+    if (authorityPrefix !== null && RESERVED_SOURCE_IDENTITIES.has(authorityPrefix)) return authorityPrefix;
+    if (!rule.leadingWords) continue;
+    const firstWord = lower.split(/[^\p{L}\p{N}]+/u).find(word => word !== '');
+    if (firstWord !== undefined && RESERVED_LEADING_WORDS.has(firstWord)) return firstWord;
+  }
+  return null;
+}
+
+/** The reserved identity under any spelling a write persists: the name as given, the fact's cleanSource and the note's headerSource. */
+function reservedUnder(source: string, rule: ReservedRule): string | null {
+  for (const form of [source, cleanSource(source), headerSource(source)]) {
+    const reserved = reservedSourceIdentity(form, rule);
+    if (reserved) return reserved;
+  }
+  return null;
+}
+
+/**
+ * The reserved identity a name a client chose would claim: a typed `source`, a User-Agent product, or a self-hosted OAuth
+ * client_name (the client registers it). The exact rule, plus a reserved first word and digit look-alikes.
+ */
+export function reservedCallerSource(source: string): string | null {
+  return reservedUnder(source, CLIENT_RULE);
+}
+
+/**
+ * The reserved identity a name claims exactly (whole name or `role:` prefix, fullwidth and accents folded): the rule for a
+ * gateway key's name, which the owner chose, and for what a read shows of a stored source. Paths, URLs, truncation and
+ * punctuation folding cannot manufacture one past this.
+ */
+export function reservedSourceIn(source: string): string | null {
+  return reservedUnder(source, EXACT_RULE);
+}
+
+/** Whether a stored source names a reserved identity: one saved before the rule, or written into a file by hand. */
+export function isReservedSource(source: unknown): boolean {
+  return typeof source === 'string' && source !== '' && reservedSourceIn(source) !== null;
+}
+
+/**
  * Who saved a fact, as a read shows it. A fact another agent saved names that agent (`source`), and a fact an import saved
- * is `untrusted`: its text came from a file, not from something the user said to an agent. The reader's own facts carry
+ * is `untrusted`: its text came from a file, not from something the user said to an agent. A stored source that is a
+ * reserved identity is `untrusted` too: it is a claim (saved before the rule, or written by hand). The reader's own facts carry
  * neither, so a reply about them is what it was before. `reader` absent: every named author is another agent.
  */
 export interface AuthorMarker {
@@ -202,6 +284,6 @@ export function authorMarker(author: string | null | undefined, reader?: string)
   const fromOther = typeof author === 'string' && author !== '' && author !== reader;
   return {
     ...(fromOther ? { source: author } : {}),
-    ...(isImportSource(author) ? { untrusted: true as const } : {}),
+    ...(isImportSource(author) || isReservedSource(author) ? { untrusted: true as const } : {}),
   };
 }

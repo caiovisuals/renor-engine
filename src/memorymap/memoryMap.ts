@@ -7,7 +7,7 @@ import type Database from 'better-sqlite3';
 import { parseNote } from '../indexer/parser';
 import { isIgnoredByVault } from '../indexer/walker';
 import { indexFile, type IndexOptions } from '../indexer/pipeline';
-import { factEventId, listRetiredFacts, resolveLedgerPath, restoreFact, retireFact, type FactRetirementReceipt } from '../memory/lifecycle';
+import { eraseRetiredFact, factEventId, listRetiredFacts, resolveLedgerPath, restoreFact, retireFact, type FactRetirementReceipt } from '../memory/lifecycle';
 import { writerConflictLines } from '../memory/writerConflicts';
 import { DAILY_FILE_RE, ENTRY_LINE_RE, decodeEntryLine, engineDailyHeader, entryInstant, isEmptyEngineDailyNote, parseEntryHeader, type EntryHeader } from '../memory/dailyNote';
 import { withDailyFileLock } from '../memory/writer';
@@ -1594,7 +1594,8 @@ async function bytesBelow(dir: string): Promise<number> {
  * (`retired:<hex>`), or `all` for every retired note and entry. With `all`, `only` (retirement ids, as the owner saw them)
  * limits the deletion to those, so a retirement made after the owner's list was read is not deleted unseen. A live memory
  * has no retirement id, so it can never be deleted in one step: it is retired first. A retired fact is kept in the fact
- * ledger, which is replayed to rebuild the index, and is refused here.
+ * ledger, which is replayed to rebuild the index. A bare `all` keeps retired facts; a fact is erased only when its
+ * `fact:` id is targeted directly or included in `only`.
  *
  * What goes: a note's stored copy (so its bytes stop counting toward storage), an entry's text in the journal, every
  * journal record of the memory's earlier retirements that carried its text, the retire, restore and note events that
@@ -1608,10 +1609,22 @@ async function bytesBelow(dir: string): Promise<number> {
  * deletion (from then on nothing lists or restores it); a stored copy left behind by a crash after it is removed by the
  * next retire, restore or delete (removePurgedCopies), and until then it counts toward storage but nothing reads it.
  */
-export async function purgeRetired(ctx: MemoryMapContext, target: string, only?: readonly string[]): Promise<PurgeReceipt> {
-  if (factEventId(target) !== null) {
-    throw refusal('invalid_argument', 'a retired fact stays in the fact ledger and cannot be deleted here; email privacy@renor.cloud to erase one');
+/**
+ * A fact erased for good, and the evidence cached from the ledger that held it: the evidence pass reads the ledger whole, so
+ * its extractions can carry the erased value (the same as a daily log's, below). Dropped after the rewrite, so an extraction
+ * that follows reads the tombstone; a retry of an erasure that already happened drops them again.
+ */
+async function eraseFact(ctx: MemoryMapContext, id: string): Promise<PurgeReceipt> {
+  const receipt = await eraseRetiredFact(ctx.db, ctx.memoryDir, ctx.ledgerRelPath, id, ctx.indexOptions.vectorIndex);
+  if (ctx.evidenceCachePath) {
+    const ledger = resolveLedgerPath(ctx.memoryDir, ctx.ledgerRelPath);
+    dropEvidenceForStems(ctx.evidenceCachePath, [ledger, path.relative(path.resolve(ctx.memoryDir), ledger)]);
   }
+  return receipt;
+}
+
+export async function purgeRetired(ctx: MemoryMapContext, target: string, only?: readonly string[]): Promise<PurgeReceipt> {
+  if (factEventId(target) !== null) return eraseFact(ctx, target);
   if (target !== 'all' && !target.startsWith('retired:')) {
     throw refusal('invalid_argument', 'pass the id of a retired memory from memory_map.retired (retired:<id>) or "all"; a live memory is retired first');
   }
@@ -1623,17 +1636,26 @@ export async function purgeRetired(ctx: MemoryMapContext, target: string, only?:
     const rootReal = await fs.realpath(ctx.memoryDir);
     const journal = await readJournal(ctx);
     const live = (await collectMemories(ctx)).seen;
-    const completed = (await completedRetirements(ctx, live)).filter((r) => r.memory.kind !== 'fact');
+    const completed = await completedRetirements(ctx, live);
     const listed = only === undefined ? null : new Set(only);
     const chosen = target === 'all'
-      ? completed.filter((r) => listed === null || listed.has(r.memory.id))
+      ? completed.filter((r) => listed === null ? r.memory.kind !== 'fact' : listed.has(r.memory.id))
       : completed.filter((r) => r.memory.id === target);
     if (target !== 'all' && chosen.length === 0) throw refusal('memory_not_found', 'no retired note or entry with that id');
     const at = new Date().toISOString();
     if (chosen.length === 0) return { ok: true, action: 'deleted', ids: [], freedBytes: 0, at };
 
-    const rids = new Set(chosen.map((r) => r.memory.id));
-    const memoryIds = new Set(chosen.map((r) => r.memory.memoryId));
+    const facts = chosen.filter((r) => r.memory.kind === 'fact');
+    const files = chosen.filter((r) => r.memory.kind !== 'fact');
+    const erasedFacts = [] as string[];
+    for (const fact of facts) {
+      const erased = await eraseFact(ctx, fact.memory.id);
+      erasedFacts.push(...erased.ids);
+    }
+    if (files.length === 0) return { ok: true, action: 'deleted', ids: erasedFacts, freedBytes: 0, at };
+
+    const rids = new Set(files.map((r) => r.memory.id));
+    const memoryIds = new Set(files.map((r) => r.memory.memoryId));
     const byRid = new Map(activeRetired(journal).map((r) => [r.rid, r]));
     let freedBytes = 0;
     for (const rid of rids) {
@@ -1644,15 +1666,15 @@ export async function purgeRetired(ctx: MemoryMapContext, target: string, only?:
     // 1. Events, cached evidence, import-journal entries and replacement records that carry its text or path. Idempotent, so a retry after a
     // crash repeats them harmlessly.
     const stems = new Set<string>();
-    await forgetImportedNotes(ctx.memoryDir, new Set(chosen.filter((r) => r.memory.kind === 'note').map((r) => r.memory.path)));
-    await forgetReplacementsOf(path.join(rootReal, RETIRED_DIR), new Set(chosen.map((r) => r.memory.memoryId).filter((id): id is string => typeof id === 'string')));
+    await forgetImportedNotes(ctx.memoryDir, new Set(files.filter((r) => r.memory.kind === 'note').map((r) => r.memory.path)));
+    await forgetReplacementsOf(path.join(rootReal, RETIRED_DIR), new Set(files.map((r) => r.memory.memoryId).filter((id): id is string => typeof id === 'string')));
     ctx.db.transaction(() => {
       const named = ctx.db.prepare(
         `DELETE FROM write_events WHERE action IN ('retire', 'restore') AND json_valid(summary) AND json_extract(summary, '$.id') = ?`,
       );
       const noted = ctx.db.prepare(`DELETE FROM write_events WHERE action = 'note' AND note_path IN (?, ?) AND summary = ?`);
       for (const memoryId of memoryIds) named.run(memoryId);
-      for (const r of chosen) {
+      for (const r of files) {
         const rel = r.memory.path;
         stems.add(rel);
         stems.add(path.resolve(ctx.memoryDir, ...rel.split('/')));
@@ -1688,7 +1710,7 @@ export async function purgeRetired(ctx: MemoryMapContext, target: string, only?:
       .filter(Boolean).join(' and ');
     ctx.db.prepare('INSERT INTO write_events (note_path, action, summary, created_at, author) VALUES (?, ?, ?, ?, ?)')
       .run('_retired_', 'delete', `deleted permanently: ${counted}`, at, ctx.source ?? null);
-    return { ok: true, action: 'deleted', ids: [...rids], freedBytes, at };
+    return { ok: true, action: 'deleted', ids: [...erasedFacts, ...rids], freedBytes, at };
   });
 }
 

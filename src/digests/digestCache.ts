@@ -120,6 +120,11 @@ export class DigestCache {
     this.putVectorsStmt.run(key, space, dims, Buffer.from(floats.buffer));
   }
 
+  /** The models the cache holds digests of, and how many digests each: what an eval run reads to arm the digests for the model the cache holds. */
+  digestsByModel(): Array<{ model: string; digests: number }> {
+    return this.db.prepare('SELECT model, COUNT(*) AS digests FROM note_digests GROUP BY model ORDER BY model').all() as Array<{ model: string; digests: number }>;
+  }
+
   /**
    * Keep only the digests of the notes whose file hash is in `noteHashes`, and the vectors that go with them: a digest
    * of text a note no longer holds (it was edited, forgotten, or its file is gone) is derived from content the user

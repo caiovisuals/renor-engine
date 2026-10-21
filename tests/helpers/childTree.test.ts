@@ -63,6 +63,12 @@ afterEach(() => {
   for (const dir of scratch.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
 });
 
+// Linux only: alive() tells a running process from an unreaped zombie by /proc/<pid>/stat, and childTree.ts proves a group
+// still carries the id it was spawned with by /proc/<pid>/environ. Without /proc (the public macOS job) alive() always says
+// false and a group is judged by its number alone, so the tests that need a live answer or that identity check run on
+// Linux only.
+const LINUX_PROC = process.platform === 'linux';
+
 function alive(pid: number): boolean {
   try {
     process.kill(pid, 0);
@@ -104,7 +110,7 @@ describe('registering and signalling a child tree', () => {
     expect(liveChildGroups(process.pid + 1)).toEqual([]);
   });
 
-  it('killTree reaches the supervisor AND the grandchild it wrapped, and drops the record', async () => {
+  it.runIf(LINUX_PROC)('killTree reaches the supervisor AND the grandchild it wrapped, and drops the record', async () => {
     const { child, grandchild } = await startSupervised();
     expect(alive(grandchild)).toBe(true);
     expect(killTree(child)).toBe(true);
@@ -141,7 +147,7 @@ describe('registering and signalling a child tree', () => {
     expect(killAllChildTrees('again')).toBe(0);
   });
 
-  it('a sweep scoped to one owner leaves another owner’s children alone', async () => {
+  it.runIf(LINUX_PROC)('a sweep scoped to one owner leaves another owner’s children alone', async () => {
     const child = spawnTree(process.execPath, NODE_SLEEP, { stdio: 'ignore' });
     started.push(child);
     expect(killAllChildTrees('probe', 'SIGKILL', process.pid + 1)).toBe(0);
@@ -150,7 +156,7 @@ describe('registering and signalling a child tree', () => {
 });
 
 describe('identity: a group number is not enough', () => {
-  it('does not report, and never signals, a recycled pgid that an unrelated process now holds', async () => {
+  it.runIf(LINUX_PROC)('does not report, and never signals, a recycled pgid that an unrelated process now holds', async () => {
     // A process of its own group that this registry never started: what a recycled pgid looks like.
     const stranger = spawn(process.execPath, NODE_SLEEP, { detached: true, stdio: 'ignore' });
     stranger.unref();
@@ -164,7 +170,7 @@ describe('identity: a group number is not enough', () => {
     expect(alive(stranger.pid!)).toBe(true);
   });
 
-  it('killTree on a reaped child will not signal a group that no longer carries its id', async () => {
+  it.runIf(LINUX_PROC)('killTree on a reaped child will not signal a group that no longer carries its id', async () => {
     const child = spawnTree(process.execPath, ['-e', 'process.exit(0)'], { stdio: 'ignore' });
     await new Promise((resolve) => child.once('exit', resolve));
     const stranger = spawn(process.execPath, NODE_SLEEP, { detached: true, stdio: 'ignore' });
@@ -283,7 +289,7 @@ describe('the run guard and the worker backstop, in a nested vitest run', () => 
     expect(await until(() => !alive(read(file).grandchild))).toBe(true);
   }, 90_000);
 
-  it('a real Ctrl-C mid-run (SIGINT to the whole process group) leaves zero orphans, by the worker backstop alone', async () => {
+  it.runIf(LINUX_PROC)('a real Ctrl-C mid-run (SIGINT to the whole process group) leaves zero orphans, by the worker backstop alone', async () => {
     const file = info();
     const run = nested({ FIXTURE_MODE: 'hold', FIXTURE_INFO: file, FIXTURE_GUARD: '0' });
     expect(await until(() => fs.existsSync(file), 30_000), run.output()).toBe(true);

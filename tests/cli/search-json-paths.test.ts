@@ -22,7 +22,9 @@ import { engineSearchMemory, type Engine } from '../../src/mvp/engine';
  */
 
 const REPO_ROOT = path.resolve(__dirname, '..', '..');
-const TSX = path.join(REPO_ROOT, 'node_modules', '.bin', 'tsx');
+// The compiled `renor` bin (package.json `bin`), built by tests/globalSetup.ts before any test
+// file loads: the surface a user runs, and without paying tsx's transform on every spawn.
+const CLI = path.join(REPO_ROOT, 'dist', 'cli.js');
 // Each case spawns tsx (index or search); a loaded host can take tens of seconds.
 const CLI_BUDGET_MS = 180_000;
 
@@ -69,7 +71,7 @@ function cliEnv(extra: Record<string, string> = {}): NodeJS.ProcessEnv {
 function runCli(args: string[], env: NodeJS.ProcessEnv): Promise<{ code: number; stdout: string; stderr: string }> {
   return new Promise((resolve) => {
     // Not run from the vault: where the process runs must not decide what it prints.
-    execFile(TSX, ['src/cli.ts', ...args], { cwd: REPO_ROOT, env, timeout: CLI_BUDGET_MS },
+    execFile(process.execPath, [CLI, ...args], { cwd: REPO_ROOT, env, timeout: CLI_BUDGET_MS },
       (err, stdout, stderr) => resolve({
         code: err && typeof (err as { code?: unknown }).code === 'number' ? (err as { code: number }).code : (err ? 1 : 0),
         stdout: String(stdout),

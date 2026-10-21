@@ -176,4 +176,18 @@ describe('DigestCache', () => {
     reader.close();
     expect(fs.existsSync(file)).toBe(true);
   });
+
+  it('lists the models a cache holds digests of, and how many each, read-only', () => {
+    const file = tmpPath('digest-cache-unit/models.db');
+    const cache = new DigestCache(file);
+    expect(cache.digestsByModel()).toEqual([]);
+    cache.putDigest(DigestCache.digestKey('m2', 'low', 'p', 'v1', 'h1'), 'h1', { items: [], model: 'm2' });
+    cache.putDigest(DigestCache.digestKey('m', 'low', 'p', 'v1', 'h1'), 'h1', { items: [], model: 'm' });
+    cache.putDigest(DigestCache.digestKey('m', 'low', 'p', 'v1', 'h2'), 'h2', { items: [], model: 'm' });
+    cache.close();
+
+    const reader = new DigestCache(file, { readonly: true });
+    expect(reader.digestsByModel()).toEqual([{ model: 'm', digests: 2 }, { model: 'm2', digests: 1 }]);
+    reader.close();
+  });
 });

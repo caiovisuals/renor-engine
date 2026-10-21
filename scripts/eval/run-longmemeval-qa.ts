@@ -3,7 +3,7 @@ import fsp from 'node:fs/promises';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { Command } from 'commander';
-import { encode } from 'gpt-tokenizer';
+import { countTextTokens } from '../../src/eval/textTokens';
 import { evaluatorSourceHash, gitState, researchTruthFields } from '../../src/eval/runManifest';
 import { claimDirectory } from '../../src/eval/artifacts';
 import { EvalCache, KeyPool, WorkerPool, CACHE_SCHEMA_VERSION, resolveEvalCachePath, resolveJudgeKeys, runWithKeyPoolRetries, parseRetryAfterMs, resolveWorkerConcurrency, summarizeQaTokenUsage, resolveCacheScope } from '../../src/eval/evalCache';
@@ -738,7 +738,7 @@ async function main(): Promise<void> {
             const candidate = ablation.stripExcerptMeta
               ? stripExcerptMetaLines(`[Excerpt ${excerpts.length + 1}]\n${dateLine}${text}`) // strip mode drops [Excerpt N]; date footer kept
               : `[Excerpt ${excerpts.length + 1}]\n${dateLine}${text}`;
-            const candidateTokens = encode(candidate).length;
+            const candidateTokens = countTextTokens(candidate);
             if (tokens + candidateTokens > maxContextTokens) break;
             seen.add(text);
             excerpts.push({ text: candidate, date: sessionDate });
@@ -767,7 +767,7 @@ async function main(): Promise<void> {
               const candidate = ablation.stripExcerptMeta
                 ? stripExcerptMetaLines(`[Excerpt ${excerpts.length + 1}]\n${dateLine}${text}`) // strip mode drops [Excerpt N]; date footer kept
                 : `[Excerpt ${excerpts.length + 1}]\n${dateLine}${text}`;
-              const candidateTokens = encode(candidate).length;
+              const candidateTokens = countTextTokens(candidate);
               if (tokens + candidateTokens > maxContextTokens) break;
               if (completionTokens + candidateTokens > completionTokenBudget) continue;
               coveredNotes.add(noteSeg);
@@ -819,7 +819,7 @@ async function main(): Promise<void> {
                 if (gap > 0) lines.push(`- gap: ${dated[i - 1].date} → ${dated[i].date} = ${gap} days`);
               }
               const block = `Derived timeline (from excerpt session dates only; do not invent dates):\n${lines.join('\n')}`;
-              const blockTokens = encode(block).length;
+              const blockTokens = countTextTokens(block);
               excerpts.push({ text: block, date: null });
               tokens += blockTokens;
               temporalTokens = blockTokens;
@@ -842,7 +842,7 @@ async function main(): Promise<void> {
                 return `- ${f.value} ${f.unit ?? ''} | ${f.verb ?? ''} | ${f.object ?? ''}${f.event ? ` | ${f.event}` : ''}${coNote}`.replace(/\s+/g, ' ').trim();
               });
               const block = `User-asserted numeric facts extracted from memory (with sources):\n${lines.join('\n')}\nUse this table when relevant; cite only values present here.${ablation.factsFallback ? ' If the table does not contain the value needed to answer, use the excerpts instead.' : ''}`;
-              const blockTokens = encode(block).length;
+              const blockTokens = countTextTokens(block);
               excerpts.push({ text: block, date: null });
               tokens += blockTokens;
               factsTokens = blockTokens;
@@ -853,7 +853,7 @@ async function main(): Promise<void> {
             if (rows.length) {
               const lines = rows.map(e => `- ${e.when ?? ''} | ${e.event ?? ''}${e.entities ? ` | ${e.entities}` : ''}`.replace(/\s+/g, ' ').trim());
               const block = `User events chronicle extracted from memory:\n${lines.join('\n')}\nUse this chronicle when relevant; cite only events present here. If the chronicle does not contain what is needed to answer, use the excerpts instead.`;
-              const blockTokens = encode(block).length;
+              const blockTokens = countTextTokens(block);
               excerpts.push({ text: block, date: null });
               tokens += blockTokens;
               chronicleTokens = blockTokens;
@@ -864,7 +864,7 @@ async function main(): Promise<void> {
             if (rows.length) {
               const lines = rows.map(p => `- (${p.kind ?? 'pref'}) ${p.statement ?? ''}`.replace(/\s+/g, ' ').trim());
               const block = `User standing preferences and constraints extracted from memory:\n${lines.join('\n')}\nWhen the question touches a preference or constraint, apply the matching entry to your answer as a standing rule. If nothing here is relevant, use the excerpts instead.`;
-              const blockTokens = encode(block).length;
+              const blockTokens = countTextTokens(block);
               excerpts.push({ text: block, date: null });
               tokens += blockTokens;
               prefsTokens = blockTokens;
