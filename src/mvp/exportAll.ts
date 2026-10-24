@@ -1,10 +1,11 @@
 import fs from 'fs/promises';
 import path from 'path';
-import type Database from 'better-sqlite3';
+import type Database from '../db/sqlite';
 import { listRetiredFacts, parseLedgerEvents, resolveLedgerPath } from '../memory/lifecycle';
 import { DAILY_FILE_RE } from '../memory/dailyNote';
 import { dailyEntriesForExport, retiredForExport, type MemoryMapContext } from '../memorymap/memoryMap';
 import { parseNote } from '../indexer/parser';
+import { handoffNoteEnabled } from '../memory/handoff';
 import { allReplacementRecords, replacementIndex, type ReplacementIndex, type ReplacementRecord } from '../memorymap/replacements';
 
 // ---------------------------------------------------------------------------
@@ -39,6 +40,21 @@ export const NOT_EXPORTED: ReadonlyArray<{ kind: string; what: string; reason: s
   { kind: 'searchIndex', what: 'the search index and embeddings', reason: 'derived: index_memory rebuilds them from the exported files' },
   { kind: 'otherFiles', what: 'files in the memory folder that are not Markdown (.md), dot-folders other than the retired area, and symbolic links', reason: 'the export carries Markdown notes only' },
 ];
+
+/**
+ * Named in notExported only where RENOR_HANDOFF_NOTE is on: with it off there is no handoff note and no table, and the
+ * manifest is the one it was without it.
+ */
+export const HANDOFF_NOT_EXPORTED = {
+  kind: 'handoffNotes',
+  what: 'the handoff note of each repository and branch (the handoff_notes table)',
+  reason: 'session status, not memory: it expires after 7 days and stays out of every read',
+} as const;
+
+/** NOT_EXPORTED, and the handoff notes where RENOR_HANDOFF_NOTE is on. */
+export function notExported(env: NodeJS.ProcessEnv = process.env): ReadonlyArray<{ kind: string; what: string; reason: string }> {
+  return handoffNoteEnabled(env) ? [...NOT_EXPORTED, HANDOFF_NOT_EXPORTED] : NOT_EXPORTED;
+}
 
 /** Characters per reply: well under the MCP result limits this codebase works to. */
 const DEFAULT_MAX_CHARS = 600_000;
@@ -304,7 +320,7 @@ export async function exportEverything(
     bytes: built.ledger?.length ?? null,
     counts,
     sections,
-    notExported: NOT_EXPORTED,
+    notExported: notExported(),
   };
 
   let document = '';

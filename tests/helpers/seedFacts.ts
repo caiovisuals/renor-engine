@@ -1,4 +1,4 @@
-import type Database from 'better-sqlite3';
+import type Database from '../../src/db/sqlite';
 import { ensureFactTerms } from '../../src/memory/factTerms';
 
 export interface SeedFact {

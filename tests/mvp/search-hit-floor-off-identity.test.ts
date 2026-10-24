@@ -7,6 +7,7 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { replyTokens } from '../../src/mvp/agentMemory';
 import { CalibratedIdentityProvider } from '../helpers/calibratedIdentityProvider';
+import { useCurrentDriver } from '../helpers/currentDriver';
 
 /**
  * Differential against the current merged main: floor=0 restores all 834 search_memory/get_context responses
@@ -60,7 +61,9 @@ function exportSrc(sha: string, tag: string): string {
   const tar = execFileSync('git', ['-C', REPO, 'archive', '--format=tar', sha, 'engine/src'], { maxBuffer: 1 << 28 });
   if (spawnSync('tar', ['-x', '-C', dir], { input: tar }).status !== 0) throw new Error(`tar could not unpack ${sha}`);
   fs.symlinkSync(path.join(ENGINE, 'node_modules'), path.join(dir, 'engine', 'node_modules'));
-  return path.join(dir, 'engine', 'src');
+  const src = path.join(dir, 'engine', 'src');
+  useCurrentDriver(src);
+  return src;
 }
 
 interface Suite { name: string; fixture: string; questions: Array<{ id: string; query: string }> }

@@ -6,7 +6,7 @@ import { openDb } from '../../src/db/client';
 import { runMigrations } from '../../src/db/schema';
 import { indexFile } from '../../src/indexer/pipeline';
 import { remember, replayLedger, factsFor, appendLedgerEvent } from '../../src/memory/lifecycle';
-import type Database from 'better-sqlite3';
+import type Database from '../../src/db/sqlite';
 
 /**
  * Gate1A repair-pass regressions, adapted with provenance from the reviewer

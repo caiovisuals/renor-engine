@@ -1,4 +1,4 @@
-import type Database from 'better-sqlite3';
+import type Database from '../db/sqlite';
 import { z } from 'zod';
 import { assertStorable, secretGuardEnabled } from '../extraction/secretGuard';
 import { claimAgentLease, newLeaseHolder } from '../memory/agentLease';

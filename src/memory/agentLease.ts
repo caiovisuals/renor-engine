@@ -1,5 +1,5 @@
 import crypto from 'crypto';
-import type Database from 'better-sqlite3';
+import type Database from '../db/sqlite';
 import { hiveIdentity } from './sourceName';
 
 /**

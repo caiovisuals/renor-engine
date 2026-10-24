@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import crypto from 'node:crypto';
 import path from 'node:path';
-import Database from 'better-sqlite3';
+import Database from '../db/sqlite';
 
 /**
  * Content-addressed cache for the session router (RENOR_SESSION_ROUTER, src/router/sessionRouter.ts): the

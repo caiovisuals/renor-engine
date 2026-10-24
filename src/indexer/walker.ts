@@ -30,20 +30,18 @@ function compileIgnore(patterns: string[]): (rel: string) => boolean {
   return rel => rules.some(r => rel === r.clean || rel.startsWith(r.dir) || rel.includes(r.inside) || rel.endsWith(r.tail));
 }
 
-export async function walkVault(vaultPath: string, options: WalkOptions = {}): Promise<string[]> {
-  let patterns = [...DEFAULT_IGNORE, ...(options.ignorePatterns ?? [])];
-
+/** The default ignore patterns, then `extra`, then the lines of the vault's .semanticignore (blank and `#` lines skipped). */
+async function vaultIgnorePatterns(vaultPath: string, extra: string[] = []): Promise<string[]> {
+  const patterns = [...DEFAULT_IGNORE, ...extra];
   try {
     const raw = await fs.readFile(path.join(vaultPath, '.semanticignore'), 'utf8');
-    const fromFile = raw
-      .split('\n')
-      .map(l => l.trim())
-      .filter(l => l && !l.startsWith('#'));
-    patterns = [...patterns, ...fromFile];
-  } catch {
-    /* no .semanticignore */
-  }
-  const ignored = compileIgnore(patterns);
+    patterns.push(...raw.split('\n').map(l => l.trim()).filter(l => l && !l.startsWith('#')));
+  } catch { /* no .semanticignore */ }
+  return patterns;
+}
+
+export async function walkVault(vaultPath: string, options: WalkOptions = {}): Promise<string[]> {
+  const ignored = compileIgnore(await vaultIgnorePatterns(vaultPath, options.ignorePatterns));
 
   const results: string[] = [];
 
@@ -172,12 +170,7 @@ export function statVaultFiles(files: string[]): VaultFileStat[] {
  * .semanticignore once, when asked.
  */
 export async function vaultIgnores(vaultPath: string): Promise<(file: string) => boolean> {
-  let patterns = [...DEFAULT_IGNORE];
-  try {
-    const raw = await fs.readFile(path.join(vaultPath, '.semanticignore'), 'utf8');
-    patterns = [...patterns, ...raw.split('\n').map(l => l.trim()).filter(l => l && !l.startsWith('#'))];
-  } catch { /* no .semanticignore */ }
-  const ignored = compileIgnore(patterns);
+  const ignored = compileIgnore(await vaultIgnorePatterns(vaultPath));
   return (file) => {
     const parts = path.relative(vaultPath, file).split(path.sep);
     return parts.some((_, i) => ignored(parts.slice(0, i + 1).join(path.sep)));
@@ -190,10 +183,5 @@ export async function vaultIgnores(vaultPath: string): Promise<(file: string) =>
  * moved through its path any more than it can be found by search.
  */
 export async function isIgnoredByVault(vaultPath: string, rel: string): Promise<boolean> {
-  let patterns = [...DEFAULT_IGNORE];
-  try {
-    const raw = await fs.readFile(path.join(vaultPath, '.semanticignore'), 'utf8');
-    patterns = [...patterns, ...raw.split('\n').map(l => l.trim()).filter(l => l && !l.startsWith('#'))];
-  } catch { /* no .semanticignore */ }
-  return compileIgnore(patterns)(rel.split('/').join(path.sep));
+  return compileIgnore(await vaultIgnorePatterns(vaultPath))(rel.split('/').join(path.sep));
 }

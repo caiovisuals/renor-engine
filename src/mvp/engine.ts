@@ -3,7 +3,7 @@ import { isBlankOrInvisible } from '../memory/invisibleText';
 import fs from 'fs';
 import crypto from 'crypto';
 import path from 'path';
-import Database from 'better-sqlite3';
+import Database from '../db/sqlite';
 import { readUntilWrite } from '../db/readCache';
 import { prepareOnce } from '../db/statements';
 import { VectorIndex, markVectorsUnfinished } from '../embeddings/vectorIndex';
@@ -51,6 +51,9 @@ import { embeddingModelKey } from './contextRelevance';
 import { sanitizeErrorMessage } from './sanitize';
 import { digestItemsToHit, digestTable, leadingSummaryHits, resolveDigestOptions, type DigestOptions } from '../digests/digests';
 import { DigestWorker } from '../digests/worker';
+import { createLogger } from './log';
+
+const log = createLogger('engine');
 
 export interface Engine {
   provider: EmbeddingProvider | null;
@@ -219,8 +222,7 @@ export function attachEngine(
   if (!provider) {
     // What this process saves gets no vector: an index that has a model's vectors is marked unfinished first.
     if (markVectorsUnfinished(db)) {
-      console.log('[embeddings] no embedding provider is configured: what is saved now gets no vector, so the index is marked unfinished; '
-        + 'the next start with its model embeds those chunks before semantic search reads the index again');
+      log.info('embeddings_unconfigured', { detail: 'no embedding provider is configured: what is saved now gets no vector, so the index is marked unfinished; the next start with its model embeds those chunks before semantic search reads the index again' });
     }
     return { provider: null, vectorIndex: null, dims: readEmbeddingTableDims(db) };
   }
@@ -283,19 +285,14 @@ function claimEmbeddingSpace(db: Database.Database, vectorIndex: VectorIndex, pr
       return;
     }
     vectorIndex.beginRebuild(wanted); // there is no vector to clear: this names the index and marks it unfinished
-    console.log(
-      `[embeddings] index.db holds ${chunks} chunk(s) and no vectors (it was written without an embedding provider): `
-      + `every chunk is embedded with ${wanted} in the background, and until that finishes semantic search is off and keyword search keeps working.`,
-    );
+    log.info('embeddings_backfill', { chunks, model: wanted, detail: 'index.db holds no vectors (it was written without an embedding provider): every chunk is embedded in the background; until then semantic search is off and keyword search keeps working' });
     return;
   }
-  console.warn(
-    stored === null
-      ? '[embeddings] index.db holds vectors but no record of the model that wrote them (it was built before models were recorded). '
-      : `[embeddings] index.db holds vectors from ${stored}, but the configured embedding is ${wanted}. `,
-    `Search cannot use vectors from another model: a rebuild embeds every chunk again with ${wanted}, and until it finishes `
-    + 'semantic search is off and keyword search keeps working.',
-  );
+  log.warn('embeddings_model_mismatch', {
+    stored: stored ?? 'unrecorded',
+    model: wanted,
+    detail: 'search cannot use vectors from another model: a rebuild embeds every chunk again, and until it finishes semantic search is off and keyword search keeps working',
+  });
 }
 
 /**
@@ -382,17 +379,17 @@ export function engineRebuildEmbeddings(
   };
   const run = async (): Promise<void> => {
     const chunks = () => db.prepare('SELECT COUNT(*) FROM chunks').pluck().get() as number;
-    console.log(`[embeddings] rebuilding the vectors of ${chunks()} chunk(s) with ${space}; semantic search is off until it finishes`);
+    log.info('embedding_rebuild_started', { chunks: chunks(), model: space, detail: 'semantic search is off until it finishes' });
     for (let outage = 0; !controller.signal.aborted; outage++) {
       try {
         const result = await rebuildEmbeddings(db, vectorIndex, provider, space, { ...rebuildOptions, signal: controller.signal });
         if (result.done) {
-          console.log(`[embeddings] rebuild finished in ${((Date.now() - startedAt) / 1000).toFixed(1)} s; semantic search is on`);
+          log.info('embedding_rebuild_finished', { ms: Date.now() - startedAt, detail: 'semantic search is on' });
           return;
         }
       } catch (err) {
         const delay = outageDelayMs(outage);
-        console.error(`[embeddings] rebuild interrupted with ${chunksWithoutVectors(db)} of ${chunks()} chunk(s) still to embed; semantic search stays off; trying again in ${Math.round(delay / 1000)} s:`, err);
+        log.error('embedding_rebuild_interrupted', { unembedded: chunksWithoutVectors(db), chunks: chunks(), retryInS: Math.round(delay / 1000), detail: 'semantic search stays off' }, err);
         await wait(delay);
       }
     }
@@ -402,7 +399,7 @@ export function engineRebuildEmbeddings(
   const rebuild: EmbeddingRebuild = {
     abort: () => controller.abort(),
     waiting: () => waiting,
-    done: run().catch((err) => console.error('[embeddings] rebuild failed:', err)).finally(() => embeddingRebuilds.delete(vectorIndex)),
+    done: run().catch((err) => log.error('embedding_rebuild_failed', {}, err)).finally(() => embeddingRebuilds.delete(vectorIndex)),
   };
   embeddingRebuilds.set(vectorIndex, rebuild);
   return rebuild;
@@ -470,7 +467,7 @@ export function resolveEngineDigests(
   const options = resolveDigestOptions({ dbPath: config.dbPath }, env);
   if (!options) return null;
   if (!engine.provider) {
-    console.log('[digests] RENOR_DIGESTS is on, but this workspace has no embedding provider, so digests are off for it');
+    log.info('digests_off', { detail: 'RENOR_DIGESTS is on, but this workspace has no embedding provider, so digests are off for it' });
     return null;
   }
   const worker = new DigestWorker({
@@ -480,7 +477,7 @@ export function resolveEngineDigests(
     provider: engine.provider,
     track: idle ? work => idle.track(work) : undefined,
   });
-  console.log(`[digests] write-time digests are on (model ${options.model}, at most ${options.maxUsdPerDay} USD a day)`);
+  log.info('digests_on', { model: options.model, maxUsdPerDay: options.maxUsdPerDay });
   return { options, worker };
 }
 
@@ -559,7 +556,7 @@ export async function engineSearchMemory(
     // Search by meaning failed: the embedding provider is down, or refuses the key or the quota (or the semantic lane
     // broke, which the log shows). The facts and keyword search do not need it, so a caller answers with those and
     // says why nothing was found by meaning, instead of failing whole.
-    console.error('[search] semantic search failed:', err);
+    log.error('semantic_search_failed', {}, err);
     semanticFailures.set(engine, { at: new Date().toISOString(), reason: failureReason(err, 120) });
     return { ok: false, error: 'semantic-unavailable', notice: semanticFailureNotice(err), hits: [] };
   }
@@ -620,7 +617,7 @@ export async function engineSearchMemory(
       }
     } catch (err) {
       // Optional augmentation: a fault here never fails the search.
-      console.error('[digests] reading the digests failed:', failureReason(err, 200));
+      log.error('digests_read_failed', {}, err);
     }
   }
   const isConversation = withChunkIds ? conversationNoteMatcher(db) : () => false;
@@ -650,10 +647,11 @@ export async function engineSearchMemory(
   };
 }
 
-export function engineSearchText(db: Database.Database, memoryDir: string, query: string, topK: number, scope?: string, includeHistory = false, ledgerRelPath = DEFAULT_LEDGER_REL, ledgerRecords?: LedgerRecordCache) {
+export function engineSearchText(db: Database.Database, memoryDir: string, query: string, topK: number, scope?: string, includeHistory = false, ledgerRelPath = DEFAULT_LEDGER_REL, ledgerRecords?: LedgerRecordCache, matchOverride?: string) {
   const fts = prepareOnce(db, `SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'chunks_fts'`).get();
   if (!fts) return { ok: false, error: 'fts-unavailable', results: [] as unknown[] };
-  const match = quoteFtsQuery(query);
+  // matchOverride (H11b): an FTS expression built by the caller (an OR over the question's content words); absent, the whole query as one phrase.
+  const match = matchOverride ?? quoteFtsQuery(query);
   if (!match) return { ok: true, results: [] as unknown[] };
   const scopeNorm = scopeFilterFor(scope);
   const inScope = scopeNorm ? createReadScope(db, scopeNorm) : null;
@@ -693,7 +691,7 @@ export function engineSearchText(db: Database.Database, memoryDir: string, query
       topK,
       Math.min(topK * 10, 200),
     );
-  } catch (err: any) {
+  } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     return { ok: false, error: 'fts-query', detail: message.slice(0, 200), results: [] };
   }
@@ -992,14 +990,14 @@ export async function engineIndexChanged(
         // Not a failure to retry: it stays out of the index until the file changes, and is said once per change.
         known.delete(f.file);
         tooLarge.set(f.file, stampOf(f));
-        console.warn(`[index] ${f.file}: ${err.message}`);
+        log.warn('note_too_large', { file: path.relative(config.memoryDir, f.file) }, err);
         return;
       }
       known.delete(f.file);
       if ((err as NodeJS.ErrnoException).code === 'ENOENT') return;
       errors++;
       failure ??= failureReason(err, 300);
-      console.error(`[index] error indexing ${f.file}:`, err);
+      log.error('index_file_failed', { file: path.relative(config.memoryDir, f.file) }, err);
     }
   });
   // Settle what was checked: a file whose stamp is recorded (or that is named too large for its stamp) is done; any
@@ -1056,7 +1054,7 @@ async function finishUnfinishedFiles(
     try {
       await engineIndexChanged(db, { memoryDir }, engine, undefined, { interactive: true });
     } catch (err) {
-      console.error('[index] finishing the unfinished files failed:', err);
+      log.error('index_finish_failed', {}, err);
     }
     const after = unfinished.get() as number;
     if (after > 0) unfinishedRetryAfter.set(db, Date.now() + UNFINISHED_RETRY_MS);
@@ -1134,7 +1132,7 @@ export function engineFinishIndexInBackground(
           // Their vectors are in: this records it, and embeds only what a save has changed since (within the write budget).
           await engineIndexChanged(db, config, engine, undefined, { interactive: true });
           if ((unfinished.get() as number) === 0 && chunksWithoutVectors(db) === 0) {
-            if (outage > 0) console.log('[index] the embedding service answers again; what was saved while it did not is findable by meaning now');
+            if (outage > 0) log.info('embeddings_recovered', { detail: 'the embedding service answers again; what was saved while it did not is findable by meaning now' });
             return;
           }
         } else if (!vectorIndex.rebuilding()) {
@@ -1144,7 +1142,7 @@ export function engineFinishIndexInBackground(
       } catch (err) {
         if (controller.signal.aborted) return;
         const delay = retryDelayMs(outage);
-        console.error(`[index] finishing the index in the background failed (${failureReason(err, 200)}); ${chunksWithoutVectors(db)} chunk(s) have no vector yet; trying again in ${Math.round(delay / 1000)} s`);
+        log.error('background_index_retry', { unembedded: chunksWithoutVectors(db), retryInS: Math.round(delay / 1000) }, err);
         await wait(delay);
       }
     }
@@ -1152,7 +1150,7 @@ export function engineFinishIndexInBackground(
   const job: BackgroundIndex = {
     abort: () => controller.abort(),
     waiting: () => waiting,
-    done: run().catch((err) => console.error('[index] background indexing failed:', err)).finally(() => {
+    done: run().catch((err) => log.error('background_index_failed', {}, err)).finally(() => {
       if (backgroundIndexes.get(db) === job) backgroundIndexes.delete(db);
     }),
   };

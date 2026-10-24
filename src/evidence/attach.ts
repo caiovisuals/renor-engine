@@ -1,5 +1,5 @@
 import type { RetrievalHit } from '../retrieval/orchestrator';
-import { evidenceGate, type EvidenceGateDecision, type EvidenceMode } from './gate';
+import { evidenceGate, type EvidenceGateDecision } from './gate';
 import {
   EvidenceExtractor,
   EvidenceReplyError,
@@ -146,9 +146,6 @@ export async function collectEvidence(args: CollectEvidenceArgs): Promise<Produc
     transformBody: args.transformBody,
     maxSessions: args.options.maxSessions,
     charCap: args.options.charCap,
-    // Body-relevance selection input (RENOR_EVIDENCE_BODY_RANK); ignored when
-    // the flag is off.
-    query: args.query,
   });
   if (sessions.length === 0) {
     return { status: 'skipped', reason: 'no-sessions' };

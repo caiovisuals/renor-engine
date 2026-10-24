@@ -2,7 +2,7 @@ import { describe, it, expect, afterEach, vi } from 'vitest';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
-import type Database from 'better-sqlite3';
+import type Database from '../../src/db/sqlite';
 import { openDb } from '../../src/db/client';
 import { runMigrations } from '../../src/db/schema';
 import { VectorIndex } from '../../src/embeddings/vectorIndex';
@@ -107,7 +107,7 @@ describe('attachEngine claims the embedding space', () => {
     expect(new VectorIndex(db, 256).space()).toBe(embeddingSpace(new EvalHashEmbeddingProvider()));
     expect(semanticReady(first)).toBe(true);
     expect(semanticReady(second)).toBe(false);
-    expect(warn.mock.calls[0].join(' ')).toMatch(/holds vectors from .* but the configured embedding is .*another-model.*rebuild/s);
+    expect(warn.mock.calls[0].join(' ')).toMatch(/"event":"embeddings_model_mismatch","stored":"[^"]+","model":"[^"]*another-model[^"]*","detail":"[^"]*rebuild/s);
   });
 
   it('still refuses other dimensions first, as before', () => {
@@ -128,7 +128,7 @@ describe('attachEngine claims the embedding space', () => {
     attachEngine(db, config, new EvalHashEmbeddingProvider());
     expect(vectors.space()).toBeNull(); // not given the configured model's name
     expect(warn).toHaveBeenCalledTimes(1);
-    expect(warn.mock.calls[0].join(' ')).toMatch(/no record of the model that wrote them.*rebuild embeds every chunk again.*semantic search is off/s);
+    expect(warn.mock.calls[0].join(' ')).toMatch(/"event":"embeddings_model_mismatch","stored":"unrecorded",.*a rebuild embeds every chunk again.*semantic search is off/s);
 
     // Another model with the same dimensions is no more named, and none is refused: this index cannot tell them apart.
     expect(() => attachEngine(db, config, new OtherModel())).not.toThrow();

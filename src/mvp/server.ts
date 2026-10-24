@@ -1,7 +1,7 @@
 import express from 'express';
 import crypto from 'crypto';
 import path from 'path';
-import Database from 'better-sqlite3';
+import Database from '../db/sqlite';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import {
@@ -9,7 +9,7 @@ import {
 } from '@modelcontextprotocol/sdk/server/auth/router.js';
 import { z } from 'zod';
 import type { AuthInfo } from '@modelcontextprotocol/sdk/server/auth/types.js';
-import { isInitializeRequest } from '@modelcontextprotocol/sdk/types.js';
+import { isInitializeRequest, type CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { openIndexDb } from '../db/client';
 import { runMigrations } from '../db/schema';
 import { removeDailyHeaderFacts } from '../indexer/pipeline';
@@ -22,6 +22,7 @@ import { MAX_STATEMENT_LENGTH } from '../memory/limits';
 import { cleanSource, headerSource, hiveIdentity, isImportSource, isReservedSource, productFromUserAgent, reservedCallerSource, reservedSourceIn } from '../memory/sourceName';
 import { assertStorable, secretGuardEnabled } from '../extraction/secretGuard';
 import { readWhatsNew } from '../memory/whatsNew';
+import { HANDOFF_ARG_DESCRIPTIONS, HANDOFF_MAX_CHARS, HANDOFF_TOOL_DESCRIPTION, HANDOFF_TOOL_NAME, handoffNoteEnabled, runHandoffTool, startHandoffSweep } from '../memory/handoff';
 import { askAgent, askAgentPerHour, answerRequest, closeRequest, listRequestsPage, noteKnownAgent } from '../memory/requests';
 import { searchHistory, HistoryUnavailableError, HISTORY_DISCLAIMER } from './history';
 import { DIRECTORY_DESCRIPTIONS, DIRECTORY_HIDDEN_TOOLS } from './directorySurface';
@@ -58,14 +59,15 @@ import { emitTelemetry, isPlatformInitialize, isRecallTool } from './telemetry';
 import { ReadUsefulness, contextItems, searchItems, retrieveItems } from './readUsefulness';
 import { instrumentMcpServer } from './posthogMcp';
 import { countSchemaRejections } from './schemaRejections';
-import { buildAgentContext, factQueryTerms, searchRelevance } from './agentMemory';
+import { buildAgentContext, factQueryTerms, headingForReply, keywordOrMatch, scoreForReply, searchRelevance, searchTextFallbackEnabled } from './agentMemory';
 import { indexNotice, withFactHits } from './factsLane';
 import { claimsReservedEntrySource, markFactHits } from './factMarkers';
 import { withHitDates } from './hitDates';
 import { assertReplaceable, recordReplacement, replacementIndex, withReplacements } from '../memorymap/replacements';
 import { CONTEXT_BUDGET_KEEPS_NEWEST, CONTEXT_RELEVANCE_GUIDANCE, CONTEXT_RELEVANCE_KEEPS_MATCH, SEARCH_RELEVANCE_GUIDANCE, contextRelevanceArmed } from './contextRelevance';
 import { applyHitFloor, searchHitFloor } from './hitFloor';
-import { readerLayoutEnabled, readerLayoutEnabledFor, readerLayoutOf, readerTimelineEnabled } from '../retrieval/readerLayout';
+import { answerCheckerFor, applyAnswerCheck } from './answerCheck';
+import { readerLayoutEnabled, readerLayoutEnabledFor, readerLayoutPage, readerTimelineEnabled } from '../retrieval/readerLayout';
 import { readerDurationNamed } from '../retrieval/questionSpan';
 import { noteTurnsLoader, readerEventsEnabled, readerEventsNamed, turnScorer, vectorsMeanSomething } from '../retrieval/readerEvents';
 import type { RetrievalProbe } from '../retrieval/semantic';
@@ -79,14 +81,17 @@ import { exportEverything, EXPORT_SECTIONS } from './exportAll';
 import { DEFAULT_MAP_LIMIT, buildMemoryMap, findMemories, purgeRetired, readMemory, retireMemory, restoreMemory } from '../memorymap/memoryMap';
 import { IdleMonitor } from './idle';
 import { ACTIVITY_PATH, ActivityGauge } from './activity';
-import { StoredSizeGauge } from './storedSize';
-import { measureMarkdownBytes } from './storedSize';
+import { StoredSizeGauge, measureMarkdownBytes } from './storedSize';
 import { escapeInvisibleControls, sanitizeErrorMessage } from './sanitize';
 import { unstorableControls } from '../memory/controls';
 import { labelMemoryText } from './hiddenSpans';
 import { ConnectionAnnouncer, connectionStatusFromEnv, type ConnectionStatus } from './connectionStatus';
 import { markErrorReason, markToolRefusal, refusal, refusalReason, toolRefusalOf, type ToolErrorReason } from '../toolRefusal';
 import { CallPhases, isPhasedTool, markRetrieved } from '../callPhases';
+import { createLogger } from './log';
+import { checkProfileTools, contextProfileFromEnv, LINE_TOOLS, renderLines, type ContextProfile } from './contextProfile';
+
+const log = createLogger('engine');
 
 /**
  * Single-user ChatGPT MVP remote MCP service.
@@ -107,10 +112,6 @@ import { CallPhases, isPhasedTool, markRetrieved } from '../callPhases';
  */
 
 /**
- * What search_memory says of the digest table, only where write-time digests are switched on (RENOR_DIGESTS), so a
- * workspace without them has the description it always had.
- */
-/**
  * What search_memory says of the event lines, only where RENOR_READER_EVENTS is set to an on value (`1`, `true`, `yes`, `on`).
  * With it unset the lines still lead the page (the default) and say what they are in their own first words, but the tool list is
  * the one it was before the lines: the description stays under the 1,200 characters a directory client takes, and equal to the
@@ -119,6 +120,10 @@ import { CallPhases, isPhasedTool, markRetrieved } from '../callPhases';
 const EVENTS_HITS =
   ' When the question asks for the order or the date of something the user did, the first hit is a list of the user\'s own statements that match it, each under the day it is about, oldest first, and the excerpts stay in full below it (reason "events"). A question about a duration has no such list.';
 
+/**
+ * What search_memory says of the digest table, only where write-time digests are switched on (RENOR_DIGESTS), so a
+ * workspace without them has the description it always had.
+ */
 const DIGEST_HITS =
   ' This workspace writes a dated digest of each saved note in the background: when the notes matched have digests, one table of dated items drawn from them leads the hits (after any evidence table), outside the rankedBy order and top_k, with reason "digest". It is read from stored digests, no model is called to make it, and a note saved a moment ago may not have its digest yet. Use the table when it holds the value needed, and the excerpts when it does not.';
 
@@ -163,7 +168,6 @@ export interface MvpApp {
 
 const MCP_PATH = '/mcp';
 
-/** True when any message is a tools/call that omitted `id`. An explicit `id: null` still has the key. */
 /**
  * A request body must be UTF-8. Node decodes an invalid byte as U+FFFD, and the tool would store that, so the
  * body is refused before it is parsed. The error carries a 400 status, which body-parser keeps.
@@ -176,6 +180,7 @@ function requireUtf8Body(_req: express.Request, _res: express.Response, body: Bu
   }
 }
 
+/** True when any message is a tools/call that omitted `id`. An explicit `id: null` still has the key. */
 function bodyHasToolsCallNotification(body: unknown): boolean {
   const messages = Array.isArray(body) ? body : [body];
   return messages.some((message) => {
@@ -392,7 +397,7 @@ function callerSource(source: string): string {
   return source;
 }
 
-function markImportedOrigin<T extends Record<string, any>>(item: T, pathKey: 'notePath' | 'path' | 'sourceNote'): T & { origin?: 'import' } {
+function markImportedOrigin<T extends { notePath?: unknown; path?: unknown; sourceNote?: unknown }>(item: T, pathKey: 'notePath' | 'path' | 'sourceNote'): T & { origin?: 'import' } {
   return String(item[pathKey] ?? '').startsWith('Imported/') ? { ...item, origin: 'import' as const } : item;
 }
 
@@ -400,7 +405,7 @@ function markImportedOrigin<T extends Record<string, any>>(item: T, pathKey: 'no
  * A memory_map or read_memory memory as a read shows it: imported (origin), and a stored source that is a reserved identity
  * (an entry saved before the rule, or written into a file by hand) marked `untrusted`, a claim and not who saved it.
  */
-function markStoredMemory<T extends Record<string, any>>(item: T): T & { origin?: 'import'; untrusted?: true } {
+function markStoredMemory<T extends { path?: unknown; source?: unknown; untrusted?: true }>(item: T): T & { origin?: 'import'; untrusted?: true } {
   const marked = markImportedOrigin(item, 'path');
   return isReservedSource(marked.source) && marked.untrusted !== true ? { ...marked, untrusted: true as const } : marked;
 }
@@ -409,9 +414,20 @@ function markStoredMemory<T extends Record<string, any>>(item: T): T & { origin?
  * A search_memory or search_text hit as a read shows it: imported (origin), and `untrusted` when it is a daily-log chunk an
  * entry of which claims a reserved source (factMarkers.ts claimsReservedEntrySource), as get_context marks the same chunk.
  */
-function markStoredHit<T extends Record<string, any>>(hit: T): T & { origin?: 'import'; untrusted?: true } {
+function markStoredHit<T extends { notePath?: unknown; text?: unknown; untrusted?: true }>(hit: T): T & { origin?: 'import'; untrusted?: true } {
   const marked = markImportedOrigin(hit, 'notePath');
   return marked.untrusted !== true && claimsReservedEntrySource(marked.notePath, marked.text) ? { ...marked, untrusted: true as const } : marked;
+}
+
+/**
+ * A search_memory or search_text hit as the engine returns it (engineSearchMemory / engineSearchText type them `unknown`):
+ * the fields the marking, the facts lane and the page read.
+ */
+type SearchHit = { notePath: string; chunkId?: number; headingPath?: string; text: string; score?: number; reason?: string; author?: string | null; untrusted?: true };
+
+/** A hit's score as an agent is shown it: six decimals. The 17 digits of a double cost about 4 tokens a hit and say nothing the order does not. */
+function shortScore<T extends { score?: unknown }>(hit: T): T {
+  return typeof hit.score === 'number' ? { ...hit, score: scoreForReply(hit.score) } : hit;
 }
 
 /** What a tool call can tell about the request it came in on: the headers the transport saw (lower-case names). */
@@ -422,15 +438,7 @@ interface McpRequest extends express.Request {
   auth?: AuthInfo;
 }
 
-/**
- * The source a hosted write stores. The connection's name (`x-renor-agent` behind the gateway, the
- * verified OAuth client's name on self-hosted) as its hive identity, or "unnamed" when that connection
- * has no name a header can render — an unnamed connection never takes a name the client typed;
- * otherwise the one the client sent when it names someone; otherwise the product in the User-Agent
- * (`claude-code/2.1.289` is `claude-code`), so an agent never has to pass one;
- * otherwise undefined, which leaves the tool's own default. A source with no letter or digit in it (blank, a bare path,
- * punctuation) names no one (memory/sourceName.ts).
- */
+/** A request header's first value, when it is a string. */
 function headerText(headers: Record<string, unknown> | undefined, name: string): string | undefined {
   const raw = headers?.[name];
   const value = Array.isArray(raw) ? raw[0] : raw;
@@ -458,6 +466,15 @@ function trustedIdentity(raw: string, clientChosen: boolean): string {
   return (clientChosen ? reservedCallerSource(identity) : reservedSourceIn(identity)) !== null ? 'unnamed' : identity;
 }
 
+/**
+ * The source a hosted write stores. The connection's name (`x-renor-agent` behind the gateway, the
+ * verified OAuth client's name on self-hosted) as its hive identity, or "unnamed" when that connection
+ * has no name a header can render — an unnamed connection never takes a name the client typed;
+ * otherwise the one the client sent when it names someone; otherwise the product in the User-Agent
+ * (`claude-code/2.1.289` is `claude-code`), so an agent never has to pass one;
+ * otherwise undefined, which leaves the tool's own default. A source with no letter or digit in it (blank, a bare path,
+ * punctuation) names no one (memory/sourceName.ts).
+ */
 function sourceOf(sent: string | undefined, extra: CallExtra | undefined, config: MvpConfig): string | undefined {
   // The gateway sets this from the connection key's name and overwrites a client-sent copy, so on a named
   // connection it is the author: a `source` the client types cannot write as another agent.
@@ -570,20 +587,26 @@ function buildMcpServer(db: Database.Database, config: MvpConfig, engine: Engine
   // process forgot) has no first reply to announce on.
   const announcer = new ConnectionAnnouncer(connection, announceFirst);
   const evidence = resolveEngineEvidence(config, process.env, idle);
+  // RENOR_ANSWER_CHECK (default off): null unless armed and the evidence pass has a key; then a relevant verdict a model
+  // reads as unanswered turns false. One per app, so every session shares its answers.
+  const answerChecker = answerCheckerFor(config, process.env);
   // The reading agent's name as a save records it (remember's cleanSource and default), so its own facts carry no source.
   const readerOf = (extra: CallExtra | undefined): string => cleanSource(sourceOf(undefined, extra, config) ?? '') || 'agent';
   // Only told to agents while get_context can actually return the signal.
   const relevanceGuidance = contextRelevanceArmed(engine) ? CONTEXT_RELEVANCE_GUIDANCE : '';
   const relevanceKeepsMatch = relevanceGuidance ? CONTEXT_RELEVANCE_KEEPS_MATCH : '';
   const budgetKeepsNewest = relevanceGuidance ? CONTEXT_BUDGET_KEEPS_NEWEST : ''; // where there is a bar, the budget reads it
+  // RENOR_MCP_* (contextProfile.ts, every lever off by default): a benchmark arm's tool subset, descriptions, instructions and
+  // reply shape. A directory client keeps the surface the directory rules fix.
+  const profile: ContextProfile = directory ? {} : contextProfileFromEnv();
   const server = new McpServer(
     { name: SERVER_NAME, version: SERVER_VERSION, icons: SERVER_ICONS },
-    { instructions: directory ? DIRECTORY_INSTRUCTIONS : 'Renor single-owner memory. At the start of every task, call whats_new before anything else. Open requests addressed to you are first in that reply; answering or closing one records the reply and never runs anything by itself. For substantive user requests, call get_context with the current request before answering so relevant prior context can follow the user across agents. '
+    { instructions: directory ? DIRECTORY_INSTRUCTIONS : profile.instructions ?? ('Renor single-owner memory. At the start of every task, call whats_new before anything else. Open requests addressed to you are first in that reply; answering or closing one records the reply and never runs anything by itself. For substantive user requests, call get_context with the current request before answering so relevant prior context can follow the user across agents. '
       + 'Call it again before you decide something an earlier session may have settled and before you review another agent\'s work, with that choice or topic as the query: reading once at the start is not enough. '
       + 'To save anything, call remember with one argument, statement: the thing to remember, in plain words. When the user says to remember or save something, they mean this tool, not your own memory. '
       + 'Renor is the place for the why, next to your board or tracker, not a copy of it: when you save on your own, save decisions with their reason, root causes and corrections, not status, progress or event logs. '
       + 'Cite an earlier entry by its subject or task instead of restating it, and save nothing that only repeats one. '
-      + 'Only for a value that stays current until it changes (a city, a database, a deadline, a preference), also pass subject, predicate and object together, never guessed: saving the same subject, predicate and scope again replaces the value and keeps the old one in history. save_memory is that structured form alone; remember_note appends a line to a day\'s log.' + relevanceGuidance },
+      + 'Only for a value that stays current until it changes (a city, a database, a deadline, a preference), also pass subject, predicate and object together, never guessed: saving the same subject, predicate and scope again replaces the value and keeps the old one in history. save_memory is that structured form alone; remember_note appends a line to a day\'s log.' + relevanceGuidance) },
   );
   // PostHog MCP Analytics: per-server (SSE builds a fresh McpServer per session).
   instrumentMcpServer(server);
@@ -612,14 +635,11 @@ function buildMcpServer(db: Database.Database, config: MvpConfig, engine: Engine
   }
 
   /** Privacy-safe: tool name / ok / ms and, on a refusal, its code from the closed set — never args or memory content. */
-  function tracedTool(
-    tool: string,
-    handler: (...args: any[]) => Promise<any>,
-  ): (...args: any[]) => Promise<any> {
+  function tracedTool<H extends (...args: never[]) => CallToolResult | Promise<CallToolResult>>(tool: string, handler: H): H {
     // On-demand: a running tool call (a write, an index job) holds the engine awake
     // even after its client disconnects.
-    const run = idle ? (...args: any[]) => idle.track(() => handler(...args)) : handler;
-    return async (...args: any[]) => {
+    const run = idle ? (...args: Parameters<H>) => idle.track(async () => handler(...args)) : handler;
+    const traced = async (...args: Parameters<H>) => {
       const started = Date.now();
       const first = announcer.takeFirst();
       noteFirstCall(tool);
@@ -656,14 +676,31 @@ function buildMcpServer(db: Database.Database, config: MvpConfig, engine: Engine
         throw err;
       }
     };
+    // Same arguments and the same result, awaited: the SDK awaits a tool's result whether or not the handler is async.
+    return traced as unknown as H;
+  }
+
+  /**
+   * A note save's row in write_events, which whats_new and memory_map's events read (delete_retired_memory takes it out
+   * again by path and this excerpt). Both note saves write it: remember with only a statement, and remember_note. The
+   * line keeps the engine's own default source; only the feed's author falls back to unnamed. Best effort: the note is
+   * already on disk, so a failure here must not answer an error the agent would retry into a duplicate line.
+   */
+  function recordNoteSave(file: string, text: string, source: string | undefined, scope: string): void {
+    try {
+      db.prepare('INSERT INTO write_events (note_path, action, summary, created_at, author, scope) VALUES (?, ?, ?, ?, ?, ?)')
+        .run(file, 'note', text.slice(0, 240), new Date().toISOString(), source ?? 'unnamed', scope);
+    } catch (err) {
+      log.error('whats_new_row_failed', { detail: 'the note save was written' }, err);
+    }
   }
 
   const registerTool = server.registerTool.bind(server) as typeof server.registerTool;
   // The title also goes into annotations.title: the Claude directory reads a tool's display name from there and flags every tool
   // without one.
-  (server as any).registerTool = ((name: string, config: any, cb: any) =>
-    registerTool(name as any, withAnnotationTitle(withOutputSchemaIf(withSchemas, config)), tracedTool(String(name), cb) as any)
-  );
+  const tracedRegisterTool: typeof server.registerTool = (name, config, cb) =>
+    registerTool(name, withAnnotationTitle(withOutputSchemaIf(withSchemas, config)), tracedTool(name, cb));
+  server.registerTool = tracedRegisterTool;
 
   server.registerTool('remember', {
     title: 'Remember something naturally',
@@ -789,18 +826,13 @@ function buildMcpServer(db: Database.Database, config: MvpConfig, engine: Engine
         });
       }
 
-      const note = await engineRememberNote(
-        config,
-        args.statement,
-        undefined,
-        sourceOf(args.source, extra, config) ?? 'mcp:remember',
-        args.scope,
-        args.timezone,
-      );
+      const source = sourceOf(args.source, extra, config);
+      const note = await engineRememberNote(config, args.statement, undefined, source ?? 'mcp:remember', args.scope, args.timezone);
+      recordNoteSave(note.file, args.statement, source, note.scope);
       usefulness.cited(args.cites);
       const replaced = replaces !== undefined && note.id
         // The source the entry was written with (the default of this write, when none), so the link names the same one.
-        ? await replacementReceipt(replaces, note.id, sourceOf(args.source, extra, config) ?? 'mcp:remember')
+        ? await replacementReceipt(replaces, note.id, source ?? 'mcp:remember')
         : {};
       return jsonResult({
         ok: true,
@@ -864,8 +896,9 @@ function buildMcpServer(db: Database.Database, config: MvpConfig, engine: Engine
         // Which Renor answered: inside max_tokens with the rest of the trailer.
         trailer: () => ({ ...indexNotice(db, semantic, config, args.scope), renor: identityLine(extra?.requestInfo?.headers) }),
       });
-      usefulness.measure('get_context', () => contextItems(body as unknown as Record<string, unknown>));
-      return jsonResult(body);
+      const checked = await applyAnswerCheck(body as unknown as Record<string, unknown>, args.query, answerChecker, (body as { maxTokens?: number }).maxTokens);
+      usefulness.measure('get_context', () => contextItems(checked));
+      return jsonResult(checked);
     } catch (err) {
       return toolError(err);
     }
@@ -984,7 +1017,7 @@ function buildMcpServer(db: Database.Database, config: MvpConfig, engine: Engine
         includeHistory: args.include_history,
         asOf: args.as_of,
         scope,
-      }) as any[];
+      });
       if (args.predicate) facts = facts.filter(f => f.predicate === args.predicate);
       // The values another writer replaced that stay open against a current value (memory/writerConflicts.ts). A point-in-time
       // view is not about now, so only a read of the current values carries them.
@@ -1003,7 +1036,7 @@ function buildMcpServer(db: Database.Database, config: MvpConfig, engine: Engine
         // An import's text came from a file, not from the user's own statement, and a reserved source is only a claim (one
         // stored before the rule): both marked the way other untrusted text is.
         ...(isImportSource(f.author) || isReservedSource(f.author) ? { untrusted: true as const } : {}),
-        ...(f.valid_to == null && displaced.has(f.event_id) ? { writerConflict: displaced.get(f.event_id) } : {}),
+        ...(f.valid_to == null && f.event_id !== null && displaced.has(f.event_id) ? { writerConflict: displaced.get(f.event_id) } : {}),
       }));
       const body: Record<string, unknown> = { subject, facts: rows };
       // Current values that disagree with another current value of the same predicate under this subject in another
@@ -1120,7 +1153,7 @@ function buildMcpServer(db: Database.Database, config: MvpConfig, engine: Engine
   server.registerTool('search_memory', {
     title: 'Search memory by meaning (where enabled)',
     annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-    description: 'Searches notes by meaning when memory_status reports semantic: true; otherwise it returns no hits and says why (semantic-unavailable or semantic-rebuilding), so use search_text or get_context. rankedBy "session_date" (the default) is newest first, so hits[0] is the latest, not necessarily the best; "score" is best match first. Judge hits by score (higher is closer), not position. One conversation\'s hits on one date come as one hit, opening with its date; a time phrase in it is resolved below, counted from that session. A hit without session_date comes last; a fact\'s hit has no notePath. There is no `evidence` object when this deployment has no evidence model configured and the pass is not switched off: no second pass runs, and the hits are the whole result. When there is one, its items come first, outside rankedBy, with reason "evidence", and its state is "ok", "off", "not-applied" or "failed". Facts saved with remember are added outside rankedBy, within top_k; a writerConflict line on one means it replaced another agent\'s value. index.stale: the semantic index lags the saved facts. A "replaced" hit\'s correction is listed before it (by: its id, source: who saved it).' + (evidence?.options.background ? EVIDENCE_WAIT_STATES : '') + (evidence?.options.dailyCap !== undefined ? EVIDENCE_DAILY_CAP_STATE : '') + (digests ? DIGEST_HITS : '') + (readerLayoutEnabled() && readerDurationNamed() ? SPAN_HITS : '') + (readerEventsNamed() ? EVENTS_HITS : '') + (readerTimelineEnabled() ? TIMELINE_HITS : '') + (relevanceGuidance ? SEARCH_RELEVANCE_GUIDANCE : ''),
+    description: 'Searches notes by meaning when memory_status reports semantic: true; else it returns no hits and says why (semantic-unavailable or semantic-rebuilding), so use search_text or get_context. rankedBy "session_date" (the default) is newest first, so hits[0] is the latest, not necessarily the best; "score" is best match first. Judge hits by score (higher is closer), not position. A conversation\'s hits on one date are one hit, opening with its date (its header alone is no hit); a time phrase in it is resolved below, counted from that session. A hit without session_date comes last; a fact\'s hit has no notePath. There is no `evidence` object when this deployment has no evidence model configured and the pass is not switched off: no second pass runs, and the hits are the whole result. When there is one, its items come first, outside rankedBy, with reason "evidence", and its state is "ok", "off", "not-applied" or "failed". Facts saved with remember are added outside rankedBy, within top_k; a writerConflict line on one means it replaced another agent\'s value. index.stale: the semantic index lags saved facts. A "replaced" hit\'s correction is listed before it (by: its id, source: who saved it).' + (evidence?.options.background ? EVIDENCE_WAIT_STATES : '') + (evidence?.options.dailyCap !== undefined ? EVIDENCE_DAILY_CAP_STATE : '') + (digests ? DIGEST_HITS : '') + (readerLayoutEnabled() && readerDurationNamed() ? SPAN_HITS : '') + (readerEventsNamed() ? EVENTS_HITS : '') + (readerTimelineEnabled() ? TIMELINE_HITS : '') + (relevanceGuidance ? SEARCH_RELEVANCE_GUIDANCE : ''),
     inputSchema: {
       query: z.string().min(1).max(500).describe('Natural language query'),
       top_k: z.number().int().min(1).max(50).optional().describe('Max matches (default 20), not counting the short statements the session expansion adds to them'),
@@ -1150,14 +1183,14 @@ function buildMcpServer(db: Database.Database, config: MvpConfig, engine: Engine
       let result: Record<string, unknown> = body;
       if (body.ok) {
         // Who saved each fact among the hits, marked before anything reads them (the verdict, the page, the floor).
-        markFactHits(db, body.hits as any[], readerOf(extra), ledgerNoteMatcher(config));
+        markFactHits(db, body.hits as SearchHit[], readerOf(extra), ledgerNoteMatcher(config));
         // Judged over the index's own hits, before the facts lane adds any, with top_k: the fact the verdict is judged
         // on is then listed by that lane when the page has room for it, so a relevant verdict always names a match the
         // response holds, and names it in relevance.fact when top_k leaves no room (agentMemory.ts).
         const verdict = searchRelevance(db, engine, config.memoryDir, {
           query: args.query, scope: args.scope, includeHistory: args.include_history === true, ledgerRelPath: config.ledgerRelPath,
         }, probe, body.hits as Array<{ notePath: string; headingPath?: string; text: string }>, topK);
-        const hits = withFactHits(db, config, body.hits as any[], { query: args.query, scope: args.scope, match: 'any', limit: topK, dated: true, reader: readerOf(extra) }, verdict.listFact ? [verdict.listFact] : []);
+        const hits = withFactHits(db, config, body.hits as SearchHit[], { query: args.query, scope: args.scope, match: 'any', limit: topK, dated: true, reader: readerOf(extra) }, verdict.listFact ? [verdict.listFact] : []);
         markRetrieved(); // the matches and the facts are in hand: what follows builds the reply
         // Filter the completed page without backfilling. If the operator raises the floor above the relevance
         // bar and removes the closest chunk, withhold its verdict: the unchanged tool guidance promises the match.
@@ -1175,20 +1208,24 @@ function buildMcpServer(db: Database.Database, config: MvpConfig, engine: Engine
           // are not backfilled, so re-judging with that extra room must not drop relevance.fact for an unlisted fact.
           if (!filteredVerdict.relevance) shownVerdict = {};
         }
-        // What the read served is the page the caller is shown, floor included: a hit the floor left out was not served, and
-        // a page it left empty served nothing, whatever the verdict judged over every hit.
-        usefulness.measure('search_memory', () => {
-          const served = searchItems(db, ledgerNoteMatcher(config), page as any[], shownVerdict.relevance);
-          return floored && served.items.length === 0 ? { ...served, relevant: false } : served;
-        });
         // The event of a fact is read from the ledger's heading, which is taken off below.
+        const layout = readerLayoutPage(body.rankedBy, (await withReplacements(mapContext(), withoutLedgerMetadata(page, ledgerNoteMatcher(config)), { limit: Math.max(page.length, topK) })).map(labelMemoryText), ledgerNoteMatcher(config), { query: args.query, turnsOf: readerEventsEnabled() ? noteTurnsLoader(db) : undefined, scoreTurns: readerEventsEnabled() && vectorsMeanSomething(engine.provider?.identity?.kind) && probe.queryVector && engine.vectorIndex ? turnScorer(engine.vectorIndex, probe.queryVector) : undefined }, laidOut);
         result = {
           ...body,
-          hits: readerLayoutOf(body.rankedBy, (await withReplacements(mapContext(), withoutLedgerMetadata(page, ledgerNoteMatcher(config)), { limit: Math.max(page.length, topK) })).map(labelMemoryText), ledgerNoteMatcher(config), { query: args.query, turnsOf: readerEventsEnabled() ? noteTurnsLoader(db) : undefined, scoreTurns: readerEventsEnabled() && vectorsMeanSomething(engine.provider?.identity?.kind) && probe.queryVector && engine.vectorIndex ? turnScorer(engine.vectorIndex, probe.queryVector) : undefined }, laidOut).map(markStoredHit),
+          // With RENOR_READER_ORDER=relevance a page of conversations comes best match first (readerLayout.ts), and says so.
+          rankedBy: layout.rankedBy,
+          hits: layout.hits.map(markStoredHit).map(shortScore).map(headingForReply),
           ...indexNotice(db, true, config, args.scope),
           ...(shownVerdict.relevance ? { relevance: shownVerdict.relevance } : {}),
           ...(floored ? { floor: { similarity: floor, withheld: floored.withheld } } : {}),
         };
+        result = await applyAnswerCheck(result, args.query, answerChecker);
+        // What the read served is the page the caller is shown, floor included: a hit the floor left out was not served, and
+        // a page it left empty served nothing, whatever the verdict judged over every hit.
+        usefulness.measure('search_memory', () => {
+          const served = searchItems(db, ledgerNoteMatcher(config), page, result.relevance);
+          return floored && served.items.length === 0 ? { ...served, relevant: false } : served;
+        });
       }
       return searchResult(body, result, withSchemas);
     } catch (err) {
@@ -1219,14 +1256,22 @@ function buildMcpServer(db: Database.Database, config: MvpConfig, engine: Engine
   }, async (args, extra) => {
     try {
       const topK = args.top_k ?? 20;
-      const body = engineSearchText(db, config.memoryDir, args.query, topK, args.scope, false, config.ledgerRelPath);
-      if (body.ok) markFactHits(db, body.results as any[], readerOf(extra), ledgerNoteMatcher(config));
+      const exact = engineSearchText(db, config.memoryDir, args.query, topK, args.scope, false, config.ledgerRelPath);
+      // H12 (RENOR_SEARCH_TEXT_FALLBACK=1, default off): when the exact phrase finds nothing, the words are searched with OR and
+      // the reply says so (`fallback`). A reply that has hits is never changed. Pre-registered: data/renor-goal-better-temporal-2/prereg/H11b-H18-H12.md.
+      const body = searchTextFallbackEnabled() && exact.ok && (exact.results as unknown[]).length === 0
+        ? (() => {
+          const any = engineSearchText(db, config.memoryDir, args.query, topK, args.scope, false, config.ledgerRelPath, undefined, keywordOrMatch(args.query));
+          return any.ok && (any.results as unknown[]).length > 0 ? { ...any, fallback: 'any-word' } : exact;
+        })()
+        : exact;
+      if (body.ok) markFactHits(db, body.results as SearchHit[], readerOf(extra), ledgerNoteMatcher(config));
       const result = body.ok
         ? {
             ...body,
             // An added correction takes the place of a hit, so the page is no longer than top_k (or than it was, if it was longer).
             results: (await (async (dated) => withReplacements(mapContext(), dated, { limit: Math.max(dated.length, topK) }))(await withHitDates(db, config.memoryDir, withoutLedgerMetadata(
-              withFactHits(db, config, body.results as any[], { query: args.query, scope: args.scope, match: 'all', limit: topK, dated: true, reader: readerOf(extra) }),
+              withFactHits(db, config, body.results as SearchHit[], { query: args.query, scope: args.scope, match: 'all', limit: topK, dated: true, reader: readerOf(extra) }),
               ledgerNoteMatcher(config),
             )))).map(markStoredHit),
           }
@@ -1295,9 +1340,7 @@ function buildMcpServer(db: Database.Database, config: MvpConfig, engine: Engine
       const source = sourceOf(args.source, extra, config);
       if (args.replaces !== undefined) await assertReplaceable(mapContext(), args.replaces, normalizeScope(args.scope));
       const body = await engineRememberNote(config, args.text, args.date, source, args.scope, args.timezone);
-      // The daily line keeps the engine's own default (mcp); only whats_new's author falls back to unnamed.
-      db.prepare('INSERT INTO write_events (note_path, action, summary, created_at, author, scope) VALUES (?, ?, ?, ?, ?, ?)')
-        .run(body.file, 'note', args.text.slice(0, 240), new Date().toISOString(), source ?? 'unnamed', body.scope);
+      recordNoteSave(body.file, args.text, source, body.scope);
       usefulness.cited(args.cites);
       const replaced = args.replaces !== undefined && body.id
         // The source the entry was written with (engineRememberNote's default when none), so the link names the same one.
@@ -1652,6 +1695,26 @@ function buildMcpServer(db: Database.Database, config: MvpConfig, engine: Engine
     }
   });
 
+  // The handoff note (memory/handoff.ts): published only with RENOR_HANDOFF_NOTE on, so the default tool list is unchanged.
+  if (handoffNoteEnabled()) server.registerTool(HANDOFF_TOOL_NAME, {
+    title: 'Handoff note for this branch',
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
+    description: HANDOFF_TOOL_DESCRIPTION,
+    inputSchema: {
+      action: z.enum(['read', 'write']).describe(HANDOFF_ARG_DESCRIPTIONS.action),
+      repo: z.string().min(1).max(1000).describe(HANDOFF_ARG_DESCRIPTIONS.repo),
+      branch: z.string().min(1).max(1000).describe(HANDOFF_ARG_DESCRIPTIONS.branch),
+      note: omittedWhenBlank(z.string().max(HANDOFF_MAX_CHARS * 2).optional()).describe(HANDOFF_ARG_DESCRIPTIONS.note),
+    },
+    outputSchema: z.looseObject({ ok: z.boolean(), action: z.enum(['read', 'write']) }),
+  }, async (args, extra) => {
+    try {
+      return jsonResult(await runHandoffTool(db, args, agentOf(extra, config)));
+    } catch (err) {
+      return toolError(err);
+    }
+  });
+
 
   server.registerTool('ask_agent', {
     title: 'Ask another agent',
@@ -1806,6 +1869,13 @@ function buildMcpServer(db: Database.Database, config: MvpConfig, engine: Engine
   // Nor the tools directorySurface.ts keeps from a directory client: disabled the same way, once every one of them is registered.
   if (directory) for (const name of DIRECTORY_HIDDEN_TOOLS) registeredToolEntry(server, name).enabled = false;
 
+  // The profile's tool subset: the others are disabled in the SDK's registry, so neither listed nor run.
+  if (profile.tools || profile.descriptions) {
+    const registered = Object.keys((server as unknown as { _registeredTools?: Record<string, unknown> })._registeredTools ?? {});
+    checkProfileTools(profile, registered);
+    if (profile.tools) for (const name of registered) if (!profile.tools.has(name)) registeredToolEntry(server, name).enabled = false;
+  }
+
   // Every tool is registered above; the SDK's own handlers (initialize included) are mapped in the same pass.
   mapInvalidParams(server.server);
   // Layer 1 above: the owner-only tool is in the answer only when this request carries the mark. It is decided on the answer, after the
@@ -1823,7 +1893,7 @@ function buildMcpServer(db: Database.Database, config: MvpConfig, engine: Engine
     const hidden = new Set<unknown>();
     if (!isDashboardCall(headers, config)) hidden.add(OWNER_ONLY_TOOL);
     if (forDirectory) for (const name of [...HIVE_TOOLS, ...DIRECTORY_HIDDEN_TOOLS]) hidden.add(name);
-    if (hidden.size === 0 && !forDirectory) return answer;
+    if (hidden.size === 0 && !forDirectory && !profile.descriptions) return answer;
     // An answer this cannot read is not passed on unfiltered.
     if (!Array.isArray(answer?.tools)) throw new Error('tools/list answered without a tools array');
     const tools = answer.tools.filter((tool) => !hidden.has(tool.name));
@@ -1836,9 +1906,25 @@ function buildMcpServer(db: Database.Database, config: MvpConfig, engine: Engine
           const description = own && withSchemas && tool.name === 'get_context' ? own + OUTPUT_SCHEMA_BOUND_NOTE : own;
           return description ? { ...tool, description } : tool;
         })
-        : tools,
+        : profile.descriptions
+          ? tools.map((tool) => {
+            const own = typeof tool.name === 'string' ? profile.descriptions![tool.name] : undefined;
+            return own ? { ...tool, description: own } : tool;
+          })
+          : tools,
     };
   });
+  // The profile's reply shape: a read's text block as lines (renderLines); structuredContent, where there is one, is unchanged.
+  if (profile.response === 'lines') {
+    const callTool = listHandlers.get('tools/call');
+    if (!callTool) throw new Error('tools/call handler missing');
+    listHandlers.set('tools/call', async (request, extra) => {
+      const result = await callTool(request, extra) as CallToolResult;
+      const name = (request as { params?: { name?: unknown } }).params?.name;
+      if (typeof name !== 'string' || !LINE_TOOLS.has(name) || result?.isError || !Array.isArray(result?.content)) return result;
+      return { ...result, content: result.content.map((c, i) => (i === 0 && c.type === 'text' ? { ...c, text: renderLines(c.text) } : c)) };
+    });
+  }
   return server;
 }
 
@@ -1849,13 +1935,15 @@ export function createMvpApp(config: MvpConfig, engineOverride?: EmbeddingProvid
   ensureOwnerOnlyMemoryDir(config.memoryDir);
   ensureOwnerOnlyFile(config.dbPath);
   const db = openIndexDb(config.dbPath, resolveLedgerPath(config.memoryDir, config.ledgerRelPath));
+  // Expired handoff notes are deleted on a timer, not only when one is read (memory/handoff.ts). Off: nothing runs.
+  const stopHandoffSweep = handoffNoteEnabled() ? startHandoffSweep(db) : null;
   runMigrations(db);
   // Facts saved before the term index existed, or by a release without it, are indexed before the first search.
   ensureFactTerms(db);
   // An index written for another folder (this one was moved or restored) names its notes by the old paths: those rows
   // go before anything reads the index, so no note is served from a place it no longer is. Fails the start if it cannot.
   const rowsOutsideRoot = removeRowsOutsideRoot(db, config.memoryDir).total;
-  if (rowsOutsideRoot > 0) console.log(`[startup] removed ${rowsOutsideRoot} index row(s) for files outside ${config.memoryDir}; the folder is indexed again before serving`);
+  if (rowsOutsideRoot > 0) log.info('startup_rows_outside_root_removed', { rows: rowsOutsideRoot, detail: 'index rows for files outside the memory folder; the folder is indexed again before serving' });
   const pendingPass = reindexPending(db);
 
   const engine = attachEngine(db, config, engineOverride);
@@ -1889,9 +1977,9 @@ export function createMvpApp(config: MvpConfig, engineOverride?: EmbeddingProvid
   // is never rebuilt, so they are removed here, before anything is read. A failure must not keep a workspace from serving.
   try {
     const removed = removeDailyHeaderFacts(db);
-    if (removed > 0) console.log(`[startup] removed ${removed} daily-note header facts an earlier build indexed`);
+    if (removed > 0) log.info('startup_header_facts_removed', { facts: removed, detail: 'daily-note header facts an earlier build indexed' });
   } catch (err) {
-    console.error('[startup] removing daily-note header facts failed:', err instanceof Error ? err.message : String(err));
+    log.error('startup_header_cleanup_failed', {}, err);
   }
 
   const app = express();
@@ -1947,7 +2035,7 @@ export function createMvpApp(config: MvpConfig, engineOverride?: EmbeddingProvid
       };
       if (clientPrefix !== undefined) fields.client_prefix = clientPrefix;
       if (closedWithoutFinish) fields.outcome = 'closed'; // client abort / mid-stream disconnect
-      console.log(JSON.stringify({ ts: new Date().toISOString(), event: 'http_access', ...fields }));
+      log.info('http_access', fields);
     };
     res.on('finish', () => emit(false));
     res.on('close', () => emit(true)); // aborted or disconnected responses
@@ -2037,9 +2125,9 @@ export function createMvpApp(config: MvpConfig, engineOverride?: EmbeddingProvid
       return;
     }
     const writeHead = res.writeHead;
-    res.writeHead = function (this: typeof res, ...args: any[]) {
+    res.writeHead = function (this: typeof res, ...args: unknown[]) {
       for (const name of res.getHeaderNames()) if (CORS_RESPONSE_HEADER.test(name)) res.removeHeader(name);
-      return (writeHead as (...a: any[]) => typeof res).apply(this, args);
+      return (writeHead as (...a: unknown[]) => typeof res).apply(this, args);
     } as typeof res.writeHead;
     next();
   });
@@ -2376,14 +2464,14 @@ export function createMvpApp(config: MvpConfig, engineOverride?: EmbeddingProvid
   // The last handler: a body the parser refuses, one over its limit, or a bug. It never renders a stack trace or a file
   // path (self-hosters do not set NODE_ENV=production, and an unauthenticated caller must not see either). The MCP route
   // gets a JSON-RPC body; the stack goes to the server's own log.
-  app.use((err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
+  app.use((err: { status?: unknown } | null | undefined, req: express.Request, res: express.Response, next: express.NextFunction) => {
     if (res.headersSent) return next(err);
-    const status = Number.isInteger(err?.status) && err.status >= 400 && err.status < 600 ? err.status as number : 500;
+    const status = typeof err?.status === 'number' && Number.isInteger(err.status) && err.status >= 400 && err.status < 600 ? err.status : 500;
     const message = status === 400 ? 'Parse error'
       : status === 413 ? 'Request body too large'
         : status === 415 ? 'Unsupported media type'
           : status >= 500 ? 'Internal error' : 'Invalid Request';
-    if (status >= 500) console.error('[http] unhandled error:', err);
+    if (status >= 500) log.error('http_unhandled', { status }, err);
     if (req.path === MCP_PATH) {
       const code = status === 400 ? -32700 : status >= 500 ? -32603 : -32600;
       res.status(status).json({ jsonrpc: '2.0', error: { code, message }, id: null });
@@ -2424,6 +2512,7 @@ export function createMvpApp(config: MvpConfig, engineOverride?: EmbeddingProvid
           running.abort();
           await running.done;
         }
+        stopHandoffSweep?.();
         db.close();
         // The query cache this process opened (an injected provider is its owner's to close).
         if (engineOverride === undefined) (engine.provider as { close?: () => void } | null)?.close?.();
@@ -2570,7 +2659,7 @@ export async function startMvpService(config: MvpConfig, engineOverride?: Embedd
     if (mvp.reindexPending) {
       const pass = await engineIndex(mvp.db, config, mvp.engine);
       if (pass.errors === 0) clearReindexPending(mvp.db);
-      else console.error(`[startup] ${pass.errors} file(s) did not index at start; the folder stays owed a pass and the next start runs it again`);
+      else log.error('startup_index_incomplete', { failedFiles: pass.errors, detail: 'the next start runs the pass again' });
     }
     // Bind by listening, not by the callback Express gives: `app.listen` routes a bind failure to
     // that same callback as a success, so a promise waiting on it resolves with a server that never

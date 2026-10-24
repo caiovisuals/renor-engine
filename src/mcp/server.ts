@@ -1,7 +1,7 @@
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { CallToolRequestSchema, ErrorCode, JSONRPCMessage, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
-import Database from 'better-sqlite3';
+import Database from '../db/sqlite';
 import { PassThrough, type Readable } from 'stream';
 import { VectorIndex } from '../embeddings/vectorIndex';
 import { retrieveContext } from '../retrieval/orchestrator';
@@ -25,6 +25,8 @@ import { hiveIdentity } from '../memory/sourceName';
 import { isZodError, mapInvalidParams } from './requestErrors';
 import { escapeInvisibleControls } from '../mvp/sanitize';
 import { matchingCurrentFactHits } from '../retrieval/factsFirst';
+import { HANDOFF_ARG_DESCRIPTIONS, HANDOFF_TOOL_DESCRIPTION, HANDOFF_TOOL_NAME, handoffNoteEnabled, runHandoffTool, startHandoffSweep } from '../memory/handoff';
+import { ENGINE_VERSION } from '../buildIdentity';
 
 export function createMcpTools(
   db: Database.Database,
@@ -71,8 +73,18 @@ export function createMcpTools(
     }
   };
 
+  // The handoff note (memory/handoff.ts), only with RENOR_HANDOFF_NOTE on. Its writer is this connection's startup name;
+  // its expiry sweep runs for the life of the process (the timer never keeps it alive).
+  if (handoffNoteEnabled()) startHandoffSweep(db);
+  const handoff = handoffNoteEnabled()
+    ? { async [HANDOFF_TOOL_NAME](args: { action: 'read' | 'write'; repo: string; branch: string; note?: string }) {
+      return runHandoffTool(db, args ?? ({} as any), identity ?? 'stdio');
+    } }
+    : {};
+
   return {
     ...hive,
+    ...handoff,
     // Canonical tool names. Clients that prefix with the server name render
     // these as renor_search, renor_keyword, renor_facts, etc.
     async search(args: { query: string; topK?: number; top_k?: number }) {
@@ -160,7 +172,7 @@ export function createMcpTools(
         // using the same presentation as `renor search --json`.
         return presentLedgerEvents([...fts, ...named], isLedger)
           .map(hit => ({ ...hit, notePath: clientPath(config.vaultPath, hit.notePath) }));
-      } catch (err: any) {
+      } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         return { ok: false, error: 'fts-query', detail: message.slice(0, 200), results: [] };
       }
@@ -173,7 +185,7 @@ export function createMcpTools(
     async facts(args: { entityName?: string; name?: string; subject?: string; asOf?: string; includeHistory?: boolean }) {
       const entityName = pickEntityName(args);
       if (!entityName) return [];
-      return factsFor(db, entityName, { asOf: args.asOf, includeHistory: args.includeHistory }) as any[];
+      return factsFor(db, entityName, { asOf: args.asOf, includeHistory: args.includeHistory });
     },
 
     /** The principal durable-memory verb: ledger-first, supersedes the current fact for the same subject+predicate. Returns a receipt. */
@@ -188,11 +200,11 @@ export function createMcpTools(
 
     async status(_args: {}) {
       const counts = {
-        notes: (db.prepare('SELECT COUNT(*) as c FROM notes').get() as any).c,
-        chunks: (db.prepare('SELECT COUNT(*) as c FROM chunks').get() as any).c,
-        entities: (db.prepare('SELECT COUNT(*) as c FROM entities').get() as any).c,
-        facts: (db.prepare('SELECT COUNT(*) as c FROM facts').get() as any).c,
-        relations: (db.prepare('SELECT COUNT(*) as c FROM relations').get() as any).c,
+        notes: (db.prepare('SELECT COUNT(*) as c FROM notes').get() as { c: number }).c,
+        chunks: (db.prepare('SELECT COUNT(*) as c FROM chunks').get() as { c: number }).c,
+        entities: (db.prepare('SELECT COUNT(*) as c FROM entities').get() as { c: number }).c,
+        facts: (db.prepare('SELECT COUNT(*) as c FROM facts').get() as { c: number }).c,
+        relations: (db.prepare('SELECT COUNT(*) as c FROM relations').get() as { c: number }).c,
       };
       return counts;
     },
@@ -307,6 +319,22 @@ export const TOOLS = [
   },
 ];
 
+/** Listed beside TOOLS only when the server has the handler, i.e. RENOR_HANDOFF_NOTE was on at startup. */
+export const HANDOFF_TOOL = {
+  name: HANDOFF_TOOL_NAME,
+  description: HANDOFF_TOOL_DESCRIPTION,
+  inputSchema: {
+    type: 'object' as const,
+    properties: {
+      action: { type: 'string', enum: ['read', 'write'], description: HANDOFF_ARG_DESCRIPTIONS.action },
+      repo: { type: 'string', description: HANDOFF_ARG_DESCRIPTIONS.repo },
+      branch: { type: 'string', description: HANDOFF_ARG_DESCRIPTIONS.branch },
+      note: { type: 'string', description: HANDOFF_ARG_DESCRIPTIONS.note },
+    },
+    required: ['action', 'repo', 'branch'],
+  },
+};
+
 /**
  * The stdin of the stdio server as lines the MCP transport can read, with a line that is not valid UTF-8 kept out.
  *
@@ -354,12 +382,15 @@ export function utf8Lines(source: Readable, onInvalid: () => void): Readable {
  * the published schema or the error envelope the client actually sees were wrong.
  */
 export function registerMcpHandlers(server: Server, tools: ReturnType<typeof createMcpTools>): void {
-  const hive = HIVE_TOOLS.filter(tool => typeof (tools as any)[tool.name] === 'function');
-  server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: [...TOOLS, ...hive] }));
+  // Looked up by the name the client sent: an argument shape is the tool's own to check.
+  const byName = tools as unknown as Record<string, ((args: unknown) => Promise<unknown>) | undefined>;
+  const hive = HIVE_TOOLS.filter(tool => typeof byName[tool.name] === 'function');
+  const handoff = typeof byName[HANDOFF_TOOL_NAME] === 'function' ? [HANDOFF_TOOL] : [];
+  server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: [...TOOLS, ...hive, ...handoff] }));
 
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const { name, arguments: args } = request.params;
-    const handler = (tools as any)[name];
+    const handler = byName[name];
     if (!handler) {
       if (HIVE_TOOLS.some(tool => tool.name === name)) {
         return { content: [{ type: 'text', text: `${name} is refused: this connection has no name. Set RENOR_CONNECTION_NAME to this agent's name before starting renor-engine mcp, then reconnect.` }], isError: true };
@@ -372,8 +403,8 @@ export function registerMcpHandlers(server: Server, tools: ReturnType<typeof cre
       // Escaped as the hosted server escapes its replies (mvp/server.ts): stored text is untrusted, and a raw bidi
       // override or zero-width character would reach the agent's transcript unrendered.
       return { content: [{ type: 'text', text: escapeInvisibleControls(JSON.stringify(result)) }] };
-    } catch (err: any) {
-      return { content: [{ type: 'text', text: escapeInvisibleControls(`Error: ${err.message}`) }], isError: true };
+    } catch (err) {
+      return { content: [{ type: 'text', text: escapeInvisibleControls(`Error: ${err instanceof Error ? err.message : String(err)}`) }], isError: true };
     }
   });
 }
@@ -384,7 +415,7 @@ export async function startMcpServer(
   provider: EmbeddingProvider | undefined,
   config: Config
 ) {
-  const server = new Server({ name: 'renor', version: '1.0.0' }, { capabilities: { tools: {} } });
+  const server = new Server({ name: 'renor', version: ENGINE_VERSION }, { capabilities: { tools: {} } });
   const evidence = resolveEvidenceToolOptions(config);
   const tools = createMcpTools(db, vectorIndex, provider, config, evidence);
 

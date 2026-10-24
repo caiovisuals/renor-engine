@@ -1,5 +1,5 @@
 import crypto from 'crypto';
-import type Database from 'better-sqlite3';
+import type Database from '../db/sqlite';
 import { normalizeScope, savedScopeSqlPredicate } from '../mvp/scope';
 import { assertNoUnstorableControls } from './controls';
 import { hiveIdentity } from './sourceName';

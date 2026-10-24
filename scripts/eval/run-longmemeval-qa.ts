@@ -8,6 +8,7 @@ import { evaluatorSourceHash, gitState, researchTruthFields } from '../../src/ev
 import { claimDirectory } from '../../src/eval/artifacts';
 import { EvalCache, KeyPool, WorkerPool, CACHE_SCHEMA_VERSION, resolveEvalCachePath, resolveJudgeKeys, runWithKeyPoolRetries, parseRetryAfterMs, resolveWorkerConcurrency, summarizeQaTokenUsage, resolveCacheScope } from '../../src/eval/evalCache';
 import { buildCacheReport, emitCacheReport } from '../../src/eval/cacheReport';
+import { verifyPageDump } from '../../src/eval/pageDump';
 import type { EvalCacheEntry } from '../../src/eval/evalCache';
 import { admitRun, archiveRow, codeIdentity, questionSet, recordRun, resolveRunLedgerPath, RUN_LEDGER_ENV, RunRefusedError, saveRunOutcome } from '../../src/eval/runLedger';
 
@@ -414,6 +415,9 @@ async function main(): Promise<void> {
   const resultRows = readJsonl(path.join(runDir, 'results.jsonl')) as unknown as ResultRow[];
   const resultMap = new Map(resultRows.map(row => [row.id, row]));
   const retrievalManifest = JSON.parse(fs.readFileSync(path.join(runDir, 'manifest.json'), 'utf8')) as Record<string, unknown>;
+  // A page dump (made elsewhere, with no model and no key) must be the dump its manifest describes before anything is spent; its
+  // provenance (which caches its pages came from) goes into this run's manifest, which outlives the dump directory.
+  const pageDump = verifyPageDump(runDir, retrievalManifest);
 
   const ablation = {
     contextDates: Boolean(opts.contextDates || opts.recencyOrder),
@@ -982,6 +986,9 @@ async function main(): Promise<void> {
           const judgeNamespace = `${judgeBaseUrl}#${opts.judgeModel}`;
           const judgeReadKey = evalCache ? EvalCache.computeKey(judgeNamespace, judgeRequestBody, cacheReadScope) : null;
           const judgeWriteKey = evalCache ? EvalCache.computeKey(judgeNamespace, judgeRequestBody, cacheWriteScope) : null;
+          // The judge memo (EvalCache.computeJudgeMemoKey): the same question, gold, answer, judge and prompt are never judged twice,
+          // whatever the routing session. The reader's answer above is not memoized this way, so independent draws stay independent.
+          const judgeMemoKey = evalCache ? EvalCache.computeJudgeMemoKey(judgeNamespace, row.id, judgeRequestBody) : null;
 
           let raw = '';
           let judgeModelEcho = '';
@@ -991,7 +998,8 @@ async function main(): Promise<void> {
           let judgeCompletionTokens = 0;
           let judgeFromCache = false;
 
-          const cachedJudge = evalCache && judgeReadKey ? evalCache.get(judgeReadKey, 'judge') : null;
+          const memoJudge = evalCache && judgeMemoKey ? evalCache.getJudgeMemo(judgeMemoKey) : null;
+          const cachedJudge = memoJudge ?? (evalCache && judgeReadKey ? evalCache.get(judgeReadKey, 'judge') : null);
           if (cachedJudge) {
             raw = cachedJudge.rawContent;
             judgeModelEcho = cachedJudge.modelEcho;
@@ -1051,6 +1059,22 @@ async function main(): Promise<void> {
           }
 
           const verdict = parseVerdict(raw);
+          // Only a verdict that parsed is memoized: the next run asks again about one that did not.
+          if (evalCache && judgeMemoKey && !judgeFromCache && verdict !== null) {
+            evalCache.putJudgeMemo({
+              cacheKey: judgeMemoKey,
+              providerNamespace: judgeNamespace,
+              callType: 'judge',
+              questionId: row.id,
+              rawContent: raw,
+              modelEcho: judgeModelEcho,
+              finishReason: '',
+              promptTokens: judgePromptTokens,
+              completionTokens: judgeCompletionTokens,
+              latencyMs: judgeLatencyMs,
+              requestBody: judgeRequestBody,
+            });
+          }
           record.judge = {
             raw, verdict, parseOk: verdict !== null,
             modelEcho: judgeModelEcho,
@@ -1060,7 +1084,7 @@ async function main(): Promise<void> {
               completionTokens: judgeCompletionTokens,
             },
             fromCache: judgeFromCache,
-            cacheKey: (judgeFromCache ? judgeReadKey : judgeWriteKey) ?? undefined,
+            cacheKey: (judgeFromCache ? (memoJudge ? judgeMemoKey : judgeReadKey) : judgeWriteKey) ?? undefined,
           };
           if (verdict === null) record.error = 'judge-unparseable';
         } catch (error) {
@@ -1176,6 +1200,7 @@ async function main(): Promise<void> {
       datasetSha256: retrievalManifest.datasetSha256,
       topK: retrievalManifest.topK,
       metricProtocol: retrievalManifest.metricProtocol,
+      pageDump,
     },
     gitSha: git.sha,
     gitDirty: git.dirty,
@@ -1197,6 +1222,8 @@ async function main(): Promise<void> {
       answerMisses: evalCache?.stats.answerMisses ?? 0,
       judgeHits: evalCache?.stats.judgeHits ?? 0,
       judgeMisses: evalCache?.stats.judgeMisses ?? 0,
+      judgeMemoHits: evalCache?.stats.judgeMemoHits ?? 0,
+      judgeMemoMisses: evalCache?.stats.judgeMemoMisses ?? 0,
       avoidedTokens: tokenUsage.avoided,
       liveTokens: tokenUsage.live,
       avgLookupMs: evalCache && evalCache.stats.cacheLookupCount > 0

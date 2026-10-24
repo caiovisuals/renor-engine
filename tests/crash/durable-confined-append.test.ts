@@ -3,7 +3,7 @@ import fs from 'fs';
 import fsp from 'fs/promises';
 import os from 'os';
 import path from 'path';
-import Database from 'better-sqlite3';
+import Database from '../../src/db/sqlite';
 import { runMigrations } from '../../src/db/migrations';
 import { appendDailyEntry } from '../../src/memory/writer';
 import { appendLedgerEvent, remember, replayLedger, resolveLedgerPath, DEFAULT_LEDGER_REL } from '../../src/memory/lifecycle';

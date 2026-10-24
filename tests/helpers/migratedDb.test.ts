@@ -2,7 +2,7 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import type Database from 'better-sqlite3';
+import type Database from '../../src/db/sqlite';
 import { openDb } from '../../src/db/client';
 import { runMigrations } from '../../src/db/schema';
 import { openMigratedDb } from './migratedDb';
@@ -72,8 +72,8 @@ describe('openMigratedDb', () => {
       for (let i = 0; i < 3; i++) dbIn(openMigratedDb);
       expect(new Set(copies.mock.calls.map((call) => String(call[0]))).size).toBe(1);
       expect(copies.mock.calls).toHaveLength(3);
-      // runMigrations says "[migrations] applied: ..." for each migration it runs, and there were none to run.
-      expect(logged.mock.calls.filter((call) => String(call[0]).startsWith('[migrations] applied'))).toEqual([]);
+      // runMigrations logs a migration_applied line for each migration it runs, and there were none to run.
+      expect(logged.mock.calls.filter((call) => String(call[0]).includes('"event":"migration_applied"'))).toEqual([]);
     } finally {
       copies.mockRestore();
       logged.mockRestore();

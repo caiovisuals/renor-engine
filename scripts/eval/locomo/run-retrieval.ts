@@ -24,7 +24,7 @@ import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { performance } from 'node:perf_hooks';
-import Database from 'better-sqlite3';
+import Database from '../../../src/db/sqlite';
 import { countTextTokens } from '../../../src/eval/textTokens';
 import { openDb } from '../../../src/db/client';
 import { runMigrations } from '../../../src/db/schema';

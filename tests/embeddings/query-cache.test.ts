@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import Database from 'better-sqlite3';
+import Database from '../../src/db/sqlite';
 import { CachingEmbeddingProvider } from '../../src/embeddings/caching';
 import type { EmbeddingIdentity, EmbeddingProvider } from '../../src/embeddings/types';
 

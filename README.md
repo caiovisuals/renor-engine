@@ -3,7 +3,7 @@
 ![Claude Code saves a decision to Renor; a fresh Codex session recalls it](docs/assets/renor-readme-demo.gif)\
 *Self-hosted Renor, real session: Claude Code saves a decision, a fresh Codex session recalls it. Waiting time sped up.*
 
-[![engine-public-ci](https://github.com/patrickpassosb/renor-engine/actions/workflows/engine-public-ci.yml/badge.svg?branch=main)](https://github.com/patrickpassosb/renor-engine/actions/workflows/engine-public-ci.yml)
+[![engine-public-ci](https://github.com/renorai/renor-engine/actions/workflows/engine-public-ci.yml/badge.svg?branch=main)](https://github.com/renorai/renor-engine/actions/workflows/engine-public-ci.yml)
 
 **Renor is memory for coding agents: it keeps what you tell Claude Code, Codex or Cursor in a folder of Markdown files on your machine, and serves it back to any of them over MCP.**
 
@@ -14,10 +14,10 @@ Every new agent session starts from zero: you re-explain the project, last week'
 You need **Node 22** and git. The install is the only step that needs the network.
 
 ```bash
-git clone https://github.com/patrickpassosb/renor-engine.git
+git clone https://github.com/renorai/renor-engine.git
 cd renor-engine
-node -v                    # must print v22.x
-npm ci && npm rebuild better-sqlite3 --ignore-scripts=false && npm run build
+node -v                    # v22.16 or newer
+npm ci && npm run build
 node scripts/smoke-self-hosted.mjs
 ```
 
@@ -90,7 +90,7 @@ Then ask your agent to remember something, and ask about it in a new session. Wh
 | What agents save | Appended as Markdown in the same folder: facts to `System/Memory Events Ledger.md`, notes to `Memory/Daily/<date>.md`. |
 | Search index | SQLite at `$VAULT_PATH/.semantic-memory/index.db`. Derived: `node dist/cli.js index` rebuilds it from the Markdown. |
 
-Everything Renor keeps is in that one folder, so back it up, sync it or move it like any other folder. Nothing leaves your machine unless you set a model key: `EMBEDDING_PROVIDER=openai` sends your notes' text to OpenAI to embed it, and an evidence-model key (`RENOR_EVIDENCE_API_KEY` or an `OLLAMA_*` key) makes search send the notes it matched to that model. If your shell already exports such a key, add `-e RENOR_EVIDENCE_MODE=off` (Codex: `--env`) when you register the server. Every setting and its default: [docs/ENVIRONMENT-VARIABLES.md](docs/ENVIRONMENT-VARIABLES.md).
+Everything Renor keeps is in that one folder, so back it up, sync it or move it like any other folder. Nothing leaves your machine unless you set a model key: `EMBEDDING_PROVIDER=openai` sends your notes' text to OpenAI to embed it, and `RENOR_EVIDENCE_MODE=auto` or `always` with an evidence-model key (`RENOR_EVIDENCE_API_KEY` or an `OLLAMA_*` key) makes search send the notes it matched to that model. The evidence pass is off unless `RENOR_EVIDENCE_MODE` is set, so a key alone sends nothing. Every setting and its default: [docs/ENVIRONMENT-VARIABLES.md](docs/ENVIRONMENT-VARIABLES.md).
 
 **Search without embeddings.** With nothing set, Renor uses no embedding model, so a note is found by its exact words: `blue notebook` finds "The blue notebook is on the desk", but `where is my notebook?` does not. Saved facts are found either way. For search by meaning, set `EMBEDDING_PROVIDER=openai` with `OPENAI_API_KEY`, or `local` to download a model once and run it on this machine, then run `node dist/cli.js rebuild` so existing notes are embedded ([details](docs/self-hosting.md#embeddings)).
 
@@ -103,4 +103,4 @@ Renor is a single-owner engine: one person's notes, one set of agents. It is not
 
 ## Contributing, license, security
 
-Contributions are welcome. [CONTRIBUTING.md](CONTRIBUTING.md) covers setup and tests and lists good first issues. Renor's own code is **AGPL-3.0-only** ([LICENSE](LICENSE)); files imported from the upstream project stay ISC ([NOTICE](NOTICE), [UPSTREAM.md](UPSTREAM.md)). Report vulnerabilities privately as described in [SECURITY.md](SECURITY.md), not in a public issue.
+Contributions are welcome. [CONTRIBUTING.md](CONTRIBUTING.md) covers setup and tests and lists good first issues. Renor's own code is **Apache-2.0** ([LICENSE](LICENSE)); 1.0.0 was released under AGPL-3.0; 1.1.0 and later are Apache-2.0; files imported from the upstream project stay ISC ([NOTICE](NOTICE), [UPSTREAM.md](UPSTREAM.md)). Report vulnerabilities privately as described in [SECURITY.md](SECURITY.md), not in a public issue.

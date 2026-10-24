@@ -1,0 +1,17 @@
+{
+  "queries": 409,
+  "off": {
+    "neededOnPage": 0.4083129584352078,
+    "meanTokens": 726.916870415648,
+    "present": 167
+  },
+  "or": {
+    "neededOnPage": 0.7334963325183375,
+    "meanTokens": 601.1662591687042,
+    "present": 300
+  },
+  "orVsOff": {
+    "gains": 142,
+    "losses": 9
+  }
+}

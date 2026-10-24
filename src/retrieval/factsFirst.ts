@@ -1,4 +1,4 @@
-import Database from 'better-sqlite3';
+import Database from '../db/sqlite';
 import { factsFor } from '../memory/lifecycle';
 import { identityNames, ownerNames } from './queryHelpers';
 import type { ChunkFilter } from './semantic';

@@ -27,7 +27,7 @@ import { latin1, rawPath, supportsNonUtf8Names } from '../helpers/nonUtf8Names';
  * (`incomplete: …` / `rebuild incomplete: …`) are deliberately NOT ported —
  * #210 shipped only the status, so asserting a transcript main does not emit
  * would be a CLI behaviour change rather than a lock on the existing fix. The
- * per-file `error indexing …` line main does emit is already asserted above.
+ * per-file `index_file_failed` line main does emit is already asserted above.
  */
 
 // Every case here spawns the CLI, and the engine's own vitest config sets no
@@ -105,7 +105,7 @@ describe('index exit status on a partial index (#188)', () => {
     const vault = mkvault({ withBrokenNote: true });
     const result = await runCli(['index'], vault);
     expect(result.stdout).toMatch(/Done\. 1\/2 indexed, 1 errors\./);
-    expect(result.stderr).toMatch(/error indexing .*broken\.md/);
+    expect(result.stderr).toMatch(/"event":"index_file_failed","file":"[^"]*broken\.md"/);
     expect(result.code, `${result.stdout}\n${result.stderr}`).toBe(1);
   }, 90_000);
 
@@ -128,7 +128,7 @@ describe('index exit status on a partial index (#188)', () => {
       OPENAI_API_KEY: 'sk-not-a-real-key',
       OPENAI_BASE_URL: 'http://127.0.0.1:1/v1',
     });
-    expect(armed.stderr).toMatch(/LLM extraction failed/);
+    expect(armed.stderr).toMatch(/"event":"extraction_failed","lane":"LLM"/);
     expect(armed.stdout).toMatch(/Done\. 0\/1 indexed, 1 errors\./);
     expect(armed.code, `${armed.stdout}\n${armed.stderr}`).toBe(1);
 
@@ -201,7 +201,7 @@ describe('index exit status on a partial index (#188)', () => {
     expect(result.stdout).toMatch(/not indexed\s+: 2 Markdown file\(s\) whose file or folder name is not valid UTF-8/);
     expect(result.stdout).toMatch(/Reuni\\xe3o\/ata\.md/);
     expect(result.stdout).toMatch(/Reuni\\xe3o\.md/);
-    expect(result.stderr).not.toMatch(/error indexing/);
+    expect(result.stderr).not.toMatch(/"event":"index_file_failed"/);
     // Nothing failed: the notes the indexer can address are all indexed, and a name it cannot
     // address is not a partial index (it would fail automation forever over one unrenameable file).
     expect(result.code, `${result.stdout}\n${result.stderr}`).toBe(0);

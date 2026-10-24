@@ -3,7 +3,7 @@ import { execFile } from 'child_process';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
-import Database from 'better-sqlite3';
+import Database from '../../src/db/sqlite';
 
 /**
  * B7 regression: real CLI startup/rebuild. The ledger replay must be AWAITED

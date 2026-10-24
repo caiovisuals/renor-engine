@@ -146,6 +146,7 @@ describe('the shipped default', () => {
     const ask = async (floor: string) => {
       process.env.RENOR_SEARCH_HIT_FLOOR = floor;
       try { await call('search_memory', { query: QUERY }); } catch (error) { return String(error); }
+      return undefined;
     };
     expect(await ask('0.63')).toEqual(await ask('0'));
   });

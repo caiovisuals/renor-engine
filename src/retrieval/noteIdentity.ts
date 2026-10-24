@@ -15,7 +15,7 @@
  * are asked: `md`, `notes` or `OR` are words, not names, and would match every note.
  */
 
-import type Database from 'better-sqlite3';
+import type Database from '../db/sqlite';
 import { prepareOnce } from '../db/statements';
 
 export interface NoteIdentityHit {

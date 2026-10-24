@@ -82,12 +82,12 @@ export async function extractEvents(
     );
   }
 
-  if (!parsed || typeof parsed !== 'object' || !Array.isArray((parsed as any).events)) {
+  if (!parsed || typeof parsed !== 'object' || !Array.isArray((parsed as { events?: unknown }).events)) {
     throw new ExtractorParseError('extractor-parse-error: event extraction response is missing an events array');
   }
 
   const events: ExtractedEvent[] = [];
-  for (const raw of (parsed as any).events) {
+  for (const raw of (parsed as { events: Array<Record<string, unknown> | null | undefined> }).events) {
     const when = raw?.when === undefined || raw?.when === null ? '' : String(raw.when).trim();
     const event = raw?.event === undefined || raw?.event === null ? '' : String(raw.event).trim();
     if (!when || !event) continue; // malformed rows are dropped, not fatal

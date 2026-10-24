@@ -1,4 +1,4 @@
-import Database from 'better-sqlite3';
+import Database from '../db/sqlite';
 import { readUntilWrite, tableHasColumns } from '../db/readCache';
 import { prepareOnce } from '../db/statements';
 

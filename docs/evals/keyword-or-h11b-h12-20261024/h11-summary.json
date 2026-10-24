@@ -1,0 +1,13 @@
+{
+  "queries": 409,
+  "off": {
+    "neededOnPage": 0.4083129584352078,
+    "meanTokens": 726.916870415648
+  },
+  "on": {
+    "neededOnPage": 0.4254278728606357,
+    "meanTokens": 744.3618581907091
+  },
+  "gains": 7,
+  "losses": 0
+}

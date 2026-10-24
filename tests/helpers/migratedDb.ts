@@ -1,6 +1,6 @@
 import fs from 'fs';
 import path from 'path';
-import type Database from 'better-sqlite3';
+import type Database from '../../src/db/sqlite';
 import { openDb } from '../../src/db/client';
 import { runMigrations } from '../../src/db/schema';
 import { tmpPath } from './tmpPath';

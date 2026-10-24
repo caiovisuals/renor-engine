@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import Database from 'better-sqlite3';
+import Database from '../../src/db/sqlite';
 import { buildImportPlan, type ImportPlan } from '../../src/importing/plan';
 import { applyImportPlan } from '../../src/importing/apply';
 import { writeBundle } from '../../src/importing/bundle-write';

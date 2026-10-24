@@ -24,7 +24,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import Database from 'better-sqlite3';
+import Database from '../../src/db/sqlite';
 import { Command } from 'commander';
 import { type LongMemInstance, validateLongMemRows } from '../../src/eval/longmemeval';
 import { chunkNote } from '../../src/indexer/chunker';

@@ -7,7 +7,7 @@ import { runMigrations } from '../../src/db/schema';
 import { indexFile } from '../../src/indexer/pipeline';
 import type { ExtractedEvent } from '../../src/extraction/eventExtractor';
 import type { StoredStructuredRow } from '../../src/context/rowStore';
-import type Database from 'better-sqlite3';
+import type Database from '../../src/db/sqlite';
 
 /**
  * C3 fixtures (HYP-20260921-chronicle-extraction fixture list):

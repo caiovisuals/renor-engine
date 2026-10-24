@@ -22,6 +22,8 @@ vi.mock('../../src/indexer/pipeline', () => ({
 import { startWatcher } from '../../src/watcher/watcher';
 import chokidar from 'chokidar';
 import { tmpPath } from '../helpers/tmpPath';
+import { indexFile } from '../../src/indexer/pipeline';
+import { captureConsole, errorNaming } from '../helpers/consoleCapture';
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -70,5 +72,29 @@ describe('startWatcher', () => {
     const note = db.prepare('SELECT * FROM notes WHERE path = ?').get('/vault/test.md');
     expect(note).toBeUndefined();
     db.close();
+  });
+
+  it('reports a failed index as one structured line that never names the vault folder', async () => {
+    vi.useFakeTimers();
+    try {
+      const vault = '/var/lib/renor/acme';
+      const db = openDb(DB); runMigrations(db);
+      vi.mocked(indexFile).mockRejectedValueOnce(errorNaming(vault));
+      startWatcher(vault, db, {});
+      const calls = captureConsole();
+      const add = mockOn.mock.calls.find((c: any[]) => c[0] === 'add')![1];
+      add(`${vault}/notes/private.md`);
+      await vi.advanceTimersByTimeAsync(600);
+      expect(calls).toHaveLength(1);
+      expect(calls[0].method).toBe('error');
+      expect(calls[0].args).toHaveLength(1); // the line alone: no Error object as a second argument
+      const line = String(calls[0].args[0]);
+      expect(line).not.toContain(vault);
+      expect(JSON.parse(line)).toMatchObject({ level: 'error', svc: 'engine', event: 'watcher_index_failed', file: 'notes/private.md' });
+      db.close();
+    } finally {
+      vi.useRealTimers();
+      vi.restoreAllMocks();
+    }
   });
 });

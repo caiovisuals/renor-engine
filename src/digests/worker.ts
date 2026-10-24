@@ -1,10 +1,13 @@
 import fs from 'node:fs';
-import type Database from 'better-sqlite3';
+import type Database from '../db/sqlite';
 import type { EmbeddingProvider } from '../embeddings/types';
 import type { EvidenceChat, EvidenceChatRequest, EvidenceChatResponse } from '../evidence/secondPass';
 import { billedOutputTokens, listRouterNotes } from '../router/sessionRouter';
 import { DigestCache } from './digestCache';
 import { buildNoteDigests, type DigestBuildStats, type DigestOptions } from './digests';
+import { createLogger } from '../mvp/log';
+
+const log = createLogger('engine');
 
 /**
  * The production path of write-time digests (RENOR_DIGESTS, see digests.ts): a background worker that writes the
@@ -153,7 +156,7 @@ export class DigestWorker {
     });
     this.clearTimer = deps.clearTimer ?? (handle => clearTimeout(handle as NodeJS.Timeout));
     this.random = deps.random ?? Math.random;
-    this.log = deps.log ?? (line => console.log(line));
+    this.log = deps.log ?? (line => log.info('digests_worker', { detail: line }));
   }
 
   /** Boot: digest what earlier saves, an import, or a workspace that slept left without a digest. */

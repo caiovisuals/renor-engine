@@ -4,8 +4,8 @@
  */
 export function sanitizeErrorMessage(err: unknown): string {
   let message = err instanceof Error ? err.message : String(err);
-  if (err && typeof err === 'object' && 'path' in err && typeof (err as any).path === 'string' && (err as any).path.length > 0) {
-    message = message.split((err as any).path).join('[redacted-path]');
+  if (err && typeof err === 'object' && 'path' in err && typeof err.path === 'string' && err.path.length > 0) {
+    message = message.split(err.path).join('[redacted-path]');
   }
   // Windows absolute paths: C:\...
   const winPath = /(?:^|(?<=[\s(]))(['"`]?)[a-zA-Z]:\\(?:[^\s'"`:,;()\[\]\\]+\\)*[^\s'"`:,;()\[\]]*\1/g;

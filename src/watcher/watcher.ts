@@ -1,8 +1,11 @@
 import chokidar from 'chokidar';
-import Database from 'better-sqlite3';
+import Database from '../db/sqlite';
 import fs from 'fs';
 import path from 'path';
 import { indexFile, IndexOptions } from '../indexer/pipeline';
+import { createLogger } from '../mvp/log';
+
+const log = createLogger('engine');
 
 function loadIgnorePatterns(vaultPath: string): string[] {
   try {
@@ -54,9 +57,9 @@ export function startWatcher(
       pending.delete(filePath);
       try {
         await indexFile(db, filePath, options);
-        console.log(`[watcher] indexed: ${filePath}`);
+        log.info('watcher_indexed', { file: path.relative(vaultPath, filePath) });
       } catch (err) {
-        console.error(`[watcher] error:`, err);
+        log.error('watcher_index_failed', { file: path.relative(vaultPath, filePath) }, err);
       }
     }, 500));
   };
@@ -70,7 +73,7 @@ export function startWatcher(
         db.prepare('DELETE FROM relations WHERE source_note = ?').run(filePath);
         db.prepare('DELETE FROM notes WHERE path = ?').run(filePath);
       })();
-      console.log(`[watcher] removed: ${filePath}`);
+      log.info('watcher_removed', { file: path.relative(vaultPath, filePath) });
     });
 
   return watcher;

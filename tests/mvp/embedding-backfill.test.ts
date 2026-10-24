@@ -5,7 +5,7 @@ import path from 'path';
 import net from 'net';
 import crypto from 'crypto';
 import request from 'supertest';
-import type Database from 'better-sqlite3';
+import type Database from '../../src/db/sqlite';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { EvalHashEmbeddingProvider } from '../../src/eval/hashEmbedding';
@@ -219,7 +219,7 @@ describe('a keyword-only workspace started with an embedding provider', () => {
     expect(provider.calls).toBeGreaterThan(0); // started at boot, in the background: the service answers meanwhile
     expect(after.service.engine.vectorIndex!.space()).toBe(embeddingSpace(provider));
     expect(after.service.engine.vectorIndex!.rebuilding()).toBe(true);
-    expect(log.mock.calls.map((c) => c.join(' ')).join('\n')).toContain(`index.db holds ${n} chunk(s) and no vectors`);
+    expect(log.mock.calls.map((c) => c.join(' ')).join('\n')).toContain(`"event":"embeddings_backfill","chunks":${n},`);
 
     // Until every chunk has its vector, semantic search is off and says how much is left; keyword search answers.
     const status = await after.call('memory_status');
@@ -355,7 +355,7 @@ describe('a workspace that had the provider, ran without it, and has it again', 
     // Without the provider: the index is marked unfinished, and what is saved gets no vector.
     const log = vi.spyOn(console, 'log').mockImplementation(() => {});
     const keywordOnly = await start(memoryDir, null);
-    expect(log.mock.calls.map((c) => c.join(' ')).join('\n')).toContain('no embedding provider is configured');
+    expect(log.mock.calls.map((c) => c.join(' ')).join('\n')).toContain('"event":"embeddings_unconfigured","detail":"no embedding provider is configured');
     expect((await keywordOnly.call('remember', { statement: 'Saved without embeddings: the orchard ladder is in the blue shed.', source: 'test' })).mode).toBe('note');
     expect((await keywordOnly.call('remember', { statement: 'The staging database is Postgres 16.', subject: 'staging database', predicate: 'engine', object: 'Postgres 16' })).mode).toBe('fact');
     await keywordOnly.close();

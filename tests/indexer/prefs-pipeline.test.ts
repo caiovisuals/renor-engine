@@ -8,7 +8,7 @@ import { indexFile } from '../../src/indexer/pipeline';
 import type { ExtractedPreference } from '../../src/extraction/preferenceExtractor';
 import type { RetrievalHit } from '../../src/retrieval/orchestrator';
 import type { StoredStructuredRow } from '../../src/context/rowStore';
-import type Database from 'better-sqlite3';
+import type Database from '../../src/db/sqlite';
 
 /**
  * C4 fixtures (HYP-20260921-prefs-extraction fixture list — binding):

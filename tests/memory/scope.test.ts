@@ -7,7 +7,7 @@ import { runMigrations } from '../../src/db/schema';
 import { remember, replayLedger, factsFor, parseLedgerEvents, retireFact, restoreFact } from '../../src/memory/lifecycle';
 import { appendDailyMemory } from '../../src/memory/writer';
 import { normalizeScope, dailyDirForScope } from '../../src/mvp/scope';
-import type Database from 'better-sqlite3';
+import type Database from '../../src/db/sqlite';
 
 const LEDGER = 'System/Memory Events Ledger.md';
 const tmpDirs: string[] = [];

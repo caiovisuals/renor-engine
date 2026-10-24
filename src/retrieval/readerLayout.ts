@@ -1,22 +1,34 @@
 import { withRelativeTimeHints } from './relativeTimeHints';
+import { SESSION_EXPAND_REASON, sessionDateMs } from './orchestrator';
 import { withQuestionSpan } from './questionSpan';
 import { eventLines, readerEventsEnabled, type EventLineOptions, type NoteSource, type NoteTurn } from './readerEvents';
-import type Database from 'better-sqlite3';
+import type Database from '../db/sqlite';
 import { isTurnLabel } from './conversationShape';
 import { asksForAdvice } from './adviceQuestion';
 import type { HitOrder } from './orchestrator';
 
 /**
  * How a search reply is laid out for the model that reads it. Retrieval picks the window and orders it; this only
- * changes how what it picked is handed over, and it never adds, drops or rewrites a word of a stored excerpt:
+ * changes how what it picked is handed over, and it never cuts or rewrites a word of an excerpt it shows:
  *
  *  - one hit per session: the chunks of a note on one date, which the newest-first layout left apart (a session's header,
  *    which carries its date, could come after the turns it dates, and turns of other sessions in between), come as one hit,
  *    in the note's own order, so every turn sits under the date of its session;
+ *  - a session whose only chunk is its header (`# Session x` and a `Timestamp:` line) is no hit: it dated nothing the reader
+ *    can see and took a place in the reply (a third of the hits of the 2026-10-16 LongMemEval-S run);
+ *  - the blocks stand where the page had them (newest first by default). RENOR_READER_ORDER=relevance puts them best match
+ *    first instead (a block's score is its best chunk's, ties newest first) and the reply says so (`rankedBy: score`,
+ *    readerLayoutPage; only a page whose ordinary notes are all conversations). It is off by default: on RenorBench v2 it puts a
+ *    superseded value ahead of the current one (tests/eval/renorbench-v2.test.ts);
+ *  - RENOR_READER_SESSION_CAP=N lets a session show at most N chunks besides its header, except that every chunk the query
+ *    matched stays: the cap only stops the statements the session expansion added. Off by default (0): on RenorBench v2 a cap
+ *    of 10 drops the remark a question asks about, which only the expansion delivers;
  *  - a session that reaches the reader without its header (the date line is its first chunk) opens with
  *    `[Session date: <date>]`;
  *  - each time phrase that names one point in time ("three weeks ago", "last Thursday") is resolved to its date below
  *    the excerpt (relativeTimeHints.ts).
+ *
+ * Whole chunks leave (a header stub, a statement over the cap); no chunk is cut or reworded.
  *
  * Only notes shaped like a conversation (conversationShape.ts) are laid out: a session is one conversation, and merging
  * the chunks of a document or the entries of a daily note would break "a hit is one memory".
@@ -35,10 +47,6 @@ import type { HitOrder } from './orchestrator';
  * Oldest first, the latest line marked, earlier lines kept. It quotes those turns and does not cut or reword an excerpt,
  * invent a value, or do arithmetic on a session header (a header date orders two different calendar days only; a shared
  * day is not a clock). A duration question or an order question is left untouched.
- *
- * Experimental, opt-in, and only on top of this layout (`RENOR_ROLE_AWARE_PAGE=1`; default off, so a layout-on page is
- * byte-identical): a role-aware page. Unless the question refers to what the assistant said, each assistant turn on the
- * page is clipped to its first 60 words; user turns, headings and dates are never touched (see roleAwarePage below).
  */
 
 export function readerLayoutEnabled(): boolean {
@@ -65,147 +73,6 @@ export function readerLayoutEnabledFor(query: string): boolean {
 export function readerTimelineEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
   const v = (env.RENOR_READER_TIMELINE ?? '').trim().toLowerCase();
   return v === '1' || v === 'true' || v === 'yes' || v === 'on';
-}
-
-/**
- * RENOR_ROLE_AWARE_PAGE (default off, experimental; `1` / `true` / `yes` / `on` turns it on): a role-aware page. When the
- * question does not refer to what the assistant said, each assistant turn of a conversation on the page is clipped to its
- * first `ROLE_AWARE_ASSISTANT_WORDS` words, cut at a word boundary and marked "…". User turns, every heading, a session's
- * header and `Timestamp:` line, the `[Session date: …]` and `[Counted from this session's date …]` lines and the hit's
- * `session_date` are never touched. Off, the page is not looked at, so it is byte for byte the former one.
- *
- * Why (evidence analysis of the 2026-10-18 official LongMemEval run, not yet an answer measurement): in the multi-session,
- * temporal, knowledge-update and preference questions the evidence is always a user turn, while assistant text is 28-39%
- * of the page's words; clipping assistant turns to 60 words on those questions removes 21% of them. A question whose
- * evidence is what the assistant said is kept whole by `refersToAssistant`.
- *
- * The speaker comes only from the turn heading (`### Turn N — Assistant`), never from a benchmark label. A hit that starts
- * inside an assistant turn (the later chunk of a long answer, with no heading of its own) is known by its heading path.
- */
-export const ROLE_AWARE_ASSISTANT_WORDS = 60;
-
-export function roleAwarePageEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
-  const v = (env.RENOR_ROLE_AWARE_PAGE ?? '').trim().toLowerCase();
-  return v === '1' || v === 'true' || v === 'yes' || v === 'on';
-}
-
-/** Phrasing that asks about what the assistant said; such a question keeps assistant turns whole. */
-const ASSISTANT_REFERENCE = new RegExp([
-  String.raw`\byou (?:had |just |once )?(?:recommended|suggested|told me|said|mentioned|gave me|provided|listed)\b`,
-  String.raw`\bdid you (?:recommend|suggest|tell me|say|mention|give me|provide|list)\b`,
-  String.raw`\bour (?:previous|last|earlier|past|prior) (?:conversation|chat|discussion)s?\b`,
-  String.raw`\bremind me (?:again )?(?:what|which|of what|how|where|who) you\b`,
-  String.raw`\bearlier,? you\b`,
-].join('|'), 'i');
-
-export function refersToAssistant(query: string): boolean {
-  return ASSISTANT_REFERENCE.test(query.replace(/[\u2018\u2019]/g, "'"));
-}
-
-const LAYOUT_HEADING = /^(#{1,6})[ \t]+(.*?)[ \t]*\r?$/;
-const TURN_ROLE = /^Turn[ \t]+\d+[ \t]+[—–-][ \t]+(\S.*)$/i;
-/** Lines the layout itself writes, which date what is around them: kept whole, and their words are not the turn's. */
-const DATE_LINE = /^\[(?:Session date: |Counted from this session's date)/;
-
-/** For a heading's text: 'assistant' or 'other' when it is a turn heading, null when it is not one. */
-function turnRole(heading: string): 'assistant' | 'other' | null {
-  const role = TURN_ROLE.exec(heading.trim())?.[1];
-  if (role === undefined) return null;
-  return /^assistant$/i.test(role.trim()) ? 'assistant' : 'other';
-}
-
-/** At most `budget` words of `body`, cut at a word boundary and marked "…"; its leading and trailing whitespace is kept. */
-function takeWords(body: string, budget: number): { text: string; used: number } {
-  const words = [...body.matchAll(/\S+/g)];
-  if (words.length <= budget) return { text: body, used: words.length };
-  const end = budget === 0 ? (/^\s*/.exec(body)?.[0].length ?? 0) : (words[budget - 1].index ?? 0) + words[budget - 1][0].length;
-  const trailing = /\s*$/.exec(body)?.[0] ?? '';
-  return { text: `${body.slice(0, end)}${budget === 0 ? '' : ' '}…${trailing}`, used: budget };
-}
-
-/** The first `limit` words of `body`, cut at a word boundary and marked " …"; a body that fits is returned as is. */
-export function clipWords(body: string, limit = ROLE_AWARE_ASSISTANT_WORDS): string {
-  return takeWords(body, limit).text;
-}
-
-/** What is left of an assistant turn's words at the end of a text: null when the text ends outside an assistant turn. */
-function clipFrom(text: string, limit: number, start: number | null): { text: string; budget: number | null } {
-  const out: string[] = [];
-  let budget = start;
-  let body: string[] = [];
-  const flush = () => {
-    if (body.length === 0) return;
-    const joined = body.join('\n');
-    if (budget === null) out.push(joined);
-    else {
-      const taken = takeWords(joined, budget);
-      budget -= taken.used;
-      out.push(taken.text);
-    }
-    body = [];
-  };
-  for (const line of text.split('\n')) {
-    if (DATE_LINE.test(line)) { flush(); out.push(line); continue; }
-    const heading = LAYOUT_HEADING.exec(line);
-    if (!heading) { body.push(line); continue; }
-    flush();
-    const role = turnRole(heading[2]);
-    if (role !== null) budget = role === 'assistant' ? limit : null;
-    else if (heading[1].length <= 2) budget = null;
-    out.push(line);
-  }
-  flush();
-  // Each piece was one or more whole lines; joining them with '\n' restores the line breaks between them.
-  return { text: out.join('\n'), budget };
-}
-
-/**
- * Clip each assistant turn of `text` to its first `limit` words. A turn runs from its `### Turn N — Assistant` heading to
- * the next turn heading (or the next `#`/`##` heading); a smaller heading inside it is kept and its words count toward
- * the same turn. Every heading line, every date line and everything outside an assistant turn (a user turn, a session
- * header) is left byte for byte. `inAssistant`: the text starts inside an assistant turn.
- */
-export function clipAssistantTurns(text: string, limit = ROLE_AWARE_ASSISTANT_WORDS, inAssistant = false): string {
-  return clipFrom(text, limit, inAssistant ? limit : null).text;
-}
-
-function headingPathOf(hit: object): string {
-  const value = (hit as { headingPath?: unknown }).headingPath;
-  return typeof value === 'string' ? value : '';
-}
-
-function startsInAssistantTurn(headingPath: string): boolean {
-  return headingPath.split(' > ').map(turnRole).filter(role => role !== null).pop() === 'assistant';
-}
-
-/** One hit on its own: its assistant turns clipped (its heading path says whether it starts inside one), every other field as it was. */
-export function clipAssistantHit<T extends { text: string }>(hit: T, limit = ROLE_AWARE_ASSISTANT_WORDS): T {
-  const text = clipAssistantTurns(hit.text, limit, startsInAssistantTurn(headingPathOf(hit)));
-  return text === hit.text ? hit : { ...hit, text };
-}
-
-/**
- * The chunks of a page with their assistant turns clipped, before the layout joins them. A long answer is stored as several
- * chunks and its heading as one more, which may not reach the page; so each chunk is read with its own heading path, in
- * its note's order, and a turn that runs on into the next chunk carries the words it has left: the turn, not each chunk,
- * keeps its first `limit` words. Hits that are no chunk, and their order, are untouched.
- */
-export function clipAssistantChunks<T extends LayoutHit>(hits: T[], chunk: (hit: T) => boolean, limit = ROLE_AWARE_ASSISTANT_WORDS): T[] {
-  const order = hits.map((_, i) => i).filter(i => chunk(hits[i]))
-    .sort((a, b) => (hits[a].notePath < hits[b].notePath ? -1 : hits[a].notePath > hits[b].notePath ? 1 : (hits[a].chunkId ?? 0) - (hits[b].chunkId ?? 0)));
-  const left = new Map<string, number>();
-  const out = hits.slice();
-  for (const i of order) {
-    const hit = hits[i];
-    const headingPath = headingPathOf(hit);
-    const key = `${hit.notePath}\u0000${headingPath}`;
-    const start = startsInAssistantTurn(headingPath) ? (left.get(key) ?? limit) : null;
-    const clipped = clipFrom(hit.text, limit, start);
-    if (clipped.budget === null) left.delete(key);
-    else left.set(key, clipped.budget);
-    if (clipped.text !== hit.text) out[i] = { ...hit, text: clipped.text };
-  }
-  return out;
 }
 
 // A duration or an order stays byte-identical. "Ago" and "last Tuesday" are a point in the past, not a changed value.
@@ -408,6 +275,32 @@ function isNoteChunk(hit: LayoutHit & { author?: unknown; replaced?: unknown }, 
   return (hit.chunkId ?? 0) > 0 && hit.notePath !== '' && !isLedger(hit.notePath) && hit.author === undefined && hit.replaced === undefined;
 }
 
+/** The most chunks of one session's block (its header aside); RENOR_READER_SESSION_CAP, 0 (the default) is no cap. */
+export const READER_SESSION_CAP = 0;
+
+export function readerSessionCap(env: NodeJS.ProcessEnv = process.env): number {
+  const raw = (env.RENOR_READER_SESSION_CAP ?? '').trim();
+  if (raw === '') return READER_SESSION_CAP;
+  const n = Number(raw);
+  return Number.isInteger(n) && n >= 0 ? n : READER_SESSION_CAP;
+}
+
+export type BlockOrder = 'relevance' | 'date';
+
+/** Blocks keep the page's own (newest-first) order; RENOR_READER_ORDER=relevance puts them best match first. */
+export function readerBlockOrder(env: NodeJS.ProcessEnv = process.env): BlockOrder {
+  return (env.RENOR_READER_ORDER ?? '').trim().toLowerCase() === 'relevance' ? 'relevance' : 'date';
+}
+
+/**
+ * A chunk that is only a session's header: headings and `Timestamp:` lines, no turn. It dates the turns under it and says
+ * nothing itself; on its own it is a stub that takes a place in the reply (a third of the hits of the 2026-10-16 run).
+ */
+export function isHeaderOnly(text: string): boolean {
+  const lines = text.split(/\r?\n/).map(line => line.trim()).filter(line => line !== '' && !/^#{1,6}\s/.test(line));
+  return lines.length > 0 && lines.every(line => /^Timestamp:/i.test(line));
+}
+
 export interface ReaderEventsInput {
   /** The question as the search received it (a `Question date:` line may come first). Event lines need it. */
   query?: string;
@@ -417,88 +310,146 @@ export interface ReaderEventsInput {
   scoreTurns?: EventLineOptions['scoreTurns'];
 }
 
-export function layoutHitsForReader<T extends LayoutHit>(hits: T[], opts: { rankedBy: HitOrder | undefined; isLedger: (notePath: string) => boolean; isConversation?: (notePath: string) => boolean } & ReaderEventsInput): T[] {
+export interface LayoutOptions extends ReaderEventsInput {
+  rankedBy: HitOrder | undefined;
+  isLedger: (notePath: string) => boolean;
+  isConversation?: (notePath: string) => boolean;
+  /** The most chunks one session may show besides its header (default readerSessionCap()); 0 is no cap. */
+  sessionCap?: number;
+  /** How the blocks are ordered (default readerBlockOrder()). */
+  order?: BlockOrder;
+}
+
+interface Block<T extends LayoutHit> {
+  header: T[];
+  body: T[];
+  first: number;
+}
+
+/** A hit of an ordinary note (a chunk the layout could place, a daily entry, a document paragraph): not a fact, a ledger event, a correction or the evidence and digest tables (`_renor/…`). */
+function isOrdinaryNoteHit(hit: LayoutHit & { author?: unknown; replaced?: unknown }, isLedger: (notePath: string) => boolean): boolean {
+  return hit.notePath !== '' && !hit.notePath.startsWith('_renor/') && !isLedger(hit.notePath) && hit.author === undefined && hit.replaced === undefined;
+}
+
+export function layoutHitsForReader<T extends LayoutHit>(hits: T[], opts: LayoutOptions): T[] {
+  return layoutPage(hits, opts).hits;
+}
+
+/**
+ * `byRelevance` is true when the blocks were placed best match first, which the reply then says (`rankedBy: score`). It is
+ * done only to a page whose every chunk of an ordinary note is a conversation's: a daily note's entries or a document's
+ * paragraphs on the same page keep the order the page gave them, and a page that is half one order and half the other must
+ * not claim either key.
+ */
+export function layoutPage<T extends LayoutHit>(hits: T[], opts: LayoutOptions): { hits: T[]; byRelevance: boolean } {
   const chunk = (hit: T): boolean => isNoteChunk(hit, opts.isLedger) && (opts.isConversation?.(hit.notePath) ?? true);
-  // RENOR_ROLE_AWARE_PAGE (default off): assistant turns clipped to 60 words unless the question refers to what the assistant
-  // said. Chunk by chunk, before anything joins them, since a chunk's heading path is what says it is part of an answer.
-  const roleAware = roleAwarePageEnabled() && opts.query !== undefined && !refersToAssistant(opts.query);
-  const page = roleAware ? clipAssistantChunks(hits, chunk) : hits;
-  let laid = page.map(hit => (chunk(hit) ? { ...hit, text: withRelativeTimeHints(hit.text, hit.session_date) } : hit));
-  if (opts.rankedBy === 'session_date') laid = mergeRuns(groupByNote(laid, chunk), chunk);
-  laid = laid.map(hit => (chunk(hit) && hit.session_date && !hit.text.includes('Timestamp:')
+  const cap = opts.sessionCap ?? readerSessionCap();
+  const order = opts.order ?? readerBlockOrder();
+  const laid = hits.map(hit => (chunk(hit) ? { ...hit, text: withRelativeTimeHints(hit.text, hit.session_date) } : hit));
+
+  // One block per conversation on one date: every chunk of it under that date, wherever the page had put it.
+  const keyOf = (hit: T): string | null => (chunk(hit) ? `${hit.notePath}\0${hit.session_date ?? ''}` : null);
+  const blocks = new Map<string, Block<T>>();
+  laid.forEach((hit, index) => {
+    const key = keyOf(hit);
+    if (key === null) return;
+    const block = blocks.get(key) ?? { header: [], body: [], first: index };
+    (isHeaderOnly(hit.text) ? block.header : block.body).push(hit);
+    blocks.set(key, block);
+  });
+
+  const made = new Map<string, T | null>();
+  for (const [key, block] of blocks) made.set(key, blockHit(block, cap));
+
+  // The blocks stand in the places the page gave its chunks; anything else keeps its place.
+  const slots = new Set(laid.flatMap((hit, index) => (keyOf(hit) !== null && blocks.get(keyOf(hit)!)!.first === index ? [index] : [])));
+  let placed = [...slots].map(index => keyOf(laid[index])!).filter(key => made.get(key) !== null);
+  const byRelevance = order === 'relevance' && placed.length > 0 && hits.every(hit => !isOrdinaryNoteHit(hit, opts.isLedger) || chunk(hit));
+  if (byRelevance) {
+    const at = new Map(placed.map((key, i) => [key, i]));
+    placed = [...placed].sort((a, b) => made.get(b)!.score - made.get(a)!.score
+      || (sessionDateMs(made.get(b)!.session_date) || 0) - (sessionDateMs(made.get(a)!.session_date) || 0)
+      || at.get(a)! - at.get(b)!);
+  }
+  const out: T[] = [];
+  let next = 0;
+  laid.forEach((hit, index) => {
+    const key = keyOf(hit);
+    if (key === null) out.push(hit);
+    else if (slots.has(index) && made.get(key) !== null) out.push(made.get(placed[next++])!);
+  });
+  const dated = out.map(hit => (chunk(hit) && hit.session_date && !/Timestamp:/i.test(hit.text)
     ? { ...hit, text: `[Session date: ${hit.session_date}]\n${hit.text}` }
     : hit));
   // RENOR_READER_DURATION (default on; `0` switches it off): one line of dates the user wrote, first, for a "how many days between" question (questionSpan.ts).
   // It reads the chunks as they were found: joined, a turn's continuation would sit under the speaker before it.
   // RENOR_READER_EVENTS (default on; `0` switches it off) adds event lines for an order or a date question; its gate leaves a duration question alone, so at most one of the two lines is added.
   // RENOR_READER_TIMELINE (default off): a current-value timeline for a "what is it now" question; a duration or an order question is left alone.
-  return withCurrentValueTimeline(withEventLines(withQuestionSpan(laid, opts.query, { source: hits }), chunk, opts), opts.query);
+  // Each such line comes first, outside the order rankedBy names, as the evidence hit does. The event lines too read the
+  // conversations as the page found them: a session that came as its header alone is no hit, but its turns are still read.
+  return {
+    hits: withCurrentValueTimeline(withEventLines(withQuestionSpan(dated, opts.query, { source: hits }), hits.filter(chunk), opts), opts.query),
+    byRelevance,
+  };
 }
 
-/** The event lines, as the first hit (reason "events"), when the flag is on and the question asks for an order or a date. */
-function withEventLines<T extends LayoutHit>(hits: T[], chunk: (hit: T) => boolean, opts: ReaderEventsInput): T[] {
+/** The event lines, as the first hit (reason "events"), when the flag is on and the question asks for an order or a date. `sources` are the conversation chunks they read. */
+function withEventLines<T extends LayoutHit>(hits: T[], sources: readonly LayoutHit[], opts: ReaderEventsInput): T[] {
   if (!readerEventsEnabled() || opts.query === undefined || opts.turnsOf === undefined || opts.query.trim() === '') return hits;
-  const text = eventLines(hits.filter(chunk), opts.query, opts.turnsOf, { scoreTurns: opts.scoreTurns });
+  const text = eventLines(sources, opts.query, opts.turnsOf, { scoreTurns: opts.scoreTurns });
   if (text === null) return hits;
   return [{ notePath: '', text, score: 0, reason: 'events' } as T, ...hits];
 }
 
-/** The hits of a note on one date stand where the first of them stood, in the note's own order. Other hits stay where they were. */
-function groupByNote<T extends LayoutHit>(hits: T[], chunk: (hit: T) => boolean): T[] {
-  const keyOf = (hit: T): string | null => (chunk(hit) ? `${hit.notePath}\0${hit.session_date ?? ''}` : null);
-  const groups = new Map<string, T[]>();
-  for (const hit of hits) {
-    const key = keyOf(hit);
-    if (key !== null) groups.set(key, [...(groups.get(key) ?? []), hit]);
+/**
+ * One conversation's hit: its header first when it came, then its turns in the conversation's own order, with the best
+ * score and reason of its chunks. A session that came as a header and nothing else is no hit. Over the cap, every chunk the
+ * query matched stays and the statements the session expansion added are taken in the order they came, as many as the cap leaves room for.
+ */
+function blockHit<T extends LayoutHit>(block: Block<T>, cap: number): T | null {
+  if (block.body.length === 0) return null;
+  const byPlace = (a: T, b: T): number => (a.chunkId ?? 0) - (b.chunkId ?? 0);
+  let body = block.body;
+  if (cap > 0 && body.length > cap) {
+    // What the query matched always stays; the cap only limits the statements the session expansion added.
+    const expanded = body.filter(h => h.reason === SESSION_EXPAND_REASON);
+    const room = Math.max(0, cap - (body.length - expanded.length));
+    const kept = new Set([...body.filter(h => h.reason !== SESSION_EXPAND_REASON), ...expanded.slice(0, room)]);
+    body = body.filter(h => kept.has(h));
   }
-  const placed = new Set<string>();
-  const out: T[] = [];
-  for (const hit of hits) {
-    const key = keyOf(hit);
-    if (key === null) { out.push(hit); continue; }
-    if (placed.has(key)) continue;
-    placed.add(key);
-    out.push(...groups.get(key)!.sort((a, b) => (a.chunkId ?? 0) - (b.chunkId ?? 0)));
-  }
-  return out;
-}
-
-/** Neighbouring hits of one note and date become one: the texts in order, the score and reason of the best match. */
-function mergeRuns<T extends LayoutHit>(hits: T[], chunk: (hit: T) => boolean): T[] {
-  const out: T[] = [];
-  let i = 0;
-  while (i < hits.length) {
-    const first = hits[i];
-    let j = i + 1;
-    if (chunk(first)) while (j < hits.length && chunk(hits[j]) && hits[j].notePath === first.notePath && hits[j].session_date === first.session_date) j++;
-    const run = hits.slice(i, j);
-    if (run.length === 1) out.push(first);
-    else {
-      const best = run.reduce((a, b) => (b.score > a.score ? b : a));
-      const similarities = run.flatMap(h => (typeof h.similarity === 'number' ? [h.similarity] : []));
-      out.push({
-        ...first,
-        text: run.map(h => h.text).join('\n\n'),
-        score: best.score,
-        reason: best.reason,
-        ...(similarities.length > 0 ? { similarity: Math.max(...similarities) } : {}),
-      });
-    }
-    i = j;
-  }
-  return out;
+  const run = [...block.header, ...body].sort(byPlace);
+  if (run.length === 1) return run[0];
+  const best = run.reduce((a, b) => (b.score > a.score ? b : a));
+  const similarities = run.flatMap(h => (typeof h.similarity === 'number' ? [h.similarity] : []));
+  return {
+    ...run[0],
+    text: run.map(h => h.text).join('\n\n'),
+    score: best.score,
+    reason: best.reason,
+    ...(similarities.length > 0 ? { similarity: Math.max(...similarities) } : {}),
+  };
 }
 
 /**
  * The page search_memory shows, laid out for its reader when RENOR_READER_LAYOUT is on (the chunk ids the layout needed
- * leave with it); otherwise the page as it was. `enabled` is the answer for this query (readerLayoutEnabledFor).
+ * leave with it); otherwise the page as it was. `rankedBy` is the key the returned page is in order of. `enabled` is the
+ * answer for this query (readerLayoutEnabledFor).
  */
-export function readerLayoutOf<T extends object>(rankedBy: HitOrder | undefined, hits: T[], isLedger: (notePath: string) => boolean, events: ReaderEventsInput | string = {}, enabled: boolean = readerLayoutEnabled()): T[] {
-  if (!enabled) return hits;
+export function readerLayoutPage<T extends object>(rankedBy: HitOrder | undefined, hits: T[], isLedger: (notePath: string) => boolean, events: ReaderEventsInput | string = {}, enabled: boolean = readerLayoutEnabled()): { hits: T[]; rankedBy: HitOrder | undefined } {
+  if (!enabled) return { hits, rankedBy };
   // A bare string is the question alone (the duration line's form); the object also carries what the event lines read.
   const input: ReaderEventsInput = typeof events === 'string' ? { query: events } : events;
-  return layoutHitsForReader(hits as Array<T & LayoutHit>, { rankedBy, isLedger, ...input }).map(hit => {
-    const { chunkId: _chunkId, ...rest } = hit as T & { chunkId?: number };
-    return rest as unknown as T;
-  });
+  const laid = layoutPage(hits as Array<T & LayoutHit>, { rankedBy, isLedger, ...input });
+  return {
+    hits: laid.hits.map(hit => {
+      const { chunkId: _chunkId, ...rest } = hit as T & { chunkId?: number };
+      return rest as unknown as T;
+    }),
+    rankedBy: laid.byRelevance ? 'score' : rankedBy,
+  };
+}
+
+/** The hits of readerLayoutPage alone. */
+export function readerLayoutOf<T extends object>(rankedBy: HitOrder | undefined, hits: T[], isLedger: (notePath: string) => boolean, events: ReaderEventsInput | string = {}, enabled: boolean = readerLayoutEnabled()): T[] {
+  return readerLayoutPage(rankedBy, hits, isLedger, events, enabled).hits;
 }

@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach } from 'vitest';
-import Database from 'better-sqlite3';
+import Database from '../../src/db/sqlite';
 import { prepareOnce } from '../../src/db/statements';
 
 const open: Database.Database[] = [];

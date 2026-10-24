@@ -15,7 +15,7 @@ This applies to issues, pull requests, reviews, discussions, and any other proje
 
 ## Reporting
 
-Report a conduct concern privately through GitHub's private advisory form: <https://github.com/patrickpassosb/renor-engine/security/advisories/new>. Do not post it as a public issue. Include what happened and where. Reports are read by the maintainer, and reporters are not named in any public record without their consent.
+Report a conduct concern privately through GitHub's private advisory form: <https://github.com/renorai/renor-engine/security/advisories/new>. Do not post it as a public issue. Include what happened and where. Reports are read by the maintainer, and reporters are not named in any public record without their consent.
 
 Security vulnerabilities follow [SECURITY.md](SECURITY.md), not this process.
 

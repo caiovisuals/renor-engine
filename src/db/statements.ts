@@ -1,4 +1,4 @@
-import type Database from 'better-sqlite3';
+import type Database from './sqlite';
 
 /**
  * One prepared statement per connection and SQL text, for the statements a read or a save runs again on every request.

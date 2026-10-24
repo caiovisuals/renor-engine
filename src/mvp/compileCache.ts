@@ -1,6 +1,9 @@
 import fs from 'node:fs';
 import module from 'node:module';
 import path from 'node:path';
+import { createLogger } from './log';
+
+const log = createLogger('engine');
 
 /**
  * This workspace's own Node compile cache, enabled before anything heavy loads.
@@ -109,7 +112,7 @@ function unsafeExistingDir(dir: string): string | null {
 function declined(reason: string): CompileCacheReport {
   if (!reported) {
     reported = true;
-    console.error(`[mvp] compile cache not enabled (${reason}); the engine starts normally without it`);
+    log.warn('compile_cache_off', { reason, detail: 'the engine starts normally without it' });
   }
   return { enabled: false, directory: null, reason, seeded: 0 };
 }
@@ -242,13 +245,4 @@ export function enableWorkspaceCompileCache(): CompileCacheReport {
   }
   const directory = result.directory ?? explicit;
   return { enabled: true, directory, reason: null, seeded: seedFromRelease(module.getCompileCacheDir() ?? directory) };
-}
-
-/**
- * The directory this process is actually using, or undefined when no cache is
- * enabled. Read from Node rather than recomputed, so it reports the truth even
- * when NODE_COMPILE_CACHE was set in the environment and won.
- */
-export function activeCompileCacheDir(): string | undefined {
-  return module.getCompileCacheDir();
 }

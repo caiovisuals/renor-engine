@@ -1,4 +1,4 @@
-import type Database from 'better-sqlite3';
+import type Database from '../db/sqlite';
 import { normDedupeValue } from '../context/rowStore';
 import { identityKey, identityNames } from '../retrieval/queryHelpers';
 import { prepareOnce } from './factTerms';

@@ -14,7 +14,7 @@ import {
 } from '../../src/extraction/decision-model';
 import type { ExtractedNumericFact } from '../../src/extraction/typedFacts';
 import type { ExtractedEvent } from '../../src/extraction/eventExtractor';
-import type Database from 'better-sqlite3';
+import type Database from '../../src/db/sqlite';
 
 /**
  * C2 harmonization integration fixtures (merge of the fleet extractors

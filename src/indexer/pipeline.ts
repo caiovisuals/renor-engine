@@ -3,7 +3,7 @@ import path from 'path';
 import { constants as fsConstants } from 'fs';
 import { createHash } from 'crypto';
 import { isUtf8 } from 'buffer';
-import Database from 'better-sqlite3';
+import Database from '../db/sqlite';
 import { prepareOnce } from '../db/statements';
 import { hashContent } from './hasher';
 import { noteContentHash } from './dailyEntries';
@@ -44,8 +44,12 @@ import {
 } from '../extraction/preferenceExtractor';
 import {
   deleteStructuredRowsForSourceKind,
+  type StructuredRowPayload,
 } from '../context/rowStore';
-import { laneZeroYieldMarker, recordLaneRun } from './laneRuns';
+import { laneZeroYieldMarker, recordLaneRun, type LaneRowKind } from './laneRuns';
+import { createLogger } from '../mvp/log';
+
+const log = createLogger('engine');
 
 /** Texts per request the embedding service takes at once (what Vertex's predict accepts). */
 const EMBED_REQUEST_TEXTS = 32;
@@ -139,7 +143,7 @@ const factText = (v: unknown): string => (v !== null && typeof v === 'object' &&
 
 /** The note is indexed anyway; say which front-matter value was not text, so a note that seems to ignore it can be explained. */
 function warnFrontmatter(filePath: string, what: string): void {
-  console.warn(`[index] ${filePath}: ${what}; the note is indexed without it`);
+  log.warn('frontmatter_value_ignored', { note: path.basename(filePath), detail: `${what}; the note is indexed without it` });
 }
 
 /** The note's `kind`: a string, else none. Anything else (a mapping, a list, a date, a number) is ignored with a warning. */
@@ -154,18 +158,88 @@ function noteKind(filePath: string, frontmatter: Record<string, unknown>): strin
  * The extraction version each structured-row lane writes today. This is the
  * second half of the lane cache key, (source_hash, extraction_version), so it
  * is also the test for "is this preserved row still this lane's current row?".
- * One mapping, used by the in-transaction reattach and by the post-failure
- * restore, so a version bump cannot be applied in one place and missed in the
- * other. `row_kind` is CHECK-constrained to these three kinds.
+ * One mapping, used by the in-transaction reattach and by the lanes' cache
+ * check (laneDone), so a version bump cannot be applied in one place and missed
+ * in the other. `row_kind` is CHECK-constrained to these three kinds.
  */
-const LANE_EXTRACTION_VERSION: Record<string, string> = {
+const LANE_EXTRACTION_VERSION: Record<LaneRowKind, string> = {
   fact: FACTS_EXTRACTION_VERSION,
   event: EVENTS_EXTRACTION_VERSION,
   preference: PREFS_EXTRACTION_VERSION,
 };
 
 function currentVersion(kind: string): string | undefined {
-  return LANE_EXTRACTION_VERSION[kind];
+  return LANE_EXTRACTION_VERSION[kind as LaneRowKind];
+}
+
+/** One structured-row lane that is armed (its extractor given and its flag on): its key, and its candidates for a note. */
+interface StructuredLane {
+  kind: LaneRowKind;
+  version: string;
+  /** How a failure names the lane in the log. */
+  label: string;
+  /** The lane's candidates, each attributed to the note's chunk that holds its phrase, else to the first one. */
+  extract(noteTitle: string, noteBody: string, chunks: Array<{ id: number; text: string }>): Promise<LaneCandidate[]>;
+}
+
+function lane<T extends StructuredRowPayload>(
+  kind: LaneRowKind,
+  label: string,
+  extractor: (noteTitle: string, noteBody: string) => Promise<T[]>,
+  payloadOf: (item: T) => StructuredRowPayload,
+  fallbackText: (item: T) => string,
+): StructuredLane {
+  return {
+    kind,
+    version: LANE_EXTRACTION_VERSION[kind],
+    label,
+    async extract(noteTitle, noteBody, chunks) {
+      const extracted = await extractor(noteTitle, noteBody);
+      return extracted.map((item) => {
+        const attributed = chunkForCandidate(chunks, item);
+        return {
+          payload: payloadOf(item),
+          // The chunker gives every note a chunk; without one, 0 makes the row store refuse the row (ProvenanceError).
+          sourceChunkId: attributed?.chunkId ?? chunks[0]?.id ?? 0,
+          sourceText: attributed?.text ?? fallbackText(item),
+        };
+      });
+    },
+  };
+}
+
+/** The structured-row lanes this pass runs, in order: typed facts (C2), chronicle events (C3), standing preferences (C4). */
+function structuredLanes(options: IndexOptions): StructuredLane[] {
+  const lanes: StructuredLane[] = [];
+  if (options.numericFactExtractor && typedFactsEnabled()) {
+    lanes.push(lane('fact', 'typed-fact', options.numericFactExtractor,
+      f => ({ value: f.value, unit: f.unit, verb: f.verb, object: f.object, event: f.event }),
+      f => `${f.value} ${f.object}`.trim()));
+  }
+  if (options.eventExtractor && chronicleEnabled()) {
+    lanes.push(lane('event', 'event', options.eventExtractor,
+      e => ({ when: e.when, event: e.event, entities: e.entities }),
+      e => `${e.when} ${e.event}`.trim()));
+  }
+  if (options.preferenceExtractor && prefsEnabled()) {
+    lanes.push(lane('preference', 'preference', options.preferenceExtractor,
+      p => ({ statement: p.statement, kind: p.kind }),
+      p => p.statement));
+  }
+  return lanes;
+}
+
+/**
+ * Whether a lane is done for these bytes, so it costs no model call. Either half of the cache key (source_hash,
+ * extraction_version) says so: a current row of the lane for this hash, or a completed zero-yield run (#189, lane_runs:
+ * a lane that produced nothing has no row to record it).
+ */
+function laneDone(db: Database.Database, filePath: string, lane: StructuredLane, noteHash: string): boolean {
+  return !!prepareOnce(db,
+    `SELECT id FROM structured_rows
+     WHERE source_path = ? AND row_kind = ? AND extraction_version = ? AND source_hash = ? AND valid_to IS NULL LIMIT 1`,
+  ).get(filePath, lane.kind, lane.version, noteHash)
+    || !!laneZeroYieldMarker(db, filePath, lane.kind, noteHash, lane.version);
 }
 
 /**
@@ -479,18 +553,16 @@ async function storeVectors(
         options.embedBudgetMs === undefined ? undefined : { budgetMs: options.embedBudgetMs * Math.ceil(texts.length / EMBED_REQUEST_TEXTS) },
       );
 
-      // Fix #3: Warn on embedding count mismatch instead of silently losing vectors
-      if (embeddings.length !== texts.length) {
-        console.error(
-          `[pipeline] embedding count mismatch: expected ${texts.length}, got ${embeddings.length} for ${filePath}`
-        );
+      // A vector missing from the answer fails the file: its hash stays '' (see transactionHash), so the next pass
+      // embeds the note again. Committing the hash here would leave those chunks without a vector for good, since an
+      // unchanged note is never read again.
+      if (embeddings.length !== texts.length || texts.some((_, i) => !embeddings[i])) {
+        throw new Error(`embedding service answered ${embeddings.length} vectors for ${texts.length} chunks of ${filePath}`);
       }
 
       for (let i = 0; i < toEmbed.length; i++) {
-        if (embeddings[i]) {
-          if (vectorIndex.insertNew) vectorIndex.insertNew(toEmbed[i].id, embeddings[i]);
-          else vectorIndex.upsert(toEmbed[i].id, embeddings[i]);
-        }
+        if (vectorIndex.insertNew) vectorIndex.insertNew(toEmbed[i].id, embeddings[i]);
+        else vectorIndex.upsert(toEmbed[i].id, embeddings[i]);
       }
     }
 
@@ -775,50 +847,10 @@ async function indexFileUnlocked(
     // The facts of an unchanged note are not rebuilt below, so a row an earlier build made of the engine's own header
     // would stay. Remove it here: one statement for a daily note, no chunk or extractor involved.
     removeDailyHeaderFacts(db, filePath, content);
-    // C2: unchanged content skips extraction ONLY when current-version rows
-    // already exist (ADR §4.2 — the cache key is (source_hash,
-    // extraction_version)). An extraction_version change invalidates the cache
-    // and falls through to re-extract, still with zero model calls until the
-    // (re-)extraction itself.
-    if (
-      (options.numericFactExtractor && typedFactsEnabled()) ||
-      (options.eventExtractor && chronicleEnabled()) ||
-      (options.preferenceExtractor && prefsEnabled())
-    ) {
-      // The cache key is per lane: (source_hash, extraction_version). Skip
-      // only when EVERY enabled lane is already done for these bytes — an
-      // enabled lane without rows (first run, version bump) falls through.
-      // "Done" is either half of the key: a current row for this hash, or a
-      // completed zero-yield run (#189, lane_runs — a lane that produced
-      // nothing has no row to record it).
-      const factsEnabled = !!(options.numericFactExtractor && typedFactsEnabled());
-      const eventsEnabled = !!(options.eventExtractor && chronicleEnabled());
-      const prefsEnabledLane = !!(options.preferenceExtractor && prefsEnabled());
-      const haveCurrentVersionRows = !factsEnabled || !!db.prepare(
-        `SELECT id FROM structured_rows
-         WHERE source_path = ? AND row_kind = 'fact' AND extraction_version = ? AND source_hash = ? AND valid_to IS NULL LIMIT 1`,
-      ).get(filePath, FACTS_EXTRACTION_VERSION, noteHash) || !!laneZeroYieldMarker(
-        db, filePath, 'fact', noteHash, FACTS_EXTRACTION_VERSION,
-      );
-      const haveCurrentEventRows = !eventsEnabled || !!db.prepare(
-        `SELECT id FROM structured_rows
-         WHERE source_path = ? AND row_kind = 'event' AND extraction_version = ? AND source_hash = ? AND valid_to IS NULL LIMIT 1`,
-      ).get(filePath, EVENTS_EXTRACTION_VERSION, noteHash) || !!laneZeroYieldMarker(
-        db, filePath, 'event', noteHash, EVENTS_EXTRACTION_VERSION,
-      );
-      const haveCurrentPrefRows = !prefsEnabledLane || !!db.prepare(
-        `SELECT id FROM structured_rows
-         WHERE source_path = ? AND row_kind = 'preference' AND extraction_version = ? AND source_hash = ? AND valid_to IS NULL LIMIT 1`,
-      ).get(filePath, PREFS_EXTRACTION_VERSION, noteHash) || !!laneZeroYieldMarker(
-        db, filePath, 'preference', noteHash, PREFS_EXTRACTION_VERSION,
-      );
-      if (haveCurrentVersionRows && haveCurrentEventRows && haveCurrentPrefRows) {
-        return; // unchanged content: zero model calls
-      }
-      // else: a lane lacks current rows → fall through, stale rows deleted below.
-    } else {
-      return; // unchanged — skip
-    }
+    // C2: unchanged content skips extraction ONLY when every armed lane is done for these bytes (ADR §4.2: the
+    // cache key is (source_hash, extraction_version), see laneDone). A lane without rows (first run, version bump)
+    // falls through to re-extract; with no lane armed the note is simply skipped.
+    if (structuredLanes(options).every(lane => laneDone(db, filePath, lane, noteHash))) return;
   }
 
   // 4. Parse note
@@ -888,13 +920,6 @@ async function indexFileUnlocked(
        LEFT JOIN chunks c ON c.id = r.source_chunk_id
        WHERE r.source_path = ?`,
     ).all(filePath) as Array<Record<string, unknown>>;
-    const preservedByKind = new Map<string, Array<Record<string, unknown>>>();
-    for (const saved of preservedStructured) {
-      const kind = String(saved.row_kind);
-      const bucket = preservedByKind.get(kind) ?? [];
-      bucket.push(saved);
-      preservedByKind.set(kind, bucket);
-    }
 
     // The chunks from the top of an edited note that are already stored exactly as they are now
     // keep their rows, search entries and vectors; only the rest is replaced (a ledger appended to
@@ -992,71 +1017,21 @@ async function indexFileUnlocked(
       oldChunkIds: oldChunks.slice(keep).map(old => old.id),
       vectorSource,
       entityId,
-      preservedByKind,
       cut,
       chunkHashes,
     };
   });
 
   // Fix #1 (cont): Delete old vectors only after transaction commits successfully
-  const { insertedChunks, kept, oldChunkIds, vectorSource, entityId, preservedByKind, cut, chunkHashes } = upsertAll() as {
+  const { insertedChunks, kept, oldChunkIds, vectorSource, entityId, cut, chunkHashes } = upsertAll() as {
     insertedChunks: Array<{ id: number; text: string }>;
     kept: number;
     oldChunkIds: number[];
     vectorSource: Map<number, number>;
     entityId: number;
-    preservedByKind: Map<string, Array<Record<string, unknown>>>;
     cut: NoteCut;
     chunkHashes: string[];
   };
-
-  // These post-failure helpers and the in-transaction reattach above must
-  // agree on one thing: a preserved row only counts as that lane's current row
-  // when its extraction_version matches the version that lane writes today
-  // (currentVersion), which is the same key the lane cache-skip below uses.
-  function preservedLaneMatches(kind: string): boolean {
-    const savedRows = preservedByKind.get(kind) ?? [];
-    return savedRows.some(saved => (
-      saved.valid_to == null
-      && saved.source_hash === noteHash
-      && saved.extraction_version === currentVersion(kind)
-    ));
-  }
-
-  function restorePreservedLane(kind: string): void {
-    const savedRows = (preservedByKind.get(kind) ?? []).filter(saved => (
-      saved.valid_to == null
-      && saved.source_hash === noteHash
-      && saved.extraction_version === currentVersion(kind)
-    ));
-    if (savedRows.length === 0 || insertedChunks.length === 0) return;
-    const restore = db.prepare(
-      `INSERT INTO structured_rows
-         (row_kind, source_path, source_hash, source_chunk_id, scope, extraction_version,
-          valid_from, valid_to, payload_json, dedupe_key, confirm_count, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    );
-    for (const saved of savedRows) {
-      const sourceText = typeof saved.source_text === 'string' ? saved.source_text : '';
-      const attributed = sourceText
-        ? chunkForCandidate(insertedChunks, { statement: sourceText })
-        : null;
-      restore.run(
-        kind,
-        filePath,
-        saved.source_hash,
-        attributed?.chunkId ?? insertedChunks[0].id,
-        saved.scope,
-        saved.extraction_version,
-        saved.valid_from,
-        saved.valid_to,
-        saved.payload_json,
-        saved.dedupe_key,
-        saved.confirm_count,
-        saved.created_at,
-      );
-    }
-  }
 
   await storeVectors(db, filePath, options, { insertedChunks, kept, oldChunkIds, vectorSource, vectorsMatch, embedsHere, noteHash });
 
@@ -1079,7 +1054,7 @@ async function indexFileUnlocked(
         }
       }
     } catch (err) {
-      console.error(`[pipeline] LLM extraction failed for ${filePath}:`, (err as Error).message);
+      log.error('extraction_failed', { lane: 'LLM', note: path.basename(filePath) }, err);
       // #188: reset the hash so the next pass retries (Fix #5), AND rethrow.
       // Swallowing it here left `indexVault` counting the note as INDEXED, so
       // `index` reported 0 errors and exited 0 with this note's facts missing —
@@ -1110,7 +1085,7 @@ async function indexFileUnlocked(
         chunks: insertedChunks,
       }, options.decisionModel);
     } catch (err) {
-      console.error(`[pipeline] facts write-path capture failed for ${filePath}:`, (err as Error).message);
+      log.error('extraction_failed', { lane: 'facts write-path capture', note: path.basename(filePath) }, err);
       // Same #188 contract as the legacy lane above: reset the hash so the next
       // pass retries, then rethrow so the failure is counted and reaches the
       // exit status instead of being hidden by a blanket catch.
@@ -1119,218 +1094,36 @@ async function indexFileUnlocked(
     }
   }
 
-  // 11c. C2 typed numeric facts → structured_rows (RENOR_TYPED_FACTS, default
-  // off; ADR-0003 §4 provenance contract + §4.2 cache invalidation). The
-  // (source_hash, extraction_version) skip happens BEFORE any model call:
-  // unchanged content is either already covered by current-version rows or by
-  // a completed zero-yield run (lane_runs, #189) and costs zero extractor calls.
-  // Edit path: stale rows for this source are deleted and re-extracted. On
-  // extractor-parse-error the note hash resets so the next pass retries;
-  // parse failures are never cached and never silently [].
-  // HARMONIZATION: candidates flow through the DecisionModel seam
-  // (adjudicateAndWriteRows) BEFORE any row is written — capture-gate /
-  // sensitivity-guardrail (a `sensitive` decision blocks the candidate) and
-  // dedupe adjudication with the confirm-count + v11 unique-index semantics.
-  if (options.numericFactExtractor && typedFactsEnabled()) {
-    // One predicate, both halves of the lane cache: a current row for these
-    // bytes, OR a completed zero-yield run for them (#189). A lane that
-    // produced nothing must be recognised BEFORE any extraction work starts,
-    // or it is re-extracted on every unchanged pass forever.
-    const structured = db.prepare(
-      `SELECT id FROM structured_rows
-       WHERE source_path = ? AND row_kind = 'fact' AND extraction_version = ? AND source_hash = ? AND valid_to IS NULL LIMIT 1`,
-    ).get(filePath, FACTS_EXTRACTION_VERSION, noteHash) as { id: number } | undefined
-      ?? laneZeroYieldMarker(db, filePath, 'fact', noteHash, FACTS_EXTRACTION_VERSION);
-    if (!structured) {
-      // This lane is stale. Re-extract only fact rows; a current fact lane
-      // falls through so events and preferences still run. The previous rows
-      // stay until the new extraction returns, so an extractor that yields
-      // nothing does not empty the lane. An extractor that THROWS does: a
-      // stale-version lane is left empty on purpose (see the catch below).
-      try {
-        const extracted = await options.numericFactExtractor(parsed.title, parsed.body);
-        deleteStructuredRowsForSourceKind(db, filePath, 'fact');
-        const validFrom = contentDateFromFrontmatter(parsed.frontmatter);
-        const firstChunkId = (db.prepare(
-          'SELECT id FROM chunks WHERE note_path = ? ORDER BY id LIMIT 1',
-        ).get(filePath) as { id: number } | undefined)?.id;
-        const candidates: LaneCandidate[] = extracted.map((f) => {
-          const attributed = chunkForCandidate(insertedChunks, f);
-          return {
-            payload: { value: f.value, unit: f.unit, verb: f.verb, object: f.object, event: f.event },
-            sourceChunkId: attributed?.chunkId ?? firstChunkId ?? 1,
-            sourceText: attributed?.text ?? `${f.value} ${f.object}`.trim(),
-          };
-        });
-        const outcome = await adjudicateAndWriteRows(db, {
-          rowKind: 'fact',
-          extractionVersion: FACTS_EXTRACTION_VERSION,
-          notePath: filePath,
-          sourceHash: noteHash,
-          validFrom,
-          candidates,
-        }, options.decisionModel);
-        // #189: the zero-yield checkpoint. This lane used to be called again
-        // on every unchanged pass because a zero yield leaves no row to mark it
-        // current; the completed run is recorded here instead — after the
-        // extractor and the writes both succeeded, so the throw path below
-        // stays uncached (it resets the note hash and must retry). What is
-        // recorded is what THIS run's writes returned — a fact of the run, not a
-        // count re-read from structured_rows, which a concurrent writer could
-        // tear (review B1) — so a zero is exactly "left nothing current".
-        recordLaneRun(db, filePath, 'fact', noteHash, FACTS_EXTRACTION_VERSION, outcome.rowsWritten);
-      } catch (err) {
-        console.error(
-          `[pipeline] typed-fact extraction failed for ${filePath}:`,
-          (err as Error).message,
-        );
-        // Never cached, never silent []: reset the note hash so the next pass
-        // retries, then rethrow the explicit error (extractor-parse-error or
-        // otherwise) — a note whose extraction failed is never reported current.
-        // A stale-version row was not reattached and is deliberately NOT put
-        // back: a bumped extraction_version invalidates the lane, so its old
-        // payload must never be served as current. The lane stays empty until
-        // the retry succeeds, which the reset hash guarantees it will attempt.
-        db.prepare("UPDATE notes SET note_hash = '' WHERE path = ?").run(filePath);
-        // An edited note must not keep the previous assertion as current
-        // against the new text. Restore only when the preserved row is still
-        // this lane's current row for these bytes, including a retry after an
-        // earlier failure cleared the note hash.
-        if (noteUnchanged || preservedLaneMatches('fact')) restorePreservedLane('fact');
-        throw err;
-      }
-    }
-  }
-
-  // 11d. C3 chronicle events → structured_rows (RENOR_CHRONICLE, default off;
-  // ADR-0003 §4 event-lane payload + §4.1 identity-keyed supersession via the
-  // shared rowStore insert). The (source_hash, extraction_version) skip happens
-  // BEFORE any model call: unchanged content is either already covered by
-  // current-version event rows or by a completed zero-yield run (lane_runs,
-  // #189) and costs zero extractor calls. Edit path: stale rows for this source are
-  // deleted and re-extracted. `when` stays the user's own wording inside the
-  // payload; the row's valid_from comes only from the note's frontmatter date
-  // (NULL = unknown, never resolved/invented from the relative `when`). On
-  // extractor-parse-error the note hash resets so the next pass retries;
-  // parse failures are never cached and never silently [].
-  // HARMONIZATION: candidates flow through the DecisionModel seam
-  // (adjudicateAndWriteRows) BEFORE any row is written — capture-gate /
-  // sensitivity-guardrail (a `sensitive` decision blocks the candidate) and
-  // dedupe adjudication; the write keeps the fleet's identity-keyed
-  // supersession semantics (newer dated restatement supersedes; NULL dates
-  // never supersede).
-  if (options.eventExtractor && chronicleEnabled()) {
-    const currentEvents = db.prepare(
-      `SELECT id FROM structured_rows
-       WHERE source_path = ? AND row_kind = 'event' AND extraction_version = ? AND source_hash = ? AND valid_to IS NULL LIMIT 1`,
-    ).get(filePath, EVENTS_EXTRACTION_VERSION, noteHash) as { id: number } | undefined
-      ?? laneZeroYieldMarker(db, filePath, 'event', noteHash, EVENTS_EXTRACTION_VERSION);
-    if (!currentEvents) {
-      // This lane is stale. Re-extract only event rows. The previous rows
-      // stay until the new extraction returns.
-      try {
-        const extracted = await options.eventExtractor(parsed.title, parsed.body);
-        deleteStructuredRowsForSourceKind(db, filePath, 'event');
-        const validFrom = contentDateFromFrontmatter(parsed.frontmatter);
-        const firstChunkId = (db.prepare(
-          'SELECT id FROM chunks WHERE note_path = ? ORDER BY id LIMIT 1',
-        ).get(filePath) as { id: number } | undefined)?.id;
-        const candidates: LaneCandidate[] = extracted.map((e) => {
-          const attributed = chunkForCandidate(insertedChunks, e);
-          return {
-            payload: { when: e.when, event: e.event, entities: e.entities },
-            sourceChunkId: attributed?.chunkId ?? firstChunkId ?? 1,
-            sourceText: attributed?.text ?? `${e.when} ${e.event}`.trim(),
-          };
-        });
-        const outcome = await adjudicateAndWriteRows(db, {
-          rowKind: 'event',
-          extractionVersion: EVENTS_EXTRACTION_VERSION,
-          notePath: filePath,
-          sourceHash: noteHash,
-          validFrom,
-          candidates,
-        }, options.decisionModel);
-        // Zero-yield events: same checkpoint as the fact lane (#189).
-        recordLaneRun(db, filePath, 'event', noteHash, EVENTS_EXTRACTION_VERSION, outcome.rowsWritten);
-      } catch (err) {
-        console.error(
-          `[pipeline] event extraction failed for ${filePath}:`,
-          (err as Error).message,
-        );
-        // Never cached, never silent []: reset the note hash so the next pass
-        // retries, then rethrow the explicit error (extractor-parse-error or
-        // otherwise) — a note whose extraction failed is never reported current.
-        db.prepare("UPDATE notes SET note_hash = '' WHERE path = ?").run(filePath);
-        if (noteUnchanged || preservedLaneMatches('event')) restorePreservedLane('event');
-        throw err;
-      }
-    }
-  }
-
-  // 11e. C4 standing preferences → structured_rows (RENOR_PREFS, default off;
-  // ADR-0003 §4 preference-lane payload + §4.1 identity-keyed supersession via
-  // the shared rowStore insert — contradiction on edit supersedes, never
-  // co-current, only via (row_kind, scope, norm(statement)) identity). The
-  // (source_hash, extraction_version) skip happens BEFORE any model call:
-  // unchanged content is either already covered by current-version pref rows
-  // or by a completed zero-yield run (lane_runs, #189) and costs zero
-  // extractor calls. `kind` is an unvalidated render-only enum, never in the
-  // dedupe key. One-off past-tense statements are dropped by the extractor's
-  // structural guard. On extractor-parse-error the note hash resets so the
-  // next pass retries; parse failures are never cached and never silently [].
-  // HARMONIZATION: candidates flow through the DecisionModel seam
-  // (adjudicateAndWriteRows) BEFORE any row is written — capture-gate /
-  // sensitivity-guardrail (a `sensitive` decision blocks the candidate) and
-  // dedupe adjudication (norm(statement) identity); the write keeps the
-  // fleet's identity-keyed supersession semantics (contradiction on edit →
-  // same-identity newer restatement supersedes, never co-current).
-  if (options.preferenceExtractor && prefsEnabled()) {
-    const currentPrefs = db.prepare(
-      `SELECT id FROM structured_rows
-       WHERE source_path = ? AND row_kind = 'preference' AND extraction_version = ? AND source_hash = ? AND valid_to IS NULL LIMIT 1`,
-    ).get(filePath, PREFS_EXTRACTION_VERSION, noteHash) as { id: number } | undefined
-      ?? laneZeroYieldMarker(db, filePath, 'preference', noteHash, PREFS_EXTRACTION_VERSION);
-    if (!currentPrefs) {
-      // This lane is stale. Re-extract only preference rows. The previous
-      // rows stay until the new extraction returns.
-      try {
-        const extracted = await options.preferenceExtractor(parsed.title, parsed.body);
-        deleteStructuredRowsForSourceKind(db, filePath, 'preference');
-        const validFrom = contentDateFromFrontmatter(parsed.frontmatter);
-        const firstChunkId = (db.prepare(
-          'SELECT id FROM chunks WHERE note_path = ? ORDER BY id LIMIT 1',
-        ).get(filePath) as { id: number } | undefined)?.id;
-        const candidates: LaneCandidate[] = extracted.map((p) => {
-          const attributed = chunkForCandidate(insertedChunks, p);
-          return {
-            payload: { statement: p.statement, kind: p.kind },
-            sourceChunkId: attributed?.chunkId ?? firstChunkId ?? 1,
-            sourceText: attributed?.text ?? p.statement,
-          };
-        });
-        const outcome = await adjudicateAndWriteRows(db, {
-          rowKind: 'preference',
-          extractionVersion: PREFS_EXTRACTION_VERSION,
-          notePath: filePath,
-          sourceHash: noteHash,
-          validFrom,
-          candidates,
-        }, options.decisionModel);
-        // Zero-yield preferences: same checkpoint as the fact lane (#189).
-        recordLaneRun(db, filePath, 'preference', noteHash, PREFS_EXTRACTION_VERSION, outcome.rowsWritten);
-      } catch (err) {
-        console.error(
-          `[pipeline] preference extraction failed for ${filePath}:`,
-          (err as Error).message,
-        );
-        // Never cached, never silent []: reset the note hash so the next pass
-        // retries, then rethrow the explicit error (extractor-parse-error or
-        // otherwise) — a note whose extraction failed is never reported current.
-        db.prepare("UPDATE notes SET note_hash = '' WHERE path = ?").run(filePath);
-        if (noteUnchanged || preservedLaneMatches('preference')) restorePreservedLane('preference');
-        throw err;
-      }
+  // 11c-e. The structured-row lanes (typed facts, chronicle events, standing preferences; each flag-gated, default
+  // off; ADR-0003 §4). A lane already done for these bytes (see laneDone) costs no model call. Otherwise its
+  // previous rows stay until the extractor returns, so an extractor that yields nothing does not empty the lane;
+  // the candidates then flow through the DecisionModel seam (adjudicateAndWriteRows: capture gate, sensitivity
+  // guardrail, dedupe, identity-keyed supersession) before any row is written, and the completed run is recorded
+  // (#189: a zero-yield lane has no row to mark it done).
+  //
+  // A failure (extractor-parse-error or otherwise) is never cached and never a silent []: the note hash resets so
+  // the next pass retries, and the error is rethrown so it is counted (#188). A row of a stale version was not
+  // reattached above and is deliberately not put back: a bumped extraction_version must never be served as current.
+  for (const lane of structuredLanes(options)) {
+    if (laneDone(db, filePath, lane, noteHash)) continue;
+    try {
+      const candidates = await lane.extract(parsed.title, parsed.body, insertedChunks);
+      deleteStructuredRowsForSourceKind(db, filePath, lane.kind);
+      const outcome = await adjudicateAndWriteRows(db, {
+        rowKind: lane.kind,
+        extractionVersion: lane.version,
+        notePath: filePath,
+        sourceHash: noteHash,
+        // The note's front-matter date (NULL = unknown), never one resolved from an extracted phrase.
+        validFrom: contentDateFromFrontmatter(parsed.frontmatter),
+        candidates,
+      }, options.decisionModel);
+      // What this run's writes returned, not a re-read of structured_rows a concurrent writer could tear (review B1).
+      recordLaneRun(db, filePath, lane.kind, noteHash, lane.version, outcome.rowsWritten);
+    } catch (err) {
+      log.error('extraction_failed', { lane: lane.label, note: path.basename(filePath) }, err);
+      db.prepare("UPDATE notes SET note_hash = '' WHERE path = ?").run(filePath);
+      throw err;
     }
   }
 
@@ -1420,10 +1213,10 @@ export async function indexVault(
             active--;
             if (err instanceof NoteTooLargeError) {
               skippedTooLarge.push(path.relative(vaultPath, filePath));
-              console.warn(`[index] ${filePath}: ${err.message}`);
+              log.warn('note_too_large', { file: path.relative(vaultPath, filePath) }, err);
             } else {
               errors++;
-              console.error(`[index] error indexing ${filePath}:`, err);
+              log.error('index_file_failed', { file: path.relative(vaultPath, filePath) }, err);
             }
             onComplete();
           }

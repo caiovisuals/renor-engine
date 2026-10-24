@@ -3,7 +3,7 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import crypto from 'crypto';
-import Database from 'better-sqlite3';
+import Database from '../../src/db/sqlite';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { loadMvpConfig, type MvpConfig } from '../../src/mvp/config';

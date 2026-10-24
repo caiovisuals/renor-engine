@@ -1,6 +1,6 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import type Database from 'better-sqlite3';
+import type Database from '../db/sqlite';
 import { countO200k } from '../indexer/o200k';
 import { parseNote } from '../indexer/parser';
 import { noteContentHash } from '../indexer/dailyEntries';

@@ -84,6 +84,22 @@ function resolveEngineRoot(): string | null {
 }
 
 /**
+ * The engine package's version, read from its package.json. Every surface that announces a version (the MCP
+ * initialize reply, GET /api/health, `renor --version`) takes it from here, so none can drift from the package.
+ * "unknown" when the file cannot be read or holds no semver-shaped version, never a guess.
+ */
+export const ENGINE_VERSION: string = (() => {
+  const root = resolveEngineRoot();
+  if (!root) return 'unknown';
+  try {
+    const version: unknown = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')).version;
+    return typeof version === 'string' && /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(version) ? version : 'unknown';
+  } catch {
+    return 'unknown';
+  }
+})();
+
+/**
  * Absolute path of the stamped manifest, or null when the package root cannot
  * be located (then identity is simply unknown — never a guess).
  *

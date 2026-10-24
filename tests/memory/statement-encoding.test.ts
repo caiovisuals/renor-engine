@@ -5,7 +5,7 @@ import path from 'path';
 import { openDb } from '../../src/db/client';
 import { runMigrations } from '../../src/db/schema';
 import { remember, replayLedger, parseLedgerEvents, factsFor, LifecycleInputError } from '../../src/memory/lifecycle';
-import type Database from 'better-sqlite3';
+import type Database from '../../src/db/sqlite';
 
 /**
  * The statement is the user's free text, so it must survive ANY character

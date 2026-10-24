@@ -2,7 +2,7 @@ import { describe, it, expect, afterEach } from 'vitest';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
-import type Database from 'better-sqlite3';
+import type Database from '../../src/db/sqlite';
 import { chunkNote } from '../../src/indexer/chunker';
 import { parseNote } from '../../src/indexer/parser';
 import { indexVault } from '../../src/indexer/pipeline';

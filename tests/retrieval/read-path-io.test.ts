@@ -1,6 +1,6 @@
 import { describe, it, expect, afterEach } from 'vitest';
 import fs from 'fs';
-import type Database from 'better-sqlite3';
+import type Database from '../../src/db/sqlite';
 import { openDb } from '../../src/db/client';
 import { runMigrations } from '../../src/db/schema';
 import { VectorIndex } from '../../src/embeddings/vectorIndex';

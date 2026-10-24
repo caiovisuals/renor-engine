@@ -286,8 +286,3 @@ export function buildImportPlan(bundle: ImportBundle, options: BuildPlanOptions)
     },
   };
 }
-
-/** The engine's own note change-detection hash, re-exported for callers. */
-export function contentHash(content: string): string {
-  return hashContent(content);
-}

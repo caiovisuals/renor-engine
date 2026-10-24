@@ -1,4 +1,4 @@
-import Database from 'better-sqlite3';
+import Database from '../db/sqlite';
 import { inReadSnapshot } from '../db/readCache';
 import { prepareOnce } from '../db/statements';
 import { VectorIndex } from '../embeddings/vectorIndex';
@@ -92,7 +92,7 @@ export async function semanticSearch(
     const rows = prepareOnce(
       db,
       `SELECT id, note_path, heading_path, text, start_line, end_line FROM chunks WHERE id IN (SELECT value FROM json_each(?))`
-    ).all(JSON.stringify(hits.map(h => h.chunkId))) as any[];
+    ).all(JSON.stringify(hits.map(h => h.chunkId))) as Array<{ id: number; note_path: string; heading_path: string; text: string; start_line: number; end_line: number }>;
 
     return {
       vectors: hits.length,

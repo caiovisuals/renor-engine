@@ -1,9 +1,9 @@
 {
   "schema": 1,
   "benchmark": "renorbench-docs-product",
-  "reason": "Evaluator identity only: every runner counts tokens through src/eval/textTokens.ts (special-token spellings as text; the 2026-10-21 LongMemEval-S nightly crashed on <|endoftext|>), which joins EVALUATOR_SOURCES. Counts of text without such a spelling are unchanged, and so is every number.",
-  "recordedAt": "2026-10-21T12:35:03.695Z",
-  "gitSha": "98e4393ff47fc63bc0f8c7285da40b0415e834bf",
+  "reason": "evaluator source src/eval/indexSnapshots.ts changed (its default snapshot directory no longer names the private benchmark directory, so the public tree passes check-public); no metric moved",
+  "recordedAt": "2026-10-24T09:05:03.447Z",
+  "gitSha": "b5c2b8f53103948305fc8ca998772cd529af81ef",
   "manifest": {
     "benchmark": "renorbench-docs-product",
     "casesSha256": "d592cd89e3411f1bf1829ddfbbbd87da2f0e6e8554dde971ca369e4ea0c33da2",
@@ -15,7 +15,7 @@
       "qualityEligible": false
     },
     "qualityEligible": false,
-    "evaluatorSha256": "7f3c56fdb63df5fdfd29b8b1f5a6602139875c91ba87adab4f0fd85dddec49d4",
+    "evaluatorSha256": "2cfea5578931a8850bba92b48fbf66d4e704a0b51c823a6d8e2c67ea39edc706",
     "chunking": {
       "maxTokens": 400,
       "overlapTokens": 0

@@ -113,8 +113,8 @@ export async function extractPreferences(
   if (Array.isArray(parsed)) {
     // Schema-drift tolerance: some gemma4 responses emit the bare prefs array
     // without the {"prefs": ...} wrapper. Valid JSON either way; strict on shape.
-    (parsed as any).prefs = parsed;
-  } else if (parsed && typeof parsed === 'object' && !Array.isArray((parsed as any).prefs)) {
+    (parsed as { prefs?: unknown }).prefs = parsed;
+  } else if (parsed && typeof parsed === 'object' && !Array.isArray((parsed as { prefs?: unknown }).prefs)) {
     // Wrapper-key drift: gemma4 sometimes renames the wrapper key (e.g.
     // "merchants") or emits a single object. Rows without a non-empty
     // `statement` are dropped below, so mis-shaped rows can never become false
@@ -122,16 +122,15 @@ export async function extractPreferences(
     const firstArray = Object.values(parsed as Record<string, unknown>).find(
       (v) => Array.isArray(v) && v.length > 0 && typeof v[0] === 'object' && v[0] !== null,
     );
-    if (firstArray) (parsed as any).prefs = firstArray;
-    else (parsed as any).prefs = [parsed];
+    (parsed as { prefs?: unknown }).prefs = firstArray ?? [parsed];
   }
 
-  if (!parsed || typeof parsed !== 'object' || !Array.isArray((parsed as any).prefs)) {
+  if (!parsed || typeof parsed !== 'object' || !Array.isArray((parsed as { prefs?: unknown }).prefs)) {
     throw new ExtractorParseError('extractor-parse-error: preference extraction response is missing a prefs array');
   }
 
   const prefs: ExtractedPreference[] = [];
-  for (const raw of (parsed as any).prefs) {
+  for (const raw of (parsed as { prefs: Array<Record<string, unknown> | null | undefined> }).prefs) {
     const statement = raw?.statement === undefined || raw?.statement === null ? '' : String(raw.statement).trim();
     if (!statement) continue; // malformed rows are dropped, not fatal
     // Structural standing-vs-one-off guard: one-off past-tense events are

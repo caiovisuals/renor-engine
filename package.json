@@ -1,6 +1,6 @@
 {
   "name": "renor-engine",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Local-first semantic memory — indexing, multi-signal retrieval, MCP",
   "main": "dist/cli.js",
   "files": [
@@ -64,18 +64,17 @@
   "homepage": "https://renor.cloud",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/patrickpassosb/renor-engine.git"
+    "url": "git+https://github.com/renorai/renor-engine.git"
   },
   "bugs": {
-    "url": "https://github.com/patrickpassosb/renor-engine/issues"
+    "url": "https://github.com/renorai/renor-engine/issues"
   },
   "author": "Patrick Passos",
-  "license": "AGPL-3.0-only",
+  "license": "Apache-2.0",
   "type": "commonjs",
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.31.0",
     "@posthog/mcp": "0.21.0",
-    "better-sqlite3": "^12.8.0",
     "chokidar": "^3.6.0",
     "commander": "^14.0.3",
     "express": "^5.2.1",
@@ -88,7 +87,6 @@
   },
   "devDependencies": {
     "@xenova/transformers": "^2.17.2",
-    "@types/better-sqlite3": "^7.6.13",
     "@types/express": "^5.0.6",
     "@types/node": "^25.9.8",
     "@types/supertest": "^7.2.0",
@@ -117,6 +115,6 @@
     }
   },
   "engines": {
-    "node": ">=22 <23"
+    "node": "^22.16.0 || >=24"
   }
 }

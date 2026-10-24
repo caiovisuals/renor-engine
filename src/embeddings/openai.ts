@@ -82,8 +82,9 @@ export class OpenAIEmbeddingProvider implements EmbeddingProvider {
           : { model: this.model, input: batch },
       );
       return res.data.map(d => d.embedding);
-    } catch (e: any) {
-      const status = e?.status;
+    } catch (e) {
+      const err = e as { status?: number; headers?: { get?(name: string): string | null } } | null | undefined;
+      const status = err?.status;
       if (status === 429 && attempt < 40) {
         this.cooldown.set(ci, Date.now() + 60_000);
         return this.embedWithRetry(batch, attempt + 1); // immediate retry on another key
@@ -93,8 +94,8 @@ export class OpenAIEmbeddingProvider implements EmbeddingProvider {
         if (attempt < 40) return this.embedWithRetry(batch, attempt + 1);
         throw e;
       }
-      if (status >= 500 && status < 600 && attempt < 10) {
-        const waitMs = Math.max(Number(e?.headers?.get?.('retry-after')) * 1000 || 0, 1000 * 2 ** attempt, 2000);
+      if (status !== undefined && status >= 500 && status < 600 && attempt < 10) {
+        const waitMs = Math.max(Number(err?.headers?.get?.('retry-after')) * 1000 || 0, 1000 * 2 ** attempt, 2000);
         await new Promise(r => setTimeout(r, waitMs));
         return this.embedWithRetry(batch, attempt + 1);
       }

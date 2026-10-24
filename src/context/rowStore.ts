@@ -1,4 +1,4 @@
-import Database from 'better-sqlite3';
+import Database from '../db/sqlite';
 import { boundContentDate } from '../retrieval/orchestrator';
 
 /**
@@ -160,7 +160,7 @@ function assertProvenance(row: NewStructuredRow): void {
   }
 }
 
-function parsePayload(rowKind: RowKind, raw: string): StructuredRowPayload {
+function parsePayload(_rowKind: RowKind, raw: string): StructuredRowPayload {
   return JSON.parse(raw) as StructuredRowPayload;
 }
 

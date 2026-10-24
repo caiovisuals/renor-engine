@@ -1,9 +1,9 @@
 import path from 'path';
 import fs from 'fs';
 import { clampSessionDate } from '../retrieval/orchestrator';
-import type Database from 'better-sqlite3';
+import type Database from '../db/sqlite';
 import { prepareOnce } from '../db/statements';
-import { factLaneRoom, factQueryTerms } from './agentMemory';
+import { factQueryTerms } from './agentMemory';
 import { resolveLedgerPath } from '../memory/lifecycle';
 import { writerConflictLines } from '../memory/writerConflicts';
 import { findCurrentFacts, newestFactEvent, type CurrentFact, type FactMatch } from '../memory/factTerms';

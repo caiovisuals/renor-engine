@@ -1,8 +1,11 @@
-import Database from 'better-sqlite3';
+import Database from './sqlite';
 import fs from 'fs';
 import path from 'path';
 import { runMigrations } from './migrations';
 import { salvageIndexTables, restoreIndexTables, describeSalvage, unreadableSalvage, type IndexSalvage } from './indexSalvage';
+import { createLogger } from '../mvp/log';
+
+const log = createLogger('engine');
 
 /**
  * Map up to this much of the database file into memory for reads (`PRAGMA mmap_size`). SQLite maps only
@@ -77,7 +80,7 @@ export function openIndexDb(dbPath: string, ledgerPath: string): Database.Databa
   const db = openDb(dbPath);
   runMigrations(db);
   const { restored, rejected } = restoreIndexTables(db, salvage);
-  console.error(`[index] ${dbPath} is damaged (${damage}); moved it and its -wal and -shm files to ${aside} and rebuilt it from the ledger. ${describeSalvage(salvage, restored, rejected)}`);
+  log.error('index_rebuilt_from_ledger', { index: path.basename(dbPath), damage, movedTo: path.basename(aside), salvage: describeSalvage(salvage, restored, rejected) });
   return db;
 }
 

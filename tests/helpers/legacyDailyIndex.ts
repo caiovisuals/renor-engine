@@ -1,5 +1,5 @@
 import fs from 'fs';
-import type Database from 'better-sqlite3';
+import type Database from '../../src/db/sqlite';
 import { chunkNote, type Chunk } from '../../src/indexer/chunker';
 import { parseNote } from '../../src/indexer/parser';
 import { hashContent } from '../../src/indexer/hasher';

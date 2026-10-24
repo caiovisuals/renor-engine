@@ -3,6 +3,7 @@ import { Command } from "commander";
 import { loadConfig } from "./config";
 import { openIndexDb } from "./db/client";
 import { runMigrations } from "./db/schema";
+import { sqliteRuntimeProblem } from "./db/sqlite";
 import { replayLedger, resolveLedgerPath, DEFAULT_LEDGER_REL } from "./memory/lifecycle";
 import { indexVault, MAX_NOTE_BYTES } from "./indexer/pipeline";
 import { startWatcher } from "./watcher/watcher";
@@ -35,6 +36,7 @@ import { parseConversation, resolveJSONLPath } from "./conversation/parser";
 import { writeConversation } from "./conversation/writer";
 import { resolveSessionRouterOptions, routeSearch, summarizeForRouter, type SessionRouterOptions } from "./router/sessionRouter";
 import { DIGEST_HIT_PATH, attachDigest, digestIndexedNotes, resolveDigestOptions, type DigestOptions } from "./digests/digests";
+import { ENGINE_VERSION } from "./buildIdentity";
 
 /**
  * `serving`: the process is the long-running service (serve, mcp), the only one that may set an unterminated ledger tail
@@ -193,7 +195,7 @@ function printNotIndexed(names: string[], labelWidth: number, tooLarge: string[]
   if (names.length > 10) console.log(`      ! …and ${names.length - 10} more`);
 }
 
-const program = new Command().name("renor").version("1.0.0");
+const program = new Command().name("renor").version(ENGINE_VERSION);
 
 program
   .command("index")
@@ -246,7 +248,7 @@ program
   .description("Semantic search")
   .option("-k, --top-k <n>", "results", "20")
   .option("--json", "machine-readable JSON output (full hit text; the benchmark client transport)")
-  .action(async (query: string, opts: any) => {
+  .action(async (query: string, opts: { topK: string; json?: boolean }) => {
     const { config, db, provider, vectorIndex } = await setup();
     // D1: the machine-readable transport carries the staleness verdict so a
     // stale-serving index is visible to the CLIENT, not only in stderr — but only
@@ -388,7 +390,7 @@ program
   .command("serve")
   .description("Start HTTP API")
   .option("-p, --port <n>", "port", "3456")
-  .action(async (opts: any) => {
+  .action(async (opts: { port: string }) => {
     // Checked before anything is opened: a missing token must not leave a database or an index half-started.
     let apiToken: string;
     try {
@@ -555,5 +557,13 @@ program
       process.exit(0);
     }
   });
+
+// One line naming the fix, before any command runs, when this machine cannot run the engine's SQLite: otherwise an MCP
+// client only sees a server that exited.
+const runtimeProblem = sqliteRuntimeProblem();
+if (runtimeProblem) {
+  process.stderr.write(`renor-engine: ${runtimeProblem}\n`);
+  process.exit(1);
+}
 
 program.parse();

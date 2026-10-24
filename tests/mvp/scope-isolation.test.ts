@@ -1,4 +1,4 @@
-import Database from 'better-sqlite3';
+import Database from '../../src/db/sqlite';
 import { describe, expect, it } from 'vitest';
 import {
   dailyDirForScope, normalizeScope, notePathMatchesScope, savedScopeMatches, savedScopeSqlPredicate, scopeSqlPredicate,

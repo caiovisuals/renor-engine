@@ -1,4 +1,5 @@
-import type Database from 'better-sqlite3';
+import type Database from './sqlite';
+import { HANDOFF_TABLE, ensureHandoffTable, hasHandoffTable } from './handoffTable';
 
 /**
  * The index is rebuilt from the ledger, but a few of its tables hold state that no ledger event rebuilds: the pending
@@ -27,7 +28,7 @@ export function unreadableSalvage(reason: string): IndexSalvage {
 /** Reads what an open (read-only) damaged index still gives. Never throws: a table that does not read says why. */
 export function salvageIndexTables(db: Database.Database): IndexSalvage {
   const salvage: IndexSalvage = { rows: {}, unreadable: {} };
-  for (const table of INDEX_ONLY_TABLES) {
+  for (const table of tablesIn(db)) {
     const rows: Array<Record<string, unknown>> = [];
     salvage.rows[table] = rows;
     try {
@@ -46,7 +47,9 @@ export function salvageIndexTables(db: Database.Database): IndexSalvage {
 export function restoreIndexTables(db: Database.Database, salvage: IndexSalvage): { restored: Record<string, number>; rejected: Record<string, number> } {
   const restored: Record<string, number> = {};
   const rejected: Record<string, number> = {};
-  for (const table of INDEX_ONLY_TABLES) {
+  // The handoff table is created on first use (db/handoffTable.ts), so the rebuilt index has it only when it is owed rows.
+  if ((salvage.rows[HANDOFF_TABLE]?.length ?? 0) > 0) ensureHandoffTable(db);
+  for (const table of tablesOf(salvage)) {
     restored[table] = 0;
     rejected[table] = 0;
     for (const row of salvage.rows[table] ?? []) {
@@ -66,8 +69,8 @@ export function restoreIndexTables(db: Database.Database, salvage: IndexSalvage)
 
 /** One sentence for the log: what came back from the damaged index, and what did not. */
 export function describeSalvage(salvage: IndexSalvage, restored: Record<string, number>, rejected: Record<string, number>): string {
-  const kept = INDEX_ONLY_TABLES.map(t => `${t} ${restored[t] ?? 0}`).join(', ');
-  const lost = INDEX_ONLY_TABLES
+  const kept = tablesOf(salvage).map(t => `${t} ${restored[t] ?? 0}`).join(', ');
+  const lost = tablesOf(salvage)
     .map(t => {
       const parts: string[] = [];
       if (rejected[t]) parts.push(`${rejected[t]} row(s) could not be written`);
@@ -80,4 +83,19 @@ export function describeSalvage(salvage: IndexSalvage, restored: Record<string, 
 
 function errorText(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
+}
+
+/**
+ * The tables to salvage from a damaged index: INDEX_ONLY_TABLES, then the handoff notes when that index has their table.
+ * A workspace with the handoff note off never has it, so its salvage, and the log sentence, are what they were without it.
+ */
+function tablesIn(db: Database.Database): string[] {
+  let handoff = false;
+  try { handoff = hasHandoffTable(db); } catch { /* an unreadable schema: the other tables say why */ }
+  return handoff ? [...INDEX_ONLY_TABLES, HANDOFF_TABLE] : [...INDEX_ONLY_TABLES];
+}
+
+/** The tables a salvage carries: INDEX_ONLY_TABLES, then the handoff notes when they were salvaged. */
+function tablesOf(salvage: IndexSalvage): string[] {
+  return HANDOFF_TABLE in salvage.rows ? [...INDEX_ONLY_TABLES, HANDOFF_TABLE] : [...INDEX_ONLY_TABLES];
 }

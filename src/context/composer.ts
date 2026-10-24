@@ -393,7 +393,7 @@ export function composeQueryContext(input: ComposerInput, options: ComposerOptio
 
 /** Convenience wiring helper: read current rows for the query's hits and compose. */
 export function composeQueryContextFromDb(
-  db: import('better-sqlite3').Database,
+  db: import('../db/sqlite').default.Database,
   input: Omit<ComposerInput, 'rows'>,
   options: ComposerOptions = {},
 ): ComposedContext {

@@ -1,0 +1,1242 @@
+[
+  {
+    "id": "at-01-decision",
+    "scenario": "aw-01-decision",
+    "kind": "decision",
+    "variant": "none",
+    "service": "catalog-worker",
+    "file": "services/catalog-worker/src/settings.ts",
+    "field": "packageManager",
+    "typeName": "PackageManager",
+    "options": [
+      "yarn",
+      "npm",
+      "pnpm",
+      "bun"
+    ],
+    "prompt": "Which package manager should I use to add a dependency to catalog-worker?\n\nRecord the answer in services/catalog-worker/src/settings.ts: `packageManager` is still a TODO there. Set it to the right value for this project, keep the type, change nothing else, then reply with the value you chose.",
+    "gold": {
+      "correct": "pnpm",
+      "stale": null,
+      "needed": "aw-01-decision:decision",
+      "staleKey": null,
+      "neededText": "Decision for catalog-worker: use pnpm, not npm, because npm lockfile drift broke CI twice."
+    }
+  },
+  {
+    "id": "at-02-mistake",
+    "scenario": "aw-02-mistake",
+    "kind": "mistake",
+    "variant": "plain",
+    "service": "report-service",
+    "file": "services/report-service/src/settings.ts",
+    "field": "migrateCommand",
+    "typeName": "MigrateCommand",
+    "options": [
+      "npx prisma migrate deploy",
+      "make migrate",
+      "npm run db:migrate:safe",
+      "npm run migrate"
+    ],
+    "prompt": "How do I run database migrations in report-service?\n\nRecord the answer in services/report-service/src/settings.ts: `migrateCommand` is still a TODO there. Set it to the right value for this project, keep the type, change nothing else, then reply with the value you chose.",
+    "gold": {
+      "correct": "npm run db:migrate:safe",
+      "stale": "npm run migrate",
+      "needed": "aw-02-mistake:correction",
+      "staleKey": "aw-02-mistake:mistake",
+      "neededText": "Correction for report-service: `npm run migrate` drops the local database. To run database migrations, use `npm run db:migrate:safe` instead."
+    }
+  },
+  {
+    "id": "at-03-value",
+    "scenario": "aw-03-value",
+    "kind": "value",
+    "variant": "structured",
+    "service": "audit-builder",
+    "file": "services/audit-builder/src/settings.ts",
+    "field": "stagingDatabase",
+    "typeName": "StagingDatabase",
+    "options": [
+      "Postgres 15",
+      "MySQL 8",
+      "Postgres 16",
+      "Postgres 14"
+    ],
+    "prompt": "What is the staging database for audit-builder?\n\nRecord the answer in services/audit-builder/src/settings.ts: `stagingDatabase` is still a TODO there. Set it to the right value for this project, keep the type, change nothing else, then reply with the value you chose.",
+    "gold": {
+      "correct": "Postgres 16",
+      "stale": "Postgres 15",
+      "needed": "aw-03-value:current",
+      "staleKey": "aw-03-value:old",
+      "neededText": "The audit-builder staging database is now Postgres 16."
+    }
+  },
+  {
+    "id": "at-04-control",
+    "scenario": "aw-04-abstain",
+    "kind": "control",
+    "variant": "none",
+    "service": "webhook-service",
+    "file": "services/webhook-service/src/settings.ts",
+    "field": "escalationPolicy",
+    "typeName": "EscalationPolicy",
+    "options": [
+      "team-channel-only",
+      "primary-then-secondary-15m",
+      "primary-then-manager-30m",
+      "follow-the-sun"
+    ],
+    "prompt": "What is the on-call escalation policy for webhook-service?\n\nRecord the answer in services/webhook-service/src/settings.ts: `escalationPolicy` is still a TODO there. Set it to the right value for this project, keep the type, change nothing else, then reply with the value you chose.",
+    "gold": {
+      "correct": "primary-then-manager-30m",
+      "stale": null,
+      "needed": null,
+      "staleKey": null,
+      "neededText": null
+    },
+    "repoAnswer": {
+      "file": "services/webhook-service/OPERATIONS.md",
+      "line": "- On-call escalation: primary-then-manager-30m"
+    }
+  },
+  {
+    "id": "at-05-leak",
+    "scenario": "aw-05-leak",
+    "kind": "leak",
+    "variant": "none",
+    "service": "invoice-service",
+    "file": "services/invoice-service/src/settings.ts",
+    "field": "testFramework",
+    "typeName": "TestFramework",
+    "options": [
+      "node:test",
+      "jest",
+      "mocha",
+      "vitest"
+    ],
+    "prompt": "What test framework should new invoice-service tests use?\n\nRecord the answer in services/invoice-service/src/settings.ts: `testFramework` is still a TODO there. Set it to the right value for this project, keep the type, change nothing else, then reply with the value you chose.",
+    "gold": {
+      "correct": "vitest",
+      "stale": "jest",
+      "needed": "aw-05-leak:decision",
+      "staleKey": "aw-05-leak:foreign",
+      "neededText": "Decision for invoice-service: tests run on vitest, not jest, because jest could not load our ESM modules."
+    }
+  },
+  {
+    "id": "at-06-decision",
+    "scenario": "aw-06-decision",
+    "kind": "decision",
+    "variant": "none",
+    "service": "audit-scheduler",
+    "file": "services/audit-scheduler/src/settings.ts",
+    "field": "dateLibrary",
+    "typeName": "DateLibrary",
+    "options": [
+      "moment",
+      "dayjs",
+      "luxon",
+      "date-fns"
+    ],
+    "prompt": "Which date library should I use for formatting dates in audit-scheduler?\n\nRecord the answer in services/audit-scheduler/src/settings.ts: `dateLibrary` is still a TODO there. Set it to the right value for this project, keep the type, change nothing else, then reply with the value you chose.",
+    "gold": {
+      "correct": "date-fns",
+      "stale": null,
+      "needed": "aw-06-decision:decision",
+      "staleKey": null,
+      "neededText": "Decision for audit-scheduler: use date-fns, not moment, to keep the bundle under 200 KB."
+    }
+  },
+  {
+    "id": "at-07-mistake",
+    "scenario": "aw-07-mistake",
+    "kind": "mistake",
+    "variant": "plain",
+    "service": "audit-api",
+    "file": "services/audit-api/src/settings.ts",
+    "field": "regenerateClient",
+    "typeName": "RegenerateClient",
+    "options": [
+      "edit src/generated by hand",
+      "edit openapi.yaml and run make codegen",
+      "npx openapi-typescript",
+      "npm run generate:client"
+    ],
+    "prompt": "How do I regenerate the API client in audit-api?\n\nRecord the answer in services/audit-api/src/settings.ts: `regenerateClient` is still a TODO there. Set it to the right value for this project, keep the type, change nothing else, then reply with the value you chose.",
+    "gold": {
+      "correct": "edit openapi.yaml and run make codegen",
+      "stale": "edit src/generated by hand",
+      "needed": "aw-07-mistake:correction",
+      "staleKey": "aw-07-mistake:mistake",
+      "neededText": "Correction for audit-api: `edit src/generated by hand` is overwritten by codegen on the next build. To regenerate the API client, use `edit openapi.yaml and run make codegen` instead."
+    }
+  },
+  {
+    "id": "at-08-value",
+    "scenario": "aw-08-value",
+    "kind": "value",
+    "variant": "structured",
+    "service": "export-service",
+    "file": "services/export-service/src/settings.ts",
+    "field": "nodeVersion",
+    "typeName": "NodeVersion",
+    "options": [
+      "Node 18",
+      "Node 24",
+      "Node 20",
+      "Node 22"
+    ],
+    "prompt": "What is the Node version for export-service?\n\nRecord the answer in services/export-service/src/settings.ts: `nodeVersion` is still a TODO there. Set it to the right value for this project, keep the type, change nothing else, then reply with the value you chose.",
+    "gold": {
+      "correct": "Node 22",
+      "stale": "Node 20",
+      "needed": "aw-08-value:current",
+      "staleKey": "aw-08-value:old",
+      "neededText": "The export-service Node version is now Node 22."
+    }
+  },
+  {
+    "id": "at-09-control",
+    "scenario": "aw-09-abstain",
+    "kind": "control",
+    "variant": "none",
+    "service": "metrics-api",
+    "file": "services/metrics-api/src/settings.ts",
+    "field": "uptimeSla",
+    "typeName": "UptimeSla",
+    "options": [
+      "99.95%",
+      "99.5%",
+      "99.9%",
+      "99.99%"
+    ],
+    "prompt": "What uptime SLA did we promise customers for metrics-api?\n\nRecord the answer in services/metrics-api/src/settings.ts: `uptimeSla` is still a TODO there. Set it to the right value for this project, keep the type, change nothing else, then reply with the value you chose.",
+    "gold": {
+      "correct": "99.9%",
+      "stale": null,
+      "needed": null,
+      "staleKey": null,
+      "neededText": null
+    },
+    "repoAnswer": {
+      "file": "services/metrics-api/OPERATIONS.md",
+      "line": "- Customer uptime SLA: 99.9%"
+    }
+  },
+  {
+    "id": "at-10-leak",
+    "scenario": "aw-10-leak",
+    "kind": "leak",
+    "variant": "none",
+    "service": "report-worker",
+    "file": "services/report-worker/src/settings.ts",
+    "field": "httpClient",
+    "typeName": "HttpClient",
+    "options": [
+      "got",
+      "undici",
+      "node-fetch",
+      "axios"
+    ],
+    "prompt": "What http client should report-worker use to call the partner API?\n\nRecord the answer in services/report-worker/src/settings.ts: `httpClient` is still a TODO there. Set it to the right value for this project, keep the type, change nothing else, then reply with the value you chose.",
+    "gold": {
+      "correct": "undici",
+      "stale": "axios",
+      "needed": "aw-10-leak:decision",
+      "staleKey": "aw-10-leak:foreign",
+      "neededText": "Decision for report-worker: outbound HTTP goes through undici, not axios, so timeouts are set in one place."
+    }
+  },
+  {
+    "id": "at-11-decision",
+    "scenario": "aw-11-decision",
+    "kind": "decision",
+    "variant": "none",
+    "service": "metrics-store",
+    "file": "services/metrics-store/src/settings.ts",
+    "field": "logger",
+    "typeName": "Logger",
+    "options": [
+      "pino",
+      "bunyan",
+      "winston",
+      "console"
+    ],
+    "prompt": "How should I add logging to a new metrics-store handler?\n\nRecord the answer in services/metrics-store/src/settings.ts: `logger` is still a TODO there. Set it to the right value for this project, keep the type, change nothing else, then reply with the value you chose.",
+    "gold": {
+      "correct": "pino",
+      "stale": null,
+      "needed": "aw-11-decision:decision",
+      "staleKey": null,
+      "neededText": "Decision for metrics-store: log with pino as structured JSON, never console.log, because the log pipeline drops plain lines."
+    }
+  },
+  {
+    "id": "at-12-mistake",
+    "scenario": "aw-12-mistake",
+    "kind": "mistake",
+    "variant": "plain",
+    "service": "billing-indexer",
+    "file": "services/billing-indexer/src/settings.ts",
+    "field": "testCommand",
+    "typeName": "TestCommand",
+    "options": [
+      "vitest --pool=threads",
+      "vitest --threads",
+      "npm test -- --runInBand",
+      "vitest --pool=forks"
+    ],
+    "prompt": "How do I run the test suite in billing-indexer?\n\nRecord the answer in services/billing-indexer/src/settings.ts: `testCommand` is still a TODO there. Set it to the right value for this project, keep the type, change nothing else, then reply with the value you chose.",
+    "gold": {
+      "correct": "vitest --pool=forks",
+      "stale": "vitest --threads",
+      "needed": "aw-12-mistake:correction",
+      "staleKey": "aw-12-mistake:mistake",
+      "neededText": "Correction for billing-indexer: `vitest --threads` deadlocks on the SQLite fixture. To run the test suite, use `vitest --pool=forks` instead."
+    }
+  },
+  {
+    "id": "at-13-value",
+    "scenario": "aw-13-value",
+    "kind": "value",
+    "variant": "plain",
+    "service": "profile-proxy",
+    "file": "services/profile-proxy/src/settings.ts",
+    "field": "deployRegion",
+    "typeName": "DeployRegion",
+    "options": [
+      "eu-west-1",
+      "eu-central-1",
+      "us-east-1",
+      "us-west-2"
+    ],
+    "prompt": "What is the deploy region for profile-proxy?\n\nRecord the answer in services/profile-proxy/src/settings.ts: `deployRegion` is still a TODO there. Set it to the right value for this project, keep the type, change nothing else, then reply with the value you chose.",
+    "gold": {
+      "correct": "eu-west-1",
+      "stale": "us-east-1",
+      "needed": "aw-13-value:current",
+      "staleKey": "aw-13-value:old",
+      "neededText": "The profile-proxy deploy region is now eu-west-1."
+    }
+  },
+  {
+    "id": "at-14-control",
+    "scenario": "aw-14-abstain",
+    "kind": "control",
+    "variant": "none",
+    "service": "catalog-gateway",
+    "file": "services/catalog-gateway/src/settings.ts",
+    "field": "securityReviewer",
+    "typeName": "SecurityReviewer",
+    "options": [
+      "Dana Whitfield",
+      "Omar Haddad",
+      "Ravi Menon",
+      "Lena Brooks"
+    ],
+    "prompt": "Who signed off the catalog-gateway security review?\n\nRecord the answer in services/catalog-gateway/src/settings.ts: `securityReviewer` is still a TODO there. Set it to the right value for this project, keep the type, change nothing else, then reply with the value you chose.",
+    "gold": {
+      "correct": "Omar Haddad",
+      "stale": null,
+      "needed": null,
+      "staleKey": null,
+      "neededText": null
+    },
+    "repoAnswer": {
+      "file": "services/catalog-gateway/OPERATIONS.md",
+      "line": "- Security review signed off by: Omar Haddad"
+    }
+  },
+  {
+    "id": "at-15-leak",
+    "scenario": "aw-15-leak",
+    "kind": "leak",
+    "variant": "none",
+    "service": "ledger-indexer",
+    "file": "services/ledger-indexer/src/settings.ts",
+    "field": "migrationChange",
+    "typeName": "MigrationChange",
+    "options": [
+      "drop-and-recreate",
+      "add-new-migration",
+      "squash-migrations",
+      "edit-applied-migration"
+    ],
+    "prompt": "Can I change an existing ledger-indexer migration to fix a column type?\n\nRecord the answer in services/ledger-indexer/src/settings.ts: `migrationChange` is still a TODO there. Set it to the right value for this project, keep the type, change nothing else, then reply with the value you chose.",
+    "gold": {
+      "correct": "add-new-migration",
+      "stale": "edit-applied-migration",
+      "needed": "aw-15-leak:decision",
+      "staleKey": "aw-15-leak:foreign",
+      "neededText": "Decision for ledger-indexer: migrations are forward-only; never edit an applied migration, add a new one."
+    }
+  },
+  {
+    "id": "at-16-decision",
+    "scenario": "aw-16-decision",
+    "kind": "decision",
+    "variant": "none",
+    "service": "notify-builder",
+    "file": "services/notify-builder/src/settings.ts",
+    "field": "errorStyle",
+    "typeName": "ErrorStyle",
+    "options": [
+      "result-values",
+      "typed-exceptions",
+      "callbacks",
+      "error-codes"
+    ],
+    "prompt": "How should notify-builder functions report errors to their callers?\n\nRecord the answer in services/notify-builder/src/settings.ts: `errorStyle` is still a TODO there. Set it to the right value for this project, keep the type, change nothing else, then reply with the value you chose.",
+    "gold": {
+      "correct": "result-values",
+      "stale": null,
+      "needed": "aw-16-decision:decision",
+      "staleKey": null,
+      "neededText": "Decision for notify-builder: return Result values across module boundaries instead of throwing, so callers must handle errors."
+    }
+  },
+  {
+    "id": "at-17-mistake",
+    "scenario": "aw-17-mistake",
+    "kind": "mistake",
+    "variant": "plain",
+    "service": "notify-console",
+    "file": "services/notify-console/src/settings.ts",
+    "field": "previewDeploy",
+    "typeName": "PreviewDeploy",
+    "options": [
+      "open a pull request, which deploys a preview",
+      "push to main",
+      "vercel --prod",
+      "make deploy-preview"
+    ],
+    "prompt": "How do I deploy a preview in notify-console?\n\nRecord the answer in services/notify-console/src/settings.ts: `previewDeploy` is still a TODO there. Set it to the right value for this project, keep the type, change nothing else, then reply with the value you chose.",
+    "gold": {
+      "correct": "open a pull request, which deploys a preview",
+      "stale": "push to main",
+      "needed": "aw-17-mistake:correction",
+      "staleKey": "aw-17-mistake:mistake",
+      "neededText": "Correction for notify-console: `push to main` deploys straight to production. To deploy a preview, use `open a pull request, which deploys a preview` instead."
+    }
+  },
+  {
+    "id": "at-18-value",
+    "scenario": "aw-18-value",
+    "kind": "value",
+    "variant": "structured",
+    "service": "search-api",
+    "file": "services/search-api/src/settings.ts",
+    "field": "owningTeam",
+    "typeName": "OwningTeam",
+    "options": [
+      "the growth team",
+      "the payments team",
+      "the infra team",
+      "the platform team"
+    ],
+    "prompt": "What is the owning team for search-api?\n\nRecord the answer in services/search-api/src/settings.ts: `owningTeam` is still a TODO there. Set it to the right value for this project, keep the type, change nothing else, then reply with the value you chose.",
+    "gold": {
+      "correct": "the payments team",
+      "stale": "the platform team",
+      "needed": "aw-18-value:current",
+      "staleKey": "aw-18-value:old",
+      "neededText": "The search-api owning team is now the payments team."
+    }
+  },
+  {
+    "id": "at-19-control",
+    "scenario": "aw-19-abstain",
+    "kind": "control",
+    "variant": "none",
+    "service": "billing-gateway",
+    "file": "services/billing-gateway/src/settings.ts",
+    "field": "recoveryPointObjective",
+    "typeName": "RecoveryPointObjective",
+    "options": [
+      "15 minutes",
+      "4 hours",
+      "24 hours",
+      "1 hour"
+    ],
+    "prompt": "What is the disaster recovery RPO for billing-gateway?\n\nRecord the answer in services/billing-gateway/src/settings.ts: `recoveryPointObjective` is still a TODO there. Set it to the right value for this project, keep the type, change nothing else, then reply with the value you chose.",
+    "gold": {
+      "correct": "4 hours",
+      "stale": null,
+      "needed": null,
+      "staleKey": null,
+      "neededText": null
+    },
+    "repoAnswer": {
+      "file": "services/billing-gateway/OPERATIONS.md",
+      "line": "- Disaster recovery RPO: 4 hours"
+    }
+  },
+  {
+    "id": "at-20-leak",
+    "scenario": "aw-20-leak",
+    "kind": "leak",
+    "variant": "none",
+    "service": "ledger-service",
+    "file": "services/ledger-service/src/settings.ts",
+    "field": "apiStyle",
+    "typeName": "ApiStyle",
+    "options": [
+      "grpc",
+      "rest",
+      "graphql",
+      "trpc"
+    ],
+    "prompt": "Should the new ledger-service endpoint be REST or GraphQL?\n\nRecord the answer in services/ledger-service/src/settings.ts: `apiStyle` is still a TODO there. Set it to the right value for this project, keep the type, change nothing else, then reply with the value you chose.",
+    "gold": {
+      "correct": "rest",
+      "stale": "graphql",
+      "needed": "aw-20-leak:decision",
+      "staleKey": "aw-20-leak:foreign",
+      "neededText": "Decision for ledger-service: keep the public interface REST, not GraphQL, because the mobile client caches by URL."
+    }
+  },
+  {
+    "id": "at-21-decision",
+    "scenario": "aw-21-decision",
+    "kind": "decision",
+    "variant": "none",
+    "service": "session-cache",
+    "file": "services/session-cache/src/settings.ts",
+    "field": "dbLibrary",
+    "typeName": "DbLibrary",
+    "options": [
+      "typeorm",
+      "kysely",
+      "prisma",
+      "drizzle"
+    ],
+    "prompt": "Which database library should the session-cache repository layer use?\n\nRecord the answer in services/session-cache/src/settings.ts: `dbLibrary` is still a TODO there. Set it to the right value for this project, keep the type, change nothing else, then reply with the value you chose.",
+    "gold": {
+      "correct": "kysely",
+      "stale": null,
+      "needed": "aw-21-decision:decision",
+      "staleKey": null,
+      "neededText": "Decision for session-cache: query the database with Kysely, not Prisma, because Prisma could not express our upserts."
+    }
+  },
+  {
+    "id": "at-22-mistake",
+    "scenario": "aw-22-mistake",
+    "kind": "mistake",
+    "variant": "linked",
+    "service": "catalog-indexer",
+    "file": "services/catalog-indexer/src/settings.ts",
+    "field": "cacheClean",
+    "typeName": "CacheClean",
+    "options": [
+      "make cache-clean",
+      "npm cache clean --force",
+      "git clean -fdx",
+      "rm -rf .cache"
+    ],
+    "prompt": "How do I clear the build cache in catalog-indexer?\n\nRecord the answer in services/catalog-indexer/src/settings.ts: `cacheClean` is still a TODO there. Set it to the right value for this project, keep the type, change nothing else, then reply with the value you chose.",
+    "gold": {
+      "correct": "make cache-clean",
+      "stale": "rm -rf .cache",
+      "needed": "aw-22-mistake:correction",
+      "staleKey": "aw-22-mistake:mistake",
+      "neededText": "Correction for catalog-indexer: `rm -rf .cache` deletes the signed test fixtures. To clear the build cache, use `make cache-clean` instead."
+    }
+  },
+  {
+    "id": "at-23-value",
+    "scenario": "aw-23-value",
+    "kind": "value",
+    "variant": "structured",
+    "service": "billing-console",
+    "file": "services/billing-console/src/settings.ts",
+    "field": "releaseBranch",
+    "typeName": "ReleaseBranch",
+    "options": [
+      "release/2027.1",
+      "release/2026.2",
+      "release/2025.4",
+      "release/2026.1"
+    ],
+    "prompt": "What is the release branch for billing-console?\n\nRecord the answer in services/billing-console/src/settings.ts: `releaseBranch` is still a TODO there. Set it to the right value for this project, keep the type, change nothing else, then reply with the value you chose.",
+    "gold": {
+      "correct": "release/2026.2",
+      "stale": "release/2026.1",
+      "needed": "aw-23-value:current",
+      "staleKey": "aw-23-value:old",
+      "neededText": "The billing-console release branch is now release/2026.2."
+    }
+  },
+  {
+    "id": "at-24-control",
+    "scenario": "aw-24-abstain",
+    "kind": "control",
+    "variant": "none",
+    "service": "report-cache",
+    "file": "services/report-cache/src/settings.ts",
+    "field": "cdn",
+    "typeName": "Cdn",
+    "options": [
+      "Cloudflare",
+      "Fastly",
+      "CloudFront",
+      "Akamai"
+    ],
+    "prompt": "Which CDN serves the report-cache static assets?\n\nRecord the answer in services/report-cache/src/settings.ts: `cdn` is still a TODO there. Set it to the right value for this project, keep the type, change nothing else, then reply with the value you chose.",
+    "gold": {
+      "correct": "CloudFront",
+      "stale": null,
+      "needed": null,
+      "staleKey": null,
+      "neededText": null
+    },
+    "repoAnswer": {
+      "file": "services/report-cache/OPERATIONS.md",
+      "line": "- CDN for static assets: CloudFront"
+    }
+  },
+  {
+    "id": "at-25-leak",
+    "scenario": "aw-25-leak",
+    "kind": "leak",
+    "variant": "none",
+    "service": "report-indexer",
+    "file": "services/report-indexer/src/settings.ts",
+    "field": "flagReads",
+    "typeName": "FlagReads",
+    "options": [
+      "per-request",
+      "once-at-startup",
+      "polling",
+      "env-only"
+    ],
+    "prompt": "How should report-indexer read a feature flag in a request handler?\n\nRecord the answer in services/report-indexer/src/settings.ts: `flagReads` is still a TODO there. Set it to the right value for this project, keep the type, change nothing else, then reply with the value you chose.",
+    "gold": {
+      "correct": "once-at-startup",
+      "stale": "per-request",
+      "needed": "aw-25-leak:decision",
+      "staleKey": "aw-25-leak:foreign",
+      "neededText": "Decision for report-indexer: feature flags are read once at startup from the flags service, never per request."
+    }
+  },
+  {
+    "id": "at-26-decision",
+    "scenario": "aw-26-decision",
+    "kind": "decision",
+    "variant": "none",
+    "service": "catalog-store",
+    "file": "services/catalog-store/src/settings.ts",
+    "field": "moneyType",
+    "typeName": "MoneyType",
+    "options": [
+      "integer-cents",
+      "decimal-string",
+      "float",
+      "bigint-micros"
+    ],
+    "prompt": "What type should catalog-store use to store a price?\n\nRecord the answer in services/catalog-store/src/settings.ts: `moneyType` is still a TODO there. Set it to the right value for this project, keep the type, change nothing else, then reply with the value you chose.",
+    "gold": {
+      "correct": "integer-cents",
+      "stale": null,
+      "needed": "aw-26-decision:decision",
+      "staleKey": null,
+      "neededText": "Decision for catalog-store: money amounts are integer cents, never floats, after a rounding bug in refunds."
+    }
+  },
+  {
+    "id": "at-27-mistake",
+    "scenario": "aw-27-mistake",
+    "kind": "mistake",
+    "variant": "plain",
+    "service": "notify-store",
+    "file": "services/notify-store/src/settings.ts",
+    "field": "newEnvVar",
+    "typeName": "NewEnvVar",
+    "options": [
+      "add it to .env.example only",
+      "add it to .env only",
+      "export it in the Dockerfile",
+      "add it to infra/secrets.tf and .env.example"
+    ],
+    "prompt": "How do I add an environment variable in notify-store?\n\nRecord the answer in services/notify-store/src/settings.ts: `newEnvVar` is still a TODO there. Set it to the right value for this project, keep the type, change nothing else, then reply with the value you chose.",
+    "gold": {
+      "correct": "add it to infra/secrets.tf and .env.example",
+      "stale": "add it to .env.example only",
+      "needed": "aw-27-mistake:correction",
+      "staleKey": "aw-27-mistake:mistake",
+      "neededText": "Correction for notify-store: `add it to .env.example only` leaves it unset in staging. To add an environment variable, use `add it to infra/secrets.tf and .env.example` instead."
+    }
+  },
+  {
+    "id": "at-28-value",
+    "scenario": "aw-28-value",
+    "kind": "value",
+    "variant": "structured",
+    "service": "auth-store",
+    "file": "services/auth-store/src/settings.ts",
+    "field": "maxUploadSize",
+    "typeName": "MaxUploadSize",
+    "options": [
+      "5 MB",
+      "25 MB",
+      "10 MB",
+      "50 MB"
+    ],
+    "prompt": "What is the max upload size for auth-store?\n\nRecord the answer in services/auth-store/src/settings.ts: `maxUploadSize` is still a TODO there. Set it to the right value for this project, keep the type, change nothing else, then reply with the value you chose.",
+    "gold": {
+      "correct": "25 MB",
+      "stale": "10 MB",
+      "needed": "aw-28-value:current",
+      "staleKey": "aw-28-value:old",
+      "neededText": "The auth-store max upload size is now 25 MB."
+    }
+  },
+  {
+    "id": "at-29-control",
+    "scenario": "aw-29-abstain",
+    "kind": "control",
+    "variant": "none",
+    "service": "catalog-scheduler",
+    "file": "services/catalog-scheduler/src/settings.ts",
+    "field": "monthlyCloudBudget",
+    "typeName": "MonthlyCloudBudget",
+    "options": [
+      "$25,000",
+      "$4,000",
+      "$800",
+      "$12,000"
+    ],
+    "prompt": "What is the monthly cloud budget for catalog-scheduler?\n\nRecord the answer in services/catalog-scheduler/src/settings.ts: `monthlyCloudBudget` is still a TODO there. Set it to the right value for this project, keep the type, change nothing else, then reply with the value you chose.",
+    "gold": {
+      "correct": "$4,000",
+      "stale": null,
+      "needed": null,
+      "staleKey": null,
+      "neededText": null
+    },
+    "repoAnswer": {
+      "file": "services/catalog-scheduler/OPERATIONS.md",
+      "line": "- Monthly cloud budget: $4,000"
+    }
+  },
+  {
+    "id": "at-30-leak",
+    "scenario": "aw-30-leak",
+    "kind": "leak",
+    "variant": "none",
+    "service": "session-builder",
+    "file": "services/session-builder/src/settings.ts",
+    "field": "recurringJobs",
+    "typeName": "RecurringJobs",
+    "options": [
+      "bullmq",
+      "setInterval",
+      "k8s-cronjob",
+      "node-cron"
+    ],
+    "prompt": "How should I schedule a recurring job in session-builder?\n\nRecord the answer in services/session-builder/src/settings.ts: `recurringJobs` is still a TODO there. Set it to the right value for this project, keep the type, change nothing else, then reply with the value you chose.",
+    "gold": {
+      "correct": "bullmq",
+      "stale": "k8s-cronjob",
+      "needed": "aw-30-leak:decision",
+      "staleKey": "aw-30-leak:foreign",
+      "neededText": "Decision for session-builder: background jobs use the existing BullMQ queue, not a new cron container."
+    }
+  },
+  {
+    "id": "at-31-decision",
+    "scenario": "aw-31-decision",
+    "kind": "decision",
+    "variant": "none",
+    "service": "catalog-proxy",
+    "file": "services/catalog-proxy/src/settings.ts",
+    "field": "packageManager",
+    "typeName": "PackageManager",
+    "options": [
+      "npm",
+      "yarn",
+      "pnpm",
+      "bun"
+    ],
+    "prompt": "Which package manager should I use to add a dependency to catalog-proxy?\n\nRecord the answer in services/catalog-proxy/src/settings.ts: `packageManager` is still a TODO there. Set it to the right value for this project, keep the type, change nothing else, then reply with the value you chose.",
+    "gold": {
+      "correct": "pnpm",
+      "stale": null,
+      "needed": "aw-31-decision:decision",
+      "staleKey": null,
+      "neededText": "Decision for catalog-proxy: use pnpm, not npm, because npm lockfile drift broke CI twice."
+    }
+  },
+  {
+    "id": "at-32-mistake",
+    "scenario": "aw-32-mistake",
+    "kind": "mistake",
+    "variant": "linked",
+    "service": "auth-worker",
+    "file": "services/auth-worker/src/settings.ts",
+    "field": "formatCommand",
+    "typeName": "FormatCommand",
+    "options": [
+      "eslint --fix .",
+      "pnpm format, which honours the ignore file",
+      "prettier --write .",
+      "npx biome format --write ."
+    ],
+    "prompt": "How do I format the code in auth-worker?\n\nRecord the answer in services/auth-worker/src/settings.ts: `formatCommand` is still a TODO there. Set it to the right value for this project, keep the type, change nothing else, then reply with the value you chose.",
+    "gold": {
+      "correct": "pnpm format, which honours the ignore file",
+      "stale": "prettier --write .",
+      "needed": "aw-32-mistake:correction",
+      "staleKey": "aw-32-mistake:mistake",
+      "neededText": "Correction for auth-worker: `prettier --write .` rewrites the vendored files. To format the code, use `pnpm format, which honours the ignore file` instead."
+    }
+  },
+  {
+    "id": "at-33-value",
+    "scenario": "aw-33-value",
+    "kind": "value",
+    "variant": "plain",
+    "service": "profile-gateway",
+    "file": "services/profile-gateway/src/settings.ts",
+    "field": "cacheTtl",
+    "typeName": "CacheTtl",
+    "options": [
+      "300 seconds",
+      "30 seconds",
+      "600 seconds",
+      "60 seconds"
+    ],
+    "prompt": "What is the cache TTL for profile-gateway?\n\nRecord the answer in services/profile-gateway/src/settings.ts: `cacheTtl` is still a TODO there. Set it to the right value for this project, keep the type, change nothing else, then reply with the value you chose.",
+    "gold": {
+      "correct": "60 seconds",
+      "stale": "300 seconds",
+      "needed": "aw-33-value:current",
+      "staleKey": "aw-33-value:old",
+      "neededText": "The profile-gateway cache TTL is now 60 seconds."
+    }
+  },
+  {
+    "id": "at-34-control",
+    "scenario": "aw-34-abstain",
+    "kind": "control",
+    "variant": "none",
+    "service": "metrics-gateway",
+    "file": "services/metrics-gateway/src/settings.ts",
+    "field": "timeoutReporter",
+    "typeName": "TimeoutReporter",
+    "options": [
+      "Northwind",
+      "Contoso",
+      "Umbrella",
+      "Initech"
+    ],
+    "prompt": "Which customer reported the metrics-gateway timeout last quarter?\n\nRecord the answer in services/metrics-gateway/src/settings.ts: `timeoutReporter` is still a TODO there. Set it to the right value for this project, keep the type, change nothing else, then reply with the value you chose.",
+    "gold": {
+      "correct": "Initech",
+      "stale": null,
+      "needed": null,
+      "staleKey": null,
+      "neededText": null
+    },
+    "repoAnswer": {
+      "file": "services/metrics-gateway/OPERATIONS.md",
+      "line": "- Customer who reported last quarter's timeout: Initech"
+    }
+  },
+  {
+    "id": "at-35-leak",
+    "scenario": "aw-35-leak",
+    "kind": "leak",
+    "variant": "none",
+    "service": "notify-indexer",
+    "file": "services/notify-indexer/src/settings.ts",
+    "field": "testFramework",
+    "typeName": "TestFramework",
+    "options": [
+      "mocha",
+      "node:test",
+      "vitest",
+      "jest"
+    ],
+    "prompt": "What test framework should new notify-indexer tests use?\n\nRecord the answer in services/notify-indexer/src/settings.ts: `testFramework` is still a TODO there. Set it to the right value for this project, keep the type, change nothing else, then reply with the value you chose.",
+    "gold": {
+      "correct": "vitest",
+      "stale": "jest",
+      "needed": "aw-35-leak:decision",
+      "staleKey": "aw-35-leak:foreign",
+      "neededText": "Decision for notify-indexer: tests run on vitest, not jest, because jest could not load our ESM modules."
+    }
+  },
+  {
+    "id": "at-36-decision",
+    "scenario": "aw-36-decision",
+    "kind": "decision",
+    "variant": "none",
+    "service": "ledger-console",
+    "file": "services/ledger-console/src/settings.ts",
+    "field": "dateLibrary",
+    "typeName": "DateLibrary",
+    "options": [
+      "date-fns",
+      "moment",
+      "dayjs",
+      "luxon"
+    ],
+    "prompt": "Which date library should I use for formatting dates in ledger-console?\n\nRecord the answer in services/ledger-console/src/settings.ts: `dateLibrary` is still a TODO there. Set it to the right value for this project, keep the type, change nothing else, then reply with the value you chose.",
+    "gold": {
+      "correct": "date-fns",
+      "stale": null,
+      "needed": "aw-36-decision:decision",
+      "staleKey": null,
+      "neededText": "Decision for ledger-console: use date-fns, not moment, to keep the bundle under 200 KB."
+    }
+  },
+  {
+    "id": "at-37-mistake",
+    "scenario": "aw-37-mistake",
+    "kind": "mistake",
+    "variant": "plain",
+    "service": "session-worker",
+    "file": "services/session-worker/src/settings.ts",
+    "field": "versionBump",
+    "typeName": "VersionBump",
+    "options": [
+      "git tag vX.Y.Z",
+      "edit the version in package.json",
+      "npm version patch",
+      "pnpm changeset"
+    ],
+    "prompt": "How do I bump the version in session-worker?\n\nRecord the answer in services/session-worker/src/settings.ts: `versionBump` is still a TODO there. Set it to the right value for this project, keep the type, change nothing else, then reply with the value you chose.",
+    "gold": {
+      "correct": "pnpm changeset",
+      "stale": "edit the version in package.json",
+      "needed": "aw-37-mistake:correction",
+      "staleKey": "aw-37-mistake:mistake",
+      "neededText": "Correction for session-worker: `edit the version in package.json` skips the changelog entry. To bump the version, use `pnpm changeset` instead."
+    }
+  },
+  {
+    "id": "at-38-value",
+    "scenario": "aw-38-value",
+    "kind": "value",
+    "variant": "plain",
+    "service": "export-proxy",
+    "file": "services/export-proxy/src/settings.ts",
+    "field": "messageQueue",
+    "typeName": "MessageQueue",
+    "options": [
+      "Kafka",
+      "NATS",
+      "RabbitMQ",
+      "SQS"
+    ],
+    "prompt": "What is the message queue for export-proxy?\n\nRecord the answer in services/export-proxy/src/settings.ts: `messageQueue` is still a TODO there. Set it to the right value for this project, keep the type, change nothing else, then reply with the value you chose.",
+    "gold": {
+      "correct": "NATS",
+      "stale": "SQS",
+      "needed": "aw-38-value:current",
+      "staleKey": "aw-38-value:old",
+      "neededText": "The export-proxy message queue is now NATS."
+    }
+  },
+  {
+    "id": "at-39-control",
+    "scenario": "aw-39-abstain",
+    "kind": "control",
+    "variant": "none",
+    "service": "export-store",
+    "file": "services/export-store/src/settings.ts",
+    "field": "auditRetention",
+    "typeName": "AuditRetention",
+    "options": [
+      "7 years",
+      "90 days",
+      "1 year",
+      "30 days"
+    ],
+    "prompt": "What is the export-store data retention period for audit exports?\n\nRecord the answer in services/export-store/src/settings.ts: `auditRetention` is still a TODO there. Set it to the right value for this project, keep the type, change nothing else, then reply with the value you chose.",
+    "gold": {
+      "correct": "1 year",
+      "stale": null,
+      "needed": null,
+      "staleKey": null,
+      "neededText": null
+    },
+    "repoAnswer": {
+      "file": "services/export-store/OPERATIONS.md",
+      "line": "- Audit export retention: 1 year"
+    }
+  },
+  {
+    "id": "at-40-leak",
+    "scenario": "aw-40-leak",
+    "kind": "leak",
+    "variant": "none",
+    "service": "auth-proxy",
+    "file": "services/auth-proxy/src/settings.ts",
+    "field": "httpClient",
+    "typeName": "HttpClient",
+    "options": [
+      "axios",
+      "got",
+      "undici",
+      "node-fetch"
+    ],
+    "prompt": "What http client should auth-proxy use to call the partner API?\n\nRecord the answer in services/auth-proxy/src/settings.ts: `httpClient` is still a TODO there. Set it to the right value for this project, keep the type, change nothing else, then reply with the value you chose.",
+    "gold": {
+      "correct": "undici",
+      "stale": "axios",
+      "needed": "aw-40-leak:decision",
+      "staleKey": "aw-40-leak:foreign",
+      "neededText": "Decision for auth-proxy: outbound HTTP goes through undici, not axios, so timeouts are set in one place."
+    }
+  },
+  {
+    "id": "at-41-decision",
+    "scenario": "aw-41-decision",
+    "kind": "decision",
+    "variant": "none",
+    "service": "image-cache",
+    "file": "services/image-cache/src/settings.ts",
+    "field": "logger",
+    "typeName": "Logger",
+    "options": [
+      "console",
+      "pino",
+      "bunyan",
+      "winston"
+    ],
+    "prompt": "How should I add logging to a new image-cache handler?\n\nRecord the answer in services/image-cache/src/settings.ts: `logger` is still a TODO there. Set it to the right value for this project, keep the type, change nothing else, then reply with the value you chose.",
+    "gold": {
+      "correct": "pino",
+      "stale": null,
+      "needed": "aw-41-decision:decision",
+      "staleKey": null,
+      "neededText": "Decision for image-cache: log with pino as structured JSON, never console.log, because the log pipeline drops plain lines."
+    }
+  },
+  {
+    "id": "at-42-mistake",
+    "scenario": "aw-42-mistake",
+    "kind": "mistake",
+    "variant": "plain",
+    "service": "upload-service",
+    "file": "services/upload-service/src/settings.ts",
+    "field": "seedCommand",
+    "typeName": "SeedCommand",
+    "options": [
+      "make seed-local",
+      "psql < seed.sql",
+      "node seed.js",
+      "npm run seed"
+    ],
+    "prompt": "How do I load seed data in upload-service?\n\nRecord the answer in services/upload-service/src/settings.ts: `seedCommand` is still a TODO there. Set it to the right value for this project, keep the type, change nothing else, then reply with the value you chose.",
+    "gold": {
+      "correct": "make seed-local",
+      "stale": "node seed.js",
+      "needed": "aw-42-mistake:correction",
+      "staleKey": "aw-42-mistake:mistake",
+      "neededText": "Correction for upload-service: `node seed.js` seeds production when DATABASE_URL is set. To load seed data, use `make seed-local` instead."
+    }
+  },
+  {
+    "id": "at-43-value",
+    "scenario": "aw-43-value",
+    "kind": "value",
+    "variant": "plain",
+    "service": "session-console",
+    "file": "services/session-console/src/settings.ts",
+    "field": "defaultPort",
+    "typeName": "DefaultPort",
+    "options": [
+      "8000",
+      "5000",
+      "3000",
+      "8080"
+    ],
+    "prompt": "What is the default port for session-console?\n\nRecord the answer in services/session-console/src/settings.ts: `defaultPort` is still a TODO there. Set it to the right value for this project, keep the type, change nothing else, then reply with the value you chose.",
+    "gold": {
+      "correct": "3000",
+      "stale": "8080",
+      "needed": "aw-43-value:current",
+      "staleKey": "aw-43-value:old",
+      "neededText": "The session-console default port is now 3000."
+    }
+  },
+  {
+    "id": "at-44-control",
+    "scenario": "aw-44-abstain",
+    "kind": "control",
+    "variant": "none",
+    "service": "search-service",
+    "file": "services/search-service/src/settings.ts",
+    "field": "tlsExpiry",
+    "typeName": "TlsExpiry",
+    "options": [
+      "2026-06-30",
+      "2027-01-15",
+      "2026-11-02",
+      "2026-03-14"
+    ],
+    "prompt": "When is the search-service TLS certificate due to expire?\n\nRecord the answer in services/search-service/src/settings.ts: `tlsExpiry` is still a TODO there. Set it to the right value for this project, keep the type, change nothing else, then reply with the value you chose.",
+    "gold": {
+      "correct": "2026-03-14",
+      "stale": null,
+      "needed": null,
+      "staleKey": null,
+      "neededText": null
+    },
+    "repoAnswer": {
+      "file": "services/search-service/OPERATIONS.md",
+      "line": "- TLS certificate expires: 2026-03-14"
+    }
+  },
+  {
+    "id": "at-45-leak",
+    "scenario": "aw-45-leak",
+    "kind": "leak",
+    "variant": "none",
+    "service": "audit-gateway",
+    "file": "services/audit-gateway/src/settings.ts",
+    "field": "migrationChange",
+    "typeName": "MigrationChange",
+    "options": [
+      "squash-migrations",
+      "add-new-migration",
+      "edit-applied-migration",
+      "drop-and-recreate"
+    ],
+    "prompt": "Can I change an existing audit-gateway migration to fix a column type?\n\nRecord the answer in services/audit-gateway/src/settings.ts: `migrationChange` is still a TODO there. Set it to the right value for this project, keep the type, change nothing else, then reply with the value you chose.",
+    "gold": {
+      "correct": "add-new-migration",
+      "stale": "edit-applied-migration",
+      "needed": "aw-45-leak:decision",
+      "staleKey": "aw-45-leak:foreign",
+      "neededText": "Decision for audit-gateway: migrations are forward-only; never edit an applied migration, add a new one."
+    }
+  },
+  {
+    "id": "at-46-decision",
+    "scenario": "aw-46-decision",
+    "kind": "decision",
+    "variant": "none",
+    "service": "webhook-proxy",
+    "file": "services/webhook-proxy/src/settings.ts",
+    "field": "errorStyle",
+    "typeName": "ErrorStyle",
+    "options": [
+      "typed-exceptions",
+      "callbacks",
+      "error-codes",
+      "result-values"
+    ],
+    "prompt": "How should webhook-proxy functions report errors to their callers?\n\nRecord the answer in services/webhook-proxy/src/settings.ts: `errorStyle` is still a TODO there. Set it to the right value for this project, keep the type, change nothing else, then reply with the value you chose.",
+    "gold": {
+      "correct": "result-values",
+      "stale": null,
+      "needed": "aw-46-decision:decision",
+      "staleKey": null,
+      "neededText": "Decision for webhook-proxy: return Result values across module boundaries instead of throwing, so callers must handle errors."
+    }
+  },
+  {
+    "id": "at-47-mistake",
+    "scenario": "aw-47-mistake",
+    "kind": "mistake",
+    "variant": "plain",
+    "service": "profile-relay",
+    "file": "services/profile-relay/src/settings.ts",
+    "field": "debugLogs",
+    "typeName": "DebugLogs",
+    "options": [
+      "VERBOSE=1",
+      "NODE_DEBUG=http",
+      "DEBUG=*",
+      "LOG_LEVEL=debug"
+    ],
+    "prompt": "How do I turn on debug logs in profile-relay?\n\nRecord the answer in services/profile-relay/src/settings.ts: `debugLogs` is still a TODO there. Set it to the right value for this project, keep the type, change nothing else, then reply with the value you chose.",
+    "gold": {
+      "correct": "LOG_LEVEL=debug",
+      "stale": "DEBUG=*",
+      "needed": "aw-47-mistake:correction",
+      "staleKey": "aw-47-mistake:mistake",
+      "neededText": "Correction for profile-relay: `DEBUG=*` logs request bodies with access tokens. To turn on debug logs, use `LOG_LEVEL=debug` instead."
+    }
+  },
+  {
+    "id": "at-48-value",
+    "scenario": "aw-48-value",
+    "kind": "value",
+    "variant": "plain",
+    "service": "metrics-relay",
+    "file": "services/metrics-relay/src/settings.ts",
+    "field": "errorTracker",
+    "typeName": "ErrorTracker",
+    "options": [
+      "Sentry",
+      "Honeybadger",
+      "Rollbar",
+      "Bugsnag"
+    ],
+    "prompt": "What is the error tracker for metrics-relay?\n\nRecord the answer in services/metrics-relay/src/settings.ts: `errorTracker` is still a TODO there. Set it to the right value for this project, keep the type, change nothing else, then reply with the value you chose.",
+    "gold": {
+      "correct": "Sentry",
+      "stale": "Rollbar",
+      "needed": "aw-48-value:current",
+      "staleKey": "aw-48-value:old",
+      "neededText": "The metrics-relay error tracker is now Sentry."
+    }
+  },
+  {
+    "id": "at-49-control",
+    "scenario": "aw-49-abstain",
+    "kind": "control",
+    "variant": "none",
+    "service": "metrics-builder",
+    "file": "services/metrics-builder/src/settings.ts",
+    "field": "gpuInstance",
+    "typeName": "GpuInstance",
+    "options": [
+      "p4d.24xlarge",
+      "a2-highgpu-1g",
+      "g6.2xlarge",
+      "g5.xlarge"
+    ],
+    "prompt": "What GPU instance type does metrics-builder train on?\n\nRecord the answer in services/metrics-builder/src/settings.ts: `gpuInstance` is still a TODO there. Set it to the right value for this project, keep the type, change nothing else, then reply with the value you chose.",
+    "gold": {
+      "correct": "g6.2xlarge",
+      "stale": null,
+      "needed": null,
+      "staleKey": null,
+      "neededText": null
+    },
+    "repoAnswer": {
+      "file": "services/metrics-builder/OPERATIONS.md",
+      "line": "- GPU training instance: g6.2xlarge"
+    }
+  },
+  {
+    "id": "at-50-leak",
+    "scenario": "aw-50-leak",
+    "kind": "leak",
+    "variant": "none",
+    "service": "session-api",
+    "file": "services/session-api/src/settings.ts",
+    "field": "apiStyle",
+    "typeName": "ApiStyle",
+    "options": [
+      "rest",
+      "trpc",
+      "grpc",
+      "graphql"
+    ],
+    "prompt": "Should the new session-api endpoint be REST or GraphQL?\n\nRecord the answer in services/session-api/src/settings.ts: `apiStyle` is still a TODO there. Set it to the right value for this project, keep the type, change nothing else, then reply with the value you chose.",
+    "gold": {
+      "correct": "rest",
+      "stale": "graphql",
+      "needed": "aw-50-leak:decision",
+      "staleKey": "aw-50-leak:foreign",
+      "neededText": "Decision for session-api: keep the public interface REST, not GraphQL, because the mobile client caches by URL."
+    }
+  }
+]

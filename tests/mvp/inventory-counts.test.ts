@@ -5,7 +5,7 @@ import path from 'path';
 import net from 'net';
 import crypto from 'crypto';
 import request from 'supertest';
-import type Database from 'better-sqlite3';
+import type Database from '../../src/db/sqlite';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { loadMvpConfig, type MvpConfig } from '../../src/mvp/config';
@@ -305,7 +305,7 @@ describe('memory_status counts what the user saved', () => {
       .map(r => (r.source_path === '_mcp_' ? r.source_path : path.relative(dir, r.source_path)));
     expect(left).toEqual(['Daily/2026-03-28.md', 'Daily/2026-03-29.md', 'Daily/2026-03-30.md', '_mcp_']);
     // ...and it said how many, so an operator can see it happen once.
-    expect(log).toHaveBeenCalledWith('[startup] removed 2 daily-note header facts an earlier build indexed');
+    expect(log).toHaveBeenCalledWith(expect.stringMatching(/"event":"startup_header_facts_removed","facts":2,/));
     log.mockRestore();
 
     // What an agent is told: no header for either of the engine's days, and what a person wrote still there, to the byte.

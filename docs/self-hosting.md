@@ -6,25 +6,15 @@ Run every command from the directory that holds `package.json`. If you use mise,
 
 ## Troubleshooting
 
-**Wrong Node version.** Renor is tested on **Node 22** (`.nvmrc` and `mise.toml` pin it). `npm ci` on another major prints an `EBADENGINE` warning. `better-sqlite3` and `sqlite-vec` are native modules compiled at install for the Node major that ran `npm ci`; run Renor with a different major (switching versions after the install, or an agent that starts another `node`) and `node dist/cli.js index` fails with:
+**Wrong Node version.** Renor needs **Node 22.16 or newer** (it uses Node's built-in SQLite; `.nvmrc` and `mise.toml` pin the tested Node 22). On an older Node every command stops at once with one line saying so:
 
 ```
-Error: The module '.../better_sqlite3.node' was compiled against a different Node.js version using NODE_MODULE_VERSION 127. This version of Node.js requires NODE_MODULE_VERSION 131.
+renor-engine: Renor needs Node 22.16.0 or newer (it uses Node's built-in SQLite); this is Node 20.20.0. Fix: install Node 22 LTS or newer (https://nodejs.org), then run the command again.
 ```
 
-(The numbers depend on the versions involved.) Switch to Node 22 and reinstall:
+**Vector search extension missing.** sqlite-vec arrives as a prebuilt optional dependency for your platform. An install with `--omit=optional` (or `optional=false` in an npm config) leaves it out, and every command stops with `renor-engine: the vector search extension (sqlite-vec) did not load ...` and the fix. Reinstall without omitting optional dependencies. Install scripts are not needed: `ignore-scripts=true` is fine.
 
-```bash
-nvm use            # or: mise use node@22
-node -v            # v22.x
-rm -rf node_modules
-npm ci
-npm rebuild better-sqlite3 --ignore-scripts=false
-```
-
-**Install scripts skipped.** An npm config such as `ignore-scripts=true` skips install scripts without an error, and the first symptom is `Module did not self-register` or `Could not locate the bindings file`. The `npm rebuild better-sqlite3 --ignore-scripts=false` in the Quickstart fixes that one module without changing your global npm config; run it after every `npm ci`.
-
-**Installing offline.** `npm ci` and `npm rebuild` need the npm registry or a populated npm cache. Nothing after the install needs the network unless you configure a model.
+**Installing offline.** `npm ci` needs the npm registry or a populated npm cache. Nothing after the install needs the network unless you configure a model.
 
 **Agent says Renor has no tools, or fails to start it.** The agent starts `node dist/cli.js mcp` itself, so do not leave one running in a terminal. Register it with the absolute Node path the README uses (`"$(node -p process.execPath)"`), not a bare `node` that may resolve to another version in the agent's environment. `VAULT_PATH`, when you set it, must be absolute: unset or empty, the notes go to `~/.renor` (a hidden folder in your home directory, never an existing `renor` folder), so a server registered from a terminal where it was not exported starts, but on a folder you did not choose. The server prints `Renor memory: <path>` on stderr when it starts on that default; look for that line first when an agent seems to remember nothing, since it may be using a different folder than the one you index. Remove the server, run the README's `export` line, and add it again.
 
@@ -38,9 +28,9 @@ npm rebuild better-sqlite3 --ignore-scripts=false
 
 ```bash
 cd renor-engine-*
-node -v                    # v22.x
+node -v                    # v22.16 or newer
 export RENOR_BUILD_COMMIT=0000000
-npm ci && npm rebuild better-sqlite3 --ignore-scripts=false && npm run build
+npm ci && npm run build
 node scripts/smoke-self-hosted.mjs
 ```
 

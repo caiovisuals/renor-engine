@@ -11,6 +11,9 @@ import { loadMvpConfig } from './config';
 import { startMvpService, MVP_MCP_PATH } from './server';
 import { flushTelemetry } from './telemetry';
 import { shutdownPosthogMcp } from './posthogMcp';
+import { createLogger } from './log';
+
+const log = createLogger('engine');
 
 /**
  * CLI entry for the single-user ChatGPT MVP service.
@@ -68,6 +71,6 @@ async function main() {
 }
 
 main().catch((err) => {
-  console.error('[mvp] startup failed:', err instanceof Error ? err.message : err);
+  log.error('startup_failed', {}, err);
   process.exit(1);
 });

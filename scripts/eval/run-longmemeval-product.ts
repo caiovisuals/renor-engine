@@ -55,6 +55,7 @@ import {
   CACHE_SCHEMA_VERSION,
 } from '../../src/eval/evalCache';
 import { buildCacheReport, emitCacheReport, proxyWindow, readProxyCounters } from '../../src/eval/cacheReport';
+import { indexConfig, resolveSnapshotRoot, resolveVaultBase, restoredReplay, SnapshotStore, vaultSignature, type IndexReplay } from '../../src/eval/indexSnapshots';
 import { type LongMemInstance, type LongMemTurn, parseTimestamp, validateLongMemRows } from '../../src/eval/longmemeval';
 import { admitRun, archiveRow, codeIdentity, productEnvironment, questionSet, recordRun, resolveRunLedgerPath, RUN_LEDGER_ENV, RunRefusedError, saveRunOutcome, type RunRecord } from '../../src/eval/runLedger';
 
@@ -128,6 +129,8 @@ export interface PublicSearchResult {
   digest?: Record<string, unknown>;
   /** The index phase's `[digests]` line when RENOR_DIGESTS is armed (calls, tokens, failures). */
   digestStats?: Record<string, unknown>;
+  /** Wall time of the `cli index` spawn; absent when the index was restored from a snapshot. */
+  indexMs?: number;
 }
 export interface PublicSearchArgs {
   query: string;
@@ -136,6 +139,16 @@ export interface PublicSearchArgs {
   env: Record<string, string>;
   topK: number;
   cwd: string;
+  /**
+   * Index snapshots (src/eval/indexSnapshots.ts). `skip`: the index was restored into dbPath, so `cli index` does not
+   * run; `replay` is what the build that made it printed about its router/digest calls. `onBuilt` is called once a
+   * fresh index has been built and checked, before any search opens it: the moment to snapshot.
+   */
+  index?: {
+    skip?: boolean;
+    replay?: IndexReplay;
+    onBuilt?: (built: { indexMs: number; replay: IndexReplay }) => void;
+  };
 }
 
 /** Run-aborting precondition failure (distinct from per-case model/API errors). */
@@ -191,7 +204,10 @@ export function parseIndexErrors(indexStdout: string): { indexed: number; total:
  * alone.
  */
 export async function cliPublicSearch(args: PublicSearchArgs): Promise<PublicSearchResult> {
+  // A restored index was checked when it was saved (and again when it was restored): nothing to build or to re-check.
+  if (args.index?.skip) return cliSearch(args, undefined, args.index.replay ?? {});
   let indexStdout: string;
+  const indexStarted = Date.now();
   try {
     indexStdout = await spawnCli(['--import', 'tsx', 'src/cli.ts', 'index'], args, 'index');
   } catch (error) {
@@ -222,6 +238,16 @@ export async function cliPublicSearch(args: PublicSearchArgs): Promise<PublicSea
     throw new ProductPreconditionError(`Public CLI index precondition failed: ${JSON.stringify(indexHealth)} — ` +
       `partial index failure must abort the run, never score an empty vault (index output tail: ${indexStdout.slice(-300)}${indexed ? ` | index errors: ${indexed}` : ''}${stderr ? ` | stderr: ${stderr.slice(-600)}` : ''})`);
   }
+  const indexMs = Date.now() - indexStarted;
+  const built: IndexReplay = {
+    ...(parseRouterSummaryLine(indexStdout) ? { routerSummaries: parseRouterSummaryLine(indexStdout) } : {}),
+    ...(parseDigestStatsLine(indexStdout) ? { digestStats: parseDigestStatsLine(indexStdout) } : {}),
+  };
+  args.index?.onBuilt?.({ indexMs, replay: built });
+  return cliSearch(args, indexMs, built);
+}
+
+async function cliSearch(args: PublicSearchArgs, indexMs: number | undefined, indexed: IndexReplay): Promise<PublicSearchResult> {
   const started = Date.now();
   const stdout = await spawnCli(
     ['--import', 'tsx', 'src/cli.ts', 'search', '--json', '--top-k', String(args.topK), args.query],
@@ -245,9 +271,9 @@ export async function cliPublicSearch(args: PublicSearchArgs): Promise<PublicSea
       `every case must retrieve at least one hit before scoring (empty retrieval is an abort, not an answer)`);
   }
   const router = (parsed as { router?: Record<string, unknown> }).router;
-  const routerSummaries = parseRouterSummaryLine(indexStdout);
+  const routerSummaries = indexed.routerSummaries;
   const digest = (parsed as { digest?: Record<string, unknown> }).digest;
-  const digestStats = parseDigestStatsLine(indexStdout);
+  const digestStats = indexed.digestStats;
   return {
     hits,
     // C0 structured context passes through unchanged when the CLI composer is
@@ -265,6 +291,7 @@ export async function cliPublicSearch(args: PublicSearchArgs): Promise<PublicSea
     // Write-time digests (RENOR_DIGESTS): the same rule, a run whose digests stepped aside says so per case.
     ...(digest ? { digest } : {}),
     ...(digestStats ? { digestStats } : {}),
+    ...(indexMs !== undefined ? { indexMs } : {}),
   };
 }
 
@@ -458,6 +485,8 @@ export interface ProductQaCase {
   digest?: Record<string, unknown>;
   /** Index-time digest stats for this case's vault (RENOR_DIGESTS armed). */
   digestStats?: Record<string, unknown>;
+  /** How this case's memory store came about when index snapshots are on: restored, built (and saved), or built cold because the snapshot was stale, corrupt or its slot busy. */
+  indexSnapshot?: { state: 'restored' | 'built' | 'rebuilt-stale' | 'rebuilt-corrupt' | 'cold-busy'; indexMs?: number; savedIndexMs?: number };
 }
 
 export interface ProductRunnerOptions {
@@ -499,6 +528,12 @@ export interface ProductRunnerOptions {
    * (tests) that leave it out are neither recorded nor refused.
    */
   runLedger?: { path: string; rerunReason?: string };
+  /**
+   * Index snapshots (src/eval/indexSnapshots.ts): restore a question's memory store instead of building it when
+   * nothing that decides what an index stores has changed. Iteration arms only; a promotion arm refuses it. Absent
+   * means off, which is every in-process caller; the CLI turns it on for cached iteration runs.
+   */
+  snapshots?: { root: string; vaultBase: string };
 }
 
 /** The code a product run executes: the product (spawned through src/cli.ts), this runner and the locked dependencies. */
@@ -696,6 +731,10 @@ export interface ProductArgv {
   temperature: string;
   retries: string;
   rerunReason?: string;
+  /** commander negation of --no-index-snapshots: undefined/true = on for cached iteration arms. */
+  indexSnapshots?: boolean;
+  snapshotDir?: string;
+  snapshotVaultBase?: string;
 }
 
 export function parseProductArgs(userArgv: string[]): ProductArgv {
@@ -731,6 +770,9 @@ export function parseProductArgs(userArgv: string[]): ProductArgv {
     .option('--ids-file <path>', 'frozen offline case-id list (one question_id per line) — slice screens; selection rule must be recorded, never runtime gold')
     .option('--temperature <t>', 'sampling temperature for both models', '0')
     .option('--retries <n>', 'per-call retry attempts', '5')
+    .option('--no-index-snapshots', 'build every question\'s memory store cold (iteration arms restore it from an index snapshot when nothing that decides what an index stores has changed; promotion arms always build cold)')
+    .option('--snapshot-dir <path>', 'index snapshot directory (default: $RENOR_EVAL_SNAPSHOT_DIR, else <bench data>/index-snapshots)')
+    .option('--snapshot-vault-base <path>', 'where snapshotted vaults are rendered; part of the snapshot key because the index stores absolute paths (default: $RENOR_EVAL_SNAPSHOT_VAULT_BASE, else /tmp/renor-index-vault)')
     .option('--rerun-reason <text>', `run even though this exact configuration is already on the run ledger (${RUN_LEDGER_ENV}); the reason is recorded with the run`);
   program.parse(userArgv, { from: 'user' });
   return program.opts() as ProductArgv;
@@ -886,21 +928,18 @@ function selectShard<T>(rows: T[], shardIndex: number, shardCount: number): T[] 
 }
 
 /**
- * Run the authoritative product-path benchmark. `hooks` are injectable so
- * contract tests can exercise the REAL public surface with stubbed model
- * calls (tests must never make provider calls); production runs use the
- * default hooks (real CLI spawn + real model calls).
+ * The product process environment every case shares (VAULT_PATH and DB_PATH are added per case), and the structured-row
+ * flags it carries. Built once per run, before any case runs, so the run ledger fingerprints exactly what the child
+ * receives. The index snapshot key is built from the same environment, so the tools that print or check a key call this too.
  */
-export async function runProductBenchmark(
-  opts: ProductRunnerOptions,
-  hooks: ProductHooks,
-): Promise<{ outputDir: string; manifest: Record<string, unknown>; cases: ProductQaCase[] }> {
-  const cacheEnabled = opts.cache !== false;
-  const arm: CacheArm = opts.arm ?? (cacheEnabled ? 'iteration' : 'promotion');
+export function buildProductChildEnv(
+  args: { embeddingProvider: string; structuredRows?: boolean },
+  env: NodeJS.ProcessEnv = process.env,
+): { childEnv: Record<string, string>; structuredRowFlags: Record<string, string> } {
   // Built once. The child env and the manifest both read this, because the
   // runner does not mutate its own process.env. Absent means the four flags
   // stay at their shipped default, off.
-  const structuredRowFlags: Record<string, string> = opts.structuredRows === true
+  const structuredRowFlags: Record<string, string> = args.structuredRows === true
     ? {
         RENOR_TYPED_FACTS: '1',
         RENOR_CHRONICLE: '1',
@@ -912,9 +951,9 @@ export async function runProductBenchmark(
   // are added per case. Built once, before any case runs, so the run ledger
   // fingerprints exactly what the child receives.
   const childEnv: Record<string, string> = {
-    EMBEDDING_PROVIDER: opts.embeddingProvider,
+    EMBEDDING_PROVIDER: args.embeddingProvider,
     LLM_EXTRACTION: 'false',
-    INDEX_CONCURRENCY: process.env.RENOR_EVAL_INDEX_CONCURRENCY ?? '4',
+    INDEX_CONCURRENCY: env.RENOR_EVAL_INDEX_CONCURRENCY ?? '4',
   };
   // Embedding configuration passthrough (openai-compatible provider config;
   // the API key travels in env only and never appears in logs or manifests).
@@ -922,7 +961,7 @@ export async function runProductBenchmark(
   // ONLY when the operator set them; each armed flag is recorded in the
   // manifest's productMode.overrides (productFeatureFlagOverrides below).
   for (const name of ['OPENAI_API_KEY', 'OPENAI_BASE_URL', 'EMBEDDING_MODEL', 'EMBEDDING_BASE_URL', 'EMBEDDING_DIMS', 'EMBEDDING_BATCH_SIZE', 'RENOR_SEARCH_EVIDENCE', 'RENOR_EVIDENCE_MODE', 'RENOR_EVIDENCE_SESSIONS', 'RENOR_EVIDENCE_ENUMERATE', 'RENOR_EVIDENCE_CACHE', 'RENOR_EVIDENCE_MODEL', 'RENOR_EVIDENCE_BASE_URL', 'RENOR_EVIDENCE_API_KEY', 'RENOR_EVIDENCE_API_KEYS', 'RENOR_EVIDENCE_MAX_TOKENS', 'RENOR_EVIDENCE_REASONING_EFFORT', 'RENOR_STRUCTURED_CONTEXT', 'RENOR_TYPED_FACTS', 'RENOR_CHRONICLE', 'RENOR_PREFS', 'RENOR_QUERY_SCOPED_ROWS', 'OLLAMA_CLOUD_KEY_1', 'OLLAMA_CLOUD_KEY_2', 'OLLAMA_CLOUD_KEY_3', 'OLLAMA_CLOUD_KEY_4', 'OLLAMA_MAX_KEY', 'OLLAMA_API_KEY', 'RENOR_EXTRACTOR_API_KEY', 'RENOR_EXTRACTOR_API_KEYS', 'RENOR_EXTRACTOR_BASE_URL', 'RENOR_EXTRACTOR_TIMEOUT_MS']) {
-    if (process.env[name] !== undefined) childEnv[name] = process.env[name] as string;
+    if (env[name] !== undefined) childEnv[name] = env[name] as string;
   }
   // The session router's knobs (src/router/sessionRouter.ts), passed and recorded the same way.
   // The write-time digest knobs (src/digests/digests.ts), passed and recorded the same way.
@@ -930,15 +969,31 @@ export async function runProductBenchmark(
   // whose unit sets always (scripts/alpha/provision-renor-tenant.sh). An operator's own value still passes through.
   if (!childEnv.RENOR_EVIDENCE_MODE?.trim()) childEnv.RENOR_EVIDENCE_MODE = 'always';
   for (const name of ['RENOR_DIGESTS', 'RENOR_DIGEST_MODEL', 'RENOR_DIGEST_REASONING_EFFORT', 'RENOR_DIGEST_CACHE', 'RENOR_DIGEST_CACHE_ONLY', 'RENOR_DIGEST_TOKENS', 'RENOR_DIGEST_RETRIES', 'RENOR_DIGEST_BASE_URL', 'RENOR_DIGEST_API_KEY', 'RENOR_DIGEST_API_KEYS']) {
-    if (process.env[name] !== undefined) childEnv[name] = process.env[name] as string;
+    if (env[name] !== undefined) childEnv[name] = env[name] as string;
   }
   for (const name of ['RENOR_SESSION_ROUTER', 'RENOR_ROUTER_MODEL', 'RENOR_ROUTER_SUMMARY_MODEL', 'RENOR_ROUTER_CACHE', 'RENOR_ROUTER_TIMEOUT_MS', 'RENOR_ROUTER_RETRIES', 'RENOR_ROUTER_BASE_URL', 'RENOR_ROUTER_API_KEY', 'RENOR_ROUTER_API_KEYS']) {
-    if (process.env[name] !== undefined) childEnv[name] = process.env[name] as string;
+    if (env[name] !== undefined) childEnv[name] = env[name] as string;
   }
   // After the passthrough. An operator shell with one of these flags set
   // to 0 must not silently disarm an explicit --structured-rows arm, and
   // the manifest records the same values the child receives.
   Object.assign(childEnv, structuredRowFlags);
+  return { childEnv, structuredRowFlags };
+}
+
+/**
+ * Run the authoritative product-path benchmark. `hooks` are injectable so
+ * contract tests can exercise the REAL public surface with stubbed model
+ * calls (tests must never make provider calls); production runs use the
+ * default hooks (real CLI spawn + real model calls).
+ */
+export async function runProductBenchmark(
+  opts: ProductRunnerOptions,
+  hooks: ProductHooks,
+): Promise<{ outputDir: string; manifest: Record<string, unknown>; cases: ProductQaCase[] }> {
+  const cacheEnabled = opts.cache !== false;
+  const arm: CacheArm = opts.arm ?? (cacheEnabled ? 'iteration' : 'promotion');
+  const { childEnv, structuredRowFlags } = buildProductChildEnv(opts);
   if (arm === 'promotion' && cacheEnabled) {
     // Plan Task 8: "fresh isolated write-through caches and zero hits". A
     // promotion arm may use the eval cache ONLY at a verified-fresh path — zero
@@ -962,6 +1017,23 @@ export async function runProductBenchmark(
     throw new Error('Refused: transport-smoke runs (non-production embeddings: eval-hash/local) can never be promotion arms');
   }
   const repoRoot = process.cwd();
+  if (opts.snapshots && arm === 'promotion') {
+    throw new Error('Refused: index snapshots are for iteration arms; a promotion arm builds every question\'s memory store cold');
+  }
+  // The key of an index snapshot is built from the environment the product process receives, exactly as the child gets it.
+  const snapshotStore = opts.snapshots
+    ? new SnapshotStore({
+        root: opts.snapshots.root,
+        vaultBase: opts.snapshots.vaultBase,
+        config: indexConfig({
+          repoRoot,
+          env: productProcessEnv(childEnv),
+          vaultBase: opts.snapshots.vaultBase,
+          embeddingNamespace: process.env.RENOR_EMBED_UPSTREAM_MODEL ?? null,
+        }),
+      })
+    : null;
+  const snapshotGitSha = snapshotStore ? gitState(repoRoot).sha : undefined;
   const datasetPath = path.resolve(opts.dataset);
   const datasetBytes = fs.readFileSync(datasetPath);
   const allRows = JSON.parse(datasetBytes.toString('utf8')) as LongMemInstance[];
@@ -1104,7 +1176,10 @@ export async function runProductBenchmark(
   }
 
   for (const row of todo) {
-    const workDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'renor-product-'));
+    // With snapshots on, the case's vault is rendered at a fixed place (the index stores absolute paths) and held by a lock
+    // for the case; a slot another run holds means this case is built the ordinary way.
+    const claim = snapshotStore ? snapshotStore.claim(row.question_id) : null;
+    const workDir = claim ? claim.root : await fsp.mkdtemp(path.join(os.tmpdir(), 'renor-product-'));
     try {
       // Runtime inputs: ONLY allowlisted dataset fields (question, question_date,
       // haystack corpus). Gold fields never enter this marshaling.
@@ -1122,9 +1197,32 @@ export async function runProductBenchmark(
         [query, ...rendered.files.map(file => `${file.relativePath}:${file.sha256}`)].join('\0'),
       );
 
+      let snapshotCase: ProductQaCase['indexSnapshot'];
+      let indexArgs: PublicSearchArgs['index'];
+      if (snapshotStore) {
+        if (!claim) {
+          snapshotCase = { state: 'cold-busy' };
+        } else {
+          const signature = vaultSignature(rendered.vaultDir, rendered.files);
+          const restored = snapshotStore.restore(row.question_id, signature, dbPath);
+          if (restored.state === 'restored') {
+            snapshotCase = { state: 'restored', savedIndexMs: restored.meta.indexMs };
+            indexArgs = { skip: true, replay: restoredReplay(restored.meta.indexReplay) };
+          } else {
+            snapshotCase = { state: restored.state === 'stale' ? 'rebuilt-stale' : restored.state === 'corrupt' ? 'rebuilt-corrupt' : 'built' };
+            indexArgs = {
+              onBuilt: ({ indexMs, replay }) => {
+                snapshotCase = { ...snapshotCase!, indexMs };
+                snapshotStore.save({ questionId: row.question_id, signature, dbPath, indexMs, replay, gitSha: snapshotGitSha });
+              },
+            };
+          }
+        }
+      }
       const searchStarted = Date.now();
       const publicResult = await hooks.publicSearch({
         query, vaultDir: rendered.vaultDir, dbPath, env: spawnEnv, topK: opts.topK, cwd: repoRoot,
+        ...(indexArgs ? { index: indexArgs } : {}),
       });
       // Run-level precondition (defense in depth — holds for every transport, not just the CLI):
       // zero-hit retrieval is an abort, never a scoreable empty case.
@@ -1170,6 +1268,7 @@ export async function runProductBenchmark(
         evidence: caseEvidence(publicResult.evidence),
       };
       const routerFields = publicResult as RouterSearchFields;
+      if (snapshotCase) record.indexSnapshot = snapshotCase;
       if (routerFields.router) record.router = relativeRouterReport(routerFields.router, rendered.vaultDir);
       if (routerFields.routerSummaries) record.routerSummaries = routerFields.routerSummaries;
       const digestFields = publicResult as Pick<PublicSearchResult, 'digest' | 'digestStats'>;
@@ -1251,6 +1350,9 @@ export async function runProductBenchmark(
         };
         const judgeReadKey = evalCache && !forceLive ? EvalCache.computeKey(judgeNamespace, judgeRequestBody, cacheReadScope) : null;
         const judgeWriteKey = evalCache ? EvalCache.computeKey(judgeNamespace, judgeRequestBody, cacheWriteScope) : null;
+        // The judge memo (EvalCache.computeJudgeMemoKey): the same question, gold, answer, judge and prompt are never judged twice,
+        // across runs and routing sessions. Read by iteration arms only (a promotion arm reads nothing, by construction).
+        const judgeMemoKey = evalCache ? EvalCache.computeJudgeMemoKey(judgeNamespace, row.question_id, judgeRequestBody) : null;
 
         let judgeRaw = '';
         let judgeEcho = '';
@@ -1259,7 +1361,8 @@ export async function runProductBenchmark(
         let judgePromptTokens = 0;
         let judgeCompletionTokens = 0;
         let judgeFromCache = false;
-        const cachedJudge = evalCache && judgeReadKey ? evalCache.get(judgeReadKey, 'judge') : null;
+        const memoJudge = evalCache && judgeMemoKey && arm !== 'promotion' && !forceLive ? evalCache.getJudgeMemo(judgeMemoKey) : null;
+        const cachedJudge = memoJudge ?? (evalCache && judgeReadKey ? evalCache.get(judgeReadKey, 'judge') : null);
         if (cachedJudge) {
           judgeRaw = cachedJudge.rawContent;
           judgeEcho = cachedJudge.modelEcho;
@@ -1292,10 +1395,26 @@ export async function runProductBenchmark(
           }
         }
         const verdict = parseVerdict(judgeRaw);
+        // Only a verdict that parsed is memoized: the next run asks again about one that did not.
+        if (evalCache && judgeMemoKey && !judgeFromCache && verdict !== null) {
+          evalCache.putJudgeMemo({
+            cacheKey: judgeMemoKey,
+            providerNamespace: judgeNamespace,
+            callType: 'judge',
+            questionId: row.question_id,
+            rawContent: judgeRaw,
+            modelEcho: judgeEcho,
+            finishReason: judgeFinish,
+            promptTokens: judgePromptTokens,
+            completionTokens: judgeCompletionTokens,
+            latencyMs: judgeLatency,
+            requestBody: judgeRequestBody,
+          });
+        }
         record.judge = {
           raw: judgeRaw, verdict, parseOk: verdict !== null, modelEcho: judgeEcho,
           fromCache: judgeFromCache,
-          cacheKey: (judgeFromCache ? judgeReadKey : judgeWriteKey) ?? undefined,
+          cacheKey: (judgeFromCache ? (memoJudge ? judgeMemoKey : judgeReadKey) : judgeWriteKey) ?? undefined,
         };
         if (verdict === null) record.error = 'judge-unparseable';
       } catch (error) {
@@ -1331,7 +1450,8 @@ export async function runProductBenchmark(
         contextTokens,
       });
     } finally {
-      await fsp.rm(workDir, { recursive: true, force: true });
+      if (claim) claim.release();
+      else await fsp.rm(workDir, { recursive: true, force: true });
     }
   }
 
@@ -1352,6 +1472,21 @@ export async function runProductBenchmark(
   const git = gitState(repoRoot);
   const evaluator = evaluatorSourceHash(repoRoot);
   const datasetSha = datasetSha256File(datasetPath);
+  const embeddingWindow = proxyWindow(proxyBefore, readProxyCounters(opts.embedProxyStats));
+  // This run's index snapshot outcomes, from the records that were written (a resumed run counts its earlier cases too).
+  const snapshotCounts = {
+    restored: 0, built: 0, coldBusy: 0, rebuiltStale: 0, rebuiltCorrupt: 0, indexMsSpent: 0, indexMsNotSpent: 0,
+  };
+  for (const c of cases) {
+    const state = c.indexSnapshot?.state;
+    if (!state) continue;
+    if (state === 'restored') { snapshotCounts.restored++; snapshotCounts.indexMsNotSpent += c.indexSnapshot?.savedIndexMs ?? 0; continue; }
+    if (state === 'cold-busy') snapshotCounts.coldBusy++;
+    else snapshotCounts.built++;
+    if (state === 'rebuilt-stale') snapshotCounts.rebuiltStale++;
+    if (state === 'rebuilt-corrupt') snapshotCounts.rebuiltCorrupt++;
+    snapshotCounts.indexMsSpent += c.indexSnapshot?.indexMs ?? 0;
+  }
   const manifest = {
     schemaVersion: 1,
     benchmark: 'longmemeval-s-qa-end-to-end',
@@ -1399,6 +1534,35 @@ export async function runProductBenchmark(
       writes: cacheWrites,
       dbPath: evalCachePath,
       schemaVersion: CACHE_SCHEMA_VERSION,
+    },
+    // Every cache layer this run read or wrote, side by side (src/eval/cacheReport.ts has the per-layer rates).
+    cachesUsed: {
+      arm,
+      embedding: embeddingWindow
+        ? { via: 'embed-proxy', hits: embeddingWindow.hits, misses: embeddingWindow.misses, ...(embeddingWindow.sent ? { sentToProvider: embeddingWindow.sent } : {}) }
+        : { via: opts.embeddingProvider === 'openai' ? 'unmeasured' : opts.embeddingProvider },
+      evalCache: evalCache
+        ? {
+            enabled: true,
+            answerHits: evalCache.stats.answerHits, answerMisses: evalCache.stats.answerMisses,
+            judgeHits: evalCache.stats.judgeHits, judgeMisses: evalCache.stats.judgeMisses,
+            judgeMemoHits: evalCache.stats.judgeMemoHits, judgeMemoMisses: evalCache.stats.judgeMemoMisses,
+            scopePinned: Boolean(pinnedScope),
+          }
+        : { enabled: false },
+      indexSnapshots: snapshotStore
+        ? {
+            enabled: true,
+            configHash: snapshotStore.config.hash,
+            restored: snapshotCounts.restored, built: snapshotCounts.built, coldBusy: snapshotCounts.coldBusy,
+            rebuiltStale: snapshotCounts.rebuiltStale, rebuiltCorrupt: snapshotCounts.rebuiltCorrupt,
+            indexMsSpent: snapshotCounts.indexMsSpent, indexMsNotSpent: snapshotCounts.indexMsNotSpent,
+            vaultBase: snapshotStore.config.components.vaultBase,
+            components: snapshotStore.config.components,
+          }
+        : { enabled: false },
+      // Caches the product process itself reads, named by whether the operator pointed them at a path (the paths are not recorded).
+      productCaches: Object.fromEntries(['RENOR_EVIDENCE_CACHE', 'RENOR_DIGEST_CACHE', 'RENOR_ROUTER_CACHE'].map(name => [name, Boolean(childEnv[name])])),
     },
     provenance: {
       gitSha: git.sha,
@@ -1474,11 +1638,12 @@ export async function runProductBenchmark(
     fsp.writeFile(path.join(outputDir, 'qa-cases.sha256'), sha256(fs.readFileSync(checkpointPath, 'utf8')) + '\n', 'utf8'),
   ]);
   emitCacheReport(buildCacheReport({
-    embedding: proxyWindow(proxyBefore, readProxyCounters(opts.embedProxyStats)),
+    embedding: embeddingWindow,
     evalCache: evalCache?.stats,
     liveModelCalls,
     pinnedScope: Boolean(pinnedScope),
     healthProbes,
+    ...(snapshotStore ? { indexSnapshots: { restored: snapshotCounts.restored, built: snapshotCounts.built, coldBusy: snapshotCounts.coldBusy, savedIndexMs: snapshotCounts.indexMsNotSpent } } : {}),
   }), outputDir);
   if (ledgerRecord) {
     saveRunOutcome(ledgerRecord, {
@@ -1596,6 +1761,10 @@ async function main(): Promise<void> {
     temperature,
     retries,
     runLedger: { path: resolveRunLedgerPath(process.env), rerunReason: opts.rerunReason },
+    // Cached iteration runs restore memory stores; promotion arms and --no-cache runs build everything cold, as ever.
+    ...(opts.arm !== 'promotion' && opts.cache !== false && opts.indexSnapshots !== false
+      ? { snapshots: { root: resolveSnapshotRoot(opts.snapshotDir), vaultBase: resolveVaultBase(opts.snapshotVaultBase) } }
+      : {}),
   }, hooks);
   const evidence = result.manifest.evidence as EvidenceCoverage;
   console.log(JSON.stringify({

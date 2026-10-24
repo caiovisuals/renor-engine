@@ -18,6 +18,15 @@ describe('parseNote', () => {
     expect(r.title).toBe('Hello');
   });
 
+  it('reads a front matter block that is not a mapping as no front matter (found by tests/fuzz)', () => {
+    // A YAML list here made the export write its items as keys `0`, `1`.
+    for (const block of ['- a\n- b', 'hello', '42', 'true', '2024-01-01']) {
+      const r = parseNote('/v/odd.md', `---\n${block}\n---\n# Odd\n\nBody.`);
+      expect(r.frontmatter, block).toEqual({});
+      expect(r.body).toBe('# Odd\n\nBody.');
+    }
+  });
+
   it('falls back to filename when no h1', () => {
     const r = parseNote('/v/my-note.md', 'Just text.');
     expect(r.title).toBe('my-note');

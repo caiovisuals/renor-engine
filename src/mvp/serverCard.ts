@@ -7,10 +7,11 @@
  * writes that file from the live tool list, and tests/review/gateway-server-card.test.ts fails while the two differ.
  */
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
+import { ENGINE_VERSION } from '../buildIdentity';
 
-/** The MCP server's identity: its initialize reply and this card both take it from here. */
+/** The MCP server's identity: its initialize reply and this card both take it from here. The version is the engine package's. */
 export const SERVER_NAME = 'renor';
-export const SERVER_VERSION = '0.1.0';
+export const SERVER_VERSION = ENGINE_VERSION;
 export const SERVER_TITLE = 'Renor';
 /** The hosted server's one public endpoint (the gateway's /mcp), Streamable HTTP. */
 export const SERVER_ENDPOINT = 'https://mcp.renor.cloud/mcp';

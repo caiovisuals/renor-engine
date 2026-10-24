@@ -36,9 +36,14 @@ const NOT_ENV: Record<string, string> = {
   DESCRIPTIVE_ONLY: 'a verdict of the benchmark comparison',
   RETRIEVAL_DOCUMENT: 'a task type of the Vertex embeddings request',
   RETRIEVAL_QUERY: 'a task type of the Vertex embeddings request',
+  ERR_OUT_OF_RANGE: 'the code node:sqlite gives an integer beyond 2^53',
+  ERR_SQLITE_ERROR: 'the code node:sqlite gives its errors',
+  SQLITE_CANTOPEN: 'a SQLite error code',
   SQLITE_CONSTRAINT_UNIQUE: 'a SQLite error code',
   SQLITE_CORRUPT: 'a SQLite error code',
   SQLITE_NOTADB: 'a SQLite error code',
+  EVIDENCE_MODEL_DEFAULT: 'the name of a constant of the evidence second pass (src/evidence/secondPass.ts), pinned in the index snapshot key',
+  EVIDENCE_REASONING_EFFORTS: 'the name of a constant of the evidence second pass (src/evidence/secondPass.ts), pinned in the index snapshot key',
 };
 
 function sourceFiles(dir: string): string[] {

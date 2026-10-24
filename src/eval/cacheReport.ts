@@ -21,6 +21,10 @@ export interface CacheReport {
   evidence?: HitMissRate;
   answer?: HitMissRate;
   judge?: HitMissRate;
+  /** Of the judge lookups, the memo's (src/eval/evalCache.ts computeJudgeMemoKey): verdicts replayed across routing sessions. Already counted in `judge`. */
+  judgeMemo?: HitMissRate;
+  /** Index snapshots (src/eval/indexSnapshots.ts): memory stores restored instead of built, and the `cli index` time that saved (the build's own wall time). */
+  indexSnapshots?: { restored: number; built: number; coldBusy: number; savedIndexMs: number };
   /** Calls made with no cache in front of them (cache off): live by definition, so they have no hit rate. */
   uncached?: { embedding?: number; model?: number };
   /**
@@ -55,7 +59,8 @@ export function buildCacheReport(input: {
   evidence?: HitMiss;
   /** True when RENOR_EVIDENCE_CACHE names a path that outlives this run's output directory. */
   evidenceCacheShared?: boolean;
-  evalCache?: Pick<EvalCacheStats, 'answerHits' | 'answerMisses' | 'judgeHits' | 'judgeMisses'>;
+  evalCache?: Pick<EvalCacheStats, 'answerHits' | 'answerMisses' | 'judgeHits' | 'judgeMisses'> & Partial<Pick<EvalCacheStats, 'judgeMemoHits' | 'judgeMemoMisses'>>;
+  indexSnapshots?: { restored: number; built: number; coldBusy: number; savedIndexMs: number };
   /** Live answer+judge calls the runner counted itself. Authoritative: a forced-live retry makes a call with no lookup, and with the cache off there is no lookup to count. */
   liveModelCalls?: number;
   /** True when RENOR_QA_CACHE_SCOPE pins the answer/judge scope, so keys survive this process. */
@@ -88,8 +93,12 @@ export function buildCacheReport(input: {
     const { answerHits, answerMisses, judgeHits, judgeMisses } = input.evalCache;
     report.answer = rate({ hits: answerHits, misses: answerMisses });
     report.judge = rate({ hits: judgeHits, misses: judgeMisses });
+    if ((input.evalCache.judgeMemoHits ?? 0) + (input.evalCache.judgeMemoMisses ?? 0) > 0) {
+      report.judgeMemo = rate({ hits: input.evalCache.judgeMemoHits ?? 0, misses: input.evalCache.judgeMemoMisses ?? 0 });
+    }
     if (!input.pinnedScope && answerHits + answerMisses + judgeHits + judgeMisses > 0) report.repeatRunBlockers.push(UNPINNED_SCOPE_BLOCKER);
   }
+  if (input.indexSnapshots) report.indexSnapshots = input.indexSnapshots;
   const modelCalls = input.liveModelCalls ?? (input.evalCache ? input.evalCache.answerMisses + input.evalCache.judgeMisses : 0);
   report.liveProviderCalls += modelCalls;
   if (!input.evalCache && modelCalls > 0) {
@@ -114,6 +123,8 @@ export function formatCacheReport(report: CacheReport): string {
     part('evidence', report.evidence),
     part('answer', report.answer),
     part('judge', report.judge),
+    part('judge memo', report.judgeMemo),
+    report.indexSnapshots ? `index snapshots restored ${report.indexSnapshots.restored}/${report.indexSnapshots.restored + report.indexSnapshots.built + report.indexSnapshots.coldBusy} (${(report.indexSnapshots.savedIndexMs / 1000).toFixed(0)} s of index time not spent)` : null,
     report.uncached?.model ? `answer/judge uncached ${report.uncached.model}` : null,
   ].filter(Boolean);
   const probes = report.healthProbeCalls > 0 ? ` (+${report.healthProbeCalls} health probes, never cached)` : '';

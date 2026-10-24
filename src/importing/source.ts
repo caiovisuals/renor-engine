@@ -307,7 +307,7 @@ export function readBundleSource(
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i].trim();
     if (!line) continue;
-    let record: any;
+    let record: Record<string, unknown> | null | undefined;
     try {
       record = JSON.parse(line);
     } catch {
@@ -332,9 +332,9 @@ export function readBundleSource(
         title: bundleString(record.title, '', 'title', at),
         kind: typeof record.kind === 'string' ? record.kind : null,
         modifiedAt: bundleString(record.modifiedAt, '', 'modifiedAt', at),
-        frontmatter: record.frontmatter && typeof record.frontmatter === 'object' ? record.frontmatter : {},
+        frontmatter: record.frontmatter && typeof record.frontmatter === 'object' ? record.frontmatter as Record<string, unknown> : {},
         chunks: Array.isArray(record.chunks)
-          ? record.chunks.map((c: any, index: number): ImportChunk => {
+          ? record.chunks.map((c: Record<string, unknown> | null | undefined, index: number): ImportChunk => {
             const chunk = bundleWhere(note, i, `chunk ${index}`);
             return {
               headingPath: bundleString(c?.headingPath, '', 'headingPath', chunk),
@@ -350,13 +350,13 @@ export function readBundleSource(
           })
           : [],
         entities: Array.isArray(record.entities)
-          ? record.entities.map((e: any, index: number): ImportEntity => {
+          ? record.entities.map((e: Record<string, unknown> | null | undefined, index: number): ImportEntity => {
             const entity = bundleWhere(note, i, `entity ${index}`);
             return {
               type: bundleString(e?.type, 'note', 'type', entity),
               canonicalName: bundleString(e?.canonicalName, '', 'canonicalName', entity),
               aliases: Array.isArray(e?.aliases)
-                ? e.aliases.map((a: any, aliasIndex: number) => (
+                ? e.aliases.map((a: unknown, aliasIndex: number) => (
                   bundleString(a, '', `alias ${aliasIndex}`, entity)
                 ))
                 : [],
@@ -380,7 +380,7 @@ export function readBundleSource(
         sourcePath: String(record.sourcePath ?? ''),
         origin: record.origin === 'ledger' ? 'ledger' : 'note',
         eventId: typeof record.eventId === 'string' ? record.eventId : undefined,
-        closedEvent: record.closedEvent ?? null,
+        closedEvent: (record.closedEvent ?? null) as string | null, // carried unvalidated, as before
         ledgerSource: typeof record.ledgerSource === 'string' ? record.ledgerSource : undefined,
       });
       continue;

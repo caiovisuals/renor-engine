@@ -1,7 +1,7 @@
 import fs from 'fs/promises';
 import fsSync from 'fs';
 import path from 'path';
-import Database from 'better-sqlite3';
+import Database from '../db/sqlite';
 import { openDb } from '../db/client';
 import { runMigrations } from '../db/schema';
 import { hashContent } from '../indexer/hasher';

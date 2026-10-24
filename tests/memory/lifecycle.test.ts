@@ -5,7 +5,7 @@ import path from 'path';
 import { openDb } from '../../src/db/client';
 import { runMigrations } from '../../src/db/schema';
 import { remember, replayLedger, factsFor, retireFact, restoreFact } from '../../src/memory/lifecycle';
-import type Database from 'better-sqlite3';
+import type Database from '../../src/db/sqlite';
 import { indexFile } from '../../src/indexer/pipeline';
 
 /**

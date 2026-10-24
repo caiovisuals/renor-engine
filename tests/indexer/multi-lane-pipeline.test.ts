@@ -13,7 +13,7 @@ import { LocalRulesDecisionModel } from '../../src/extraction/decision-model';
 import type { DecisionModel } from '../../src/extraction/decision-model';
 import { FACTS_EXTRACTION_VERSION } from '../../src/extraction/typedFacts';
 import { EVENTS_EXTRACTION_VERSION } from '../../src/extraction/eventExtractor';
-import type Database from 'better-sqlite3';
+import type Database from '../../src/db/sqlite';
 import { factValue } from '../helpers/factValue';
 
 /**

@@ -75,7 +75,7 @@ describe('the cleanup a server does when it starts', () => {
 
     // It started and is usable: the index answers.
     expect(app.db.prepare('SELECT COUNT(*) AS c FROM notes').get()).toEqual({ c: 0 });
-    expect(error).toHaveBeenCalledWith('[startup] removing daily-note header facts failed:', 'database disk image is malformed');
+    expect(error).toHaveBeenCalledWith(expect.stringMatching(/"event":"startup_header_cleanup_failed","err":\{"name":"Error","message":"database disk image is malformed"/));
     await app.close();
   });
 });

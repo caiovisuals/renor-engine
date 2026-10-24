@@ -139,7 +139,7 @@ describe('ACCESS-LOG: metadata-only HTTP outcome lines', () => {
     expect(accessLines.length).toBeGreaterThanOrEqual(6);
     const byPath: Record<string, number[]> = {};
     for (const l of accessLines) {
-      expect(Object.keys(l).sort()).toEqual(['client_prefix', 'event', 'instance', 'method', 'ms', 'path', 'status', 'ts'].filter(k => k === 'client_prefix' ? l.client_prefix !== undefined : true).sort());
+      expect(Object.keys(l).sort()).toEqual(['client_prefix', 'event', 'instance', 'level', 'method', 'ms', 'path', 'status', 'svc', 'ts'].filter(k => k === 'client_prefix' ? l.client_prefix !== undefined : true).sort());
       expect(l.instance).toMatch(/^[a-z0-9_-]{0,32}$/); // metadata-only instance id (telemetry), never sensitive
       expect(typeof l.status).toBe('number');
       expect(typeof l.ms).toBe('number');

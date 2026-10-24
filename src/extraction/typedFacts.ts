@@ -198,18 +198,18 @@ export async function extractNumericFacts(
     );
   }
 
-  if (!parsed || typeof parsed !== 'object' || !Array.isArray((parsed as any).facts)) {
+  if (!parsed || typeof parsed !== 'object' || !Array.isArray((parsed as { facts?: unknown }).facts)) {
     throw new ExtractorParseError('extractor-parse-error: fact extraction response is missing a facts array');
   }
 
   const facts: ExtractedNumericFact[] = [];
-  for (const raw of (parsed as any).facts) {
+  for (const raw of (parsed as { facts: Array<Record<string, unknown> | null | undefined> }).facts) {
     const value = raw?.value === undefined || raw?.value === null ? '' : String(raw.value).trim();
     const object = raw?.object === undefined || raw?.object === null ? '' : String(raw.object).trim();
     if (!value || !object) continue; // malformed rows are dropped, not fatal
     const fact: ExtractedNumericFact = { value, object };
     for (const key of ['unit', 'verb', 'event'] as const) {
-      const v = raw[key];
+      const v = raw?.[key];
       if (v !== undefined && v !== null && String(v).trim()) fact[key] = String(v).trim();
     }
     facts.push(fact);

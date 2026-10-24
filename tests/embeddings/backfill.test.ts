@@ -2,7 +2,7 @@ import { describe, it, expect, afterEach, vi } from 'vitest';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
-import type Database from 'better-sqlite3';
+import type Database from '../../src/db/sqlite';
 import { openDb } from '../../src/db/client';
 import { runMigrations } from '../../src/db/schema';
 import { indexFile, indexVault } from '../../src/indexer/pipeline';
@@ -81,7 +81,7 @@ describe('claiming an index with chunks and no vector', () => {
     expect(engine.vectorIndex!.space()).toBe(embeddingSpace(provider));
     expect(engine.vectorIndex!.rebuilding()).toBe(true);
     expect(semanticReady(engine)).toBe(false);
-    expect(log.mock.calls.map((c) => c.join(' ')).join('\n')).toContain(`index.db holds ${chunks} chunk(s) and no vectors`);
+    expect(log.mock.calls.map((c) => c.join(' ')).join('\n')).toContain(`"event":"embeddings_backfill","chunks":${chunks},`);
     const status = engineStatus(db, engine, workspace(dir));
     expect(status.semantic).toBe(false);
     expect(status.embeddingRebuild).toEqual({ chunksLeft: chunks, chunks });
@@ -152,7 +152,7 @@ describe('markVectorsUnfinished: a process with no provider marks an index that 
     const keywordOnly = attachEngine(db, KEYWORD_ONLY, null);
     expect(keywordOnly.provider).toBeNull();
     expect(engine.vectorIndex!.rebuilding()).toBe(true);
-    expect(log.mock.calls.map((c) => c.join(' ')).join('\n')).toContain('no embedding provider is configured');
+    expect(log.mock.calls.map((c) => c.join(' ')).join('\n')).toContain('"event":"embeddings_unconfigured","detail":"no embedding provider is configured');
   });
 });
 

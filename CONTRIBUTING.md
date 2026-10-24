@@ -4,12 +4,11 @@ Thanks for looking. This is a single-owner memory engine, so the bar is simple: 
 
 ## Set up
 
-Renor needs **Node 22** (`.nvmrc`, `mise.toml`). Native modules (`better-sqlite3`, `sqlite-vec`) are built for one Node major, so another version fails at `renor index` with `NODE_MODULE_VERSION`. [Troubleshooting](docs/self-hosting.md#troubleshooting) has the exact fix.
+Renor needs **Node 22.16 or newer** (`.nvmrc` and `mise.toml` pin the tested Node 22): it stores through Node's built-in SQLite and loads sqlite-vec's prebuilt binary, so the install builds nothing. [Troubleshooting](docs/self-hosting.md#troubleshooting) has the fixes for an old Node or a missing sqlite-vec binary.
 
 ```bash
 nvm use                 # or: mise use node@22
-npm ci
-npm rebuild better-sqlite3 --ignore-scripts=false   # only if npm skipped install scripts
+npm ci                  # without --omit=optional: sqlite-vec's binary is an optional dependency
 npm run build
 node scripts/smoke-self-hosted.mjs                  # ends with PASS
 ```
@@ -52,4 +51,4 @@ Report vulnerabilities privately, as described in [SECURITY.md](SECURITY.md). Do
 
 ## License
 
-By contributing you agree that your work is licensed under AGPL-3.0-only, the same as the project ([LICENSE](LICENSE)).
+Inbound = outbound: by contributing you agree that your work is licensed under Apache-2.0, the same as the project ([LICENSE](LICENSE)). There is no CLA. Sign off every commit with the [Developer Certificate of Origin](https://developercertificate.org/) (`git commit -s`, which adds `Signed-off-by: Your Name <you@example.com>`); a pull request with an unsigned commit is not merged.

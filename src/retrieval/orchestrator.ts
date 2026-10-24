@@ -3,7 +3,7 @@ import { dropLedgerPreamble, type IsLedgerNote } from './ledgerPresentation';
 import { createLedgerEventClock } from './ledgerEventTime';
 import { createDailyEntryClock } from './dailyEntryTime';
 import { dailyNoteDayName } from '../memory/dailyNote';
-import Database from 'better-sqlite3';
+import Database from '../db/sqlite';
 import { inReadSnapshot } from '../db/readCache';
 import { listStatement, paddedList, prepareOnce } from '../db/statements';
 import { VectorIndex } from '../embeddings/vectorIndex';
@@ -15,6 +15,10 @@ import { CALIBRATED_BARS, embeddingModelKey } from '../mvp/contextRelevance';
 import { keywordSearch } from './keyword';
 import { quoteFtsQuery, shownPage } from './queryHelpers';
 import { keywordLedgerHits } from './ledgerPresentation';
+import {
+  ENTITY_LANE_BOOST, NEAR_DUP_POOL, applyNearDupCap, entityLaneChunkIds, entityLaneEnabled, entityLaneTerms, laneTermShare,
+  queryRewriteEnabled, resolveNearDupCap, rewriteConversationalQuery,
+} from './plainWording';
 
 export interface RetrievalHit {
   notePath: string;
@@ -462,7 +466,7 @@ function countsTowardNoteCap(h: { notePath: string; chunkId: number; text: strin
   return h.chunkId > 0 && ledgerEventIds(h).length === 0 && dailyNoteDayName(h.notePath) === null;
 }
 
-function applySessionDiversity<T extends { notePath: string; chunkId: number; text: string; headingPath?: string }>(hits: T[], cap: number, topK: number): T[] {
+function applySessionDiversity<T extends { notePath: string; chunkId: number; text: string; headingPath?: string }>(hits: T[], cap: number, _topK: number): T[] {
   // `cap < 1` is the flag-OFF short-circuit and must stay: 0 restores the window exactly as it was
   // before the default existed. The former `|| hits.length <= topK` here was a bypass, not an optimization — it
   // skipped the configured cap entirely whenever the pool was no deeper than the window.
@@ -626,9 +630,27 @@ export function resolveRankedExpansion(env: NodeJS.ProcessEnv = process.env): Ra
   return {
     notes: rawNotes === '' ? Number.POSITIVE_INFINITY : legacy.notes,
     tokenBudget: rawBudget === '' ? SESSION_EXPAND_RANKED_TOKENS : legacy.tokenBudget,
-    statementTokens: legacy.statementTokens,
+    statementTokens: rankedStatementTokens(env) ?? legacy.statementTokens,
     documentStatementTokens: legacy.documentStatementTokens,
   };
+}
+
+/**
+ * RENOR_SESSION_EXPAND_RANKED_STATEMENT_TOKENS (default unset, which is off): the longest conversation statement, in tokens,
+ * that the RANKED expansion alone may add. The former expansion keeps RENOR_SESSION_EXPAND_STATEMENT_TOKENS (120), and an
+ * unset, empty, non-numeric or below-1 value changes nothing anywhere, byte for byte. Set, it wins over
+ * RENOR_SESSION_EXPAND_STATEMENT_TOKENS in the ranked expansion only.
+ *
+ * Why it exists: the session expansion skips a conversation statement over its limit, whole, and the long user turn that
+ * answers a question is often just over 120 tokens (501 to 700 characters: missing from the page 5 times in 21, against 6 in
+ * 777 for shorter ones, on the Haiku default run of 2026-10-23). The chunker splits a section of over 400 tokens into
+ * paragraphs, which this limit never takes, so 400 is the largest value that changes anything. Measured as 400 beside
+ * RENOR_EMBEDDING_SERVED_BY=vertex (the ranked expansion a hosted workspace runs) on the official LongMemEval-S instrument:
+ * engine/docs/evals/results/ranked-statement-limit-20261024/ and LEDGER section BE. A research switch until a default flip lands.
+ */
+export function rankedStatementTokens(env: NodeJS.ProcessEnv = process.env): number | null {
+  const value = Number((env.RENOR_SESSION_EXPAND_RANKED_STATEMENT_TOKENS ?? '').trim());
+  return Number.isFinite(value) && value >= 1 ? Math.floor(value) : null;
 }
 
 /**
@@ -748,11 +770,14 @@ function onceStatement(db: Database.Database, sql: string): () => Database.State
   return () => (statement ??= prepareOnce(db, sql));
 }
 
+/** A `facts` row as the temporal ranking reads it. */
+type FactRow = { predicate: string | null; object_text: string | null; valid_to: string | null };
+
 function getEntityIdsForNotes(db: Database.Database, notePaths: string[]): Array<{ id: number; notePath: string }> {
   if (notePaths.length === 0) return [];
   return (listStatement(
     db, notePaths.length, marks => `SELECT id, source_note as notePath FROM entities WHERE source_note IN (${marks})`
-  ).all(...paddedList(notePaths)) as any[]).map(r => ({ id: r.id, notePath: r.notePath }));
+  ).all(...paddedList(notePaths)) as Array<{ id: number; notePath: string }>).map(r => ({ id: r.id, notePath: r.notePath }));
 }
 
 function getRelatedEntityIds(db: Database.Database, entityIds: Array<{ id: number }>): number[] {
@@ -762,7 +787,7 @@ function getRelatedEntityIds(db: Database.Database, entityIds: Array<{ id: numbe
     db, ids.length, marks => `SELECT DISTINCT target_entity_id as id FROM relations WHERE source_entity_id IN (${marks})
      UNION
      SELECT DISTINCT source_entity_id as id FROM relations WHERE target_entity_id IN (${marks})`
-  ).all(...paddedList(ids), ...paddedList(ids)) as any[];
+  ).all(...paddedList(ids), ...paddedList(ids)) as Array<{ id: number }>;
   const existing = new Set(ids);
   return rows.map(r => r.id).filter(id => !existing.has(id));
 }
@@ -771,7 +796,7 @@ function getNotesForEntities(db: Database.Database, entityIds: number[]): string
   if (entityIds.length === 0) return [];
   return (listStatement(
     db, entityIds.length, marks => `SELECT DISTINCT source_note FROM entities WHERE id IN (${marks})`
-  ).all(...paddedList(entityIds)) as any[]).map(r => r.source_note);
+  ).all(...paddedList(entityIds)) as Array<{ source_note: string }>).map(r => r.source_note);
 }
 
 function getBestChunksForNotes(db: Database.Database, notePaths: string[], limit: number, keep?: ChunkFilter): Array<{
@@ -788,7 +813,9 @@ function getBestChunksForNotes(db: Database.Database, notePaths: string[], limit
      ) WHERE rn = 1
      ORDER BY notePath
      LIMIT ?`
-  ).all(...paddedList(notePaths), keep ? -1 : limit) as any[];
+  ).all(...paddedList(notePaths), keep ? -1 : limit) as Array<{
+    notePath: string; chunkId: number; headingPath: string; text: string; startLine: number; endLine: number
+  }>;
   // Given `keep`, the chunks it shows are judged before the limit (LIMIT -1 is none).
   return keep ? chunks.filter(keep).slice(0, limit) : chunks;
 }
@@ -815,9 +842,13 @@ export async function retrieveContext(
   contentfulHeld.clear(); // what another read worked out is not this read's
   const factHits = factsFirstHits(db, query, Math.min(3, topK), opts.scope?.shows);
   const queryProbe: RetrievalProbe = opts.probe ?? {}; // the query vector, for the expansion's ranking
-  const candidateLimit = Math.min(40, topK * 4);
+  // RENOR_NEAR_DUP_CAP (default off): the pool is read deeper, so the places near-copies leave are taken (plainWording.ts).
+  const nearDupCap = resolveNearDupCap();
+  const candidateLimit = nearDupCap > 0 ? Math.min(NEAR_DUP_POOL.max, topK * NEAR_DUP_POOL.perTopK) : Math.min(40, topK * 4);
+  // RENOR_QUERY_REWRITE (default off): what is embedded is the query without its conversational wrapper.
+  const embeddedQuery = queryRewriteEnabled() ? rewriteConversationalQuery(query) : query;
   const semanticHits = vectorIndex && provider
-    ? await semanticSearch(db, vectorIndex, provider, query, candidateLimit, queryProbe, opts.scope)
+    ? await semanticSearch(db, vectorIndex, provider, embeddedQuery, candidateLimit, queryProbe, opts.scope)
     : (() => {
         const match = quoteFtsQuery(query);
         if (!match) return [];
@@ -832,17 +863,77 @@ export async function retrieveContext(
           candidateLimit,
         );
       })();
+  // RENOR_ENTITY_LANE (default off): the chunks that carry the rare words the query names join the pool at their own cosine.
+  const laneTerms = entityLaneEnabled() && vectorIndex && queryProbe.queryVector
+    ? inReadSnapshot(db, () => entityLanePool(db, vectorIndex, queryProbe.queryVector!, query, topK, semanticHits, opts))
+    : [];
   // The window is ranked without waiting for anything, so it is read in one transaction (inReadSnapshot).
-  const window = inReadSnapshot(db, () => rankWindow({ db, query, topK, priorityPaths, clock, opts, factHits, semanticHits }));
+  const window = inReadSnapshot(db, () => rankWindow({ db, query, topK, priorityPaths, clock, opts, factHits, semanticHits, laneTerms, nearDupCap }));
   return finishContext({ db, vectorIndex, provider, query, queryProbe, window, bestFirst: opts.bestFirst === true });
+}
+
+type PoolHit = Omit<Awaited<ReturnType<typeof semanticSearch>>[number], 'startLine' | 'endLine'>;
+
+/**
+ * The entity lane (RENOR_ENTITY_LANE): the lane words of the query (plainWording.ts entityLaneTerms) and, appended to
+ * `pool`, the chunks that carry them and are not in it yet, each at its own cosine to the query vector (one
+ * `VectorIndex.search` among their ids: no embedding, no model call). A scoped read judges them as it judges the pool.
+ * Returns the lane words, which the window lifts every hit that carries them by.
+ */
+function entityLanePool(
+  db: Database.Database, vectorIndex: VectorIndex, queryVector: number[], query: string, topK: number, pool: PoolHit[], opts: RetrieveOptions,
+): string[] {
+  const terms = entityLaneTerms(db, query);
+  if (terms.length === 0) return [];
+  const inPool = new Set(pool.map(h => h.chunkId));
+  const ids = entityLaneChunkIds(db, terms, topK, opts.isLedgerNote).filter(id => !inPool.has(id));
+  if (ids.length === 0) return terms;
+  const cosine = new Map(vectorIndex.search(queryVector, ids.length, ids).map(h => [h.chunkId, h.score]));
+  const rows = prepareOnce(
+    db, 'SELECT id AS chunkId, note_path AS notePath, heading_path AS headingPath, text FROM chunks WHERE id IN (SELECT value FROM json_each(?))',
+  ).all(JSON.stringify(ids)) as Array<{ chunkId: number; notePath: string; headingPath: string; text: string }>;
+  for (const row of rows) {
+    if (!cosine.has(row.chunkId)) continue; // no vector yet: the semantic lane could not have found it either
+    if (opts.scope && !opts.scope.shows(row)) continue;
+    pool.push({ ...row, score: cosine.get(row.chunkId)! });
+  }
+  return terms;
+}
+
+/** How many places of a window the entity lane keeps for the best hits that carry every lane word. */
+export const ENTITY_LANE_RESERVED = 3;
+
+/**
+ * The first `topK` of `ranked`, but with its best ENTITY_LANE_RESERVED hits that carry every lane word in it: each one
+ * the cut would leave out takes the place of the last hit that carries none. A lift alone depends on the embedding's
+ * scale (a cosine of 0.8 against 0.1 on the lexical stub, a few hundredths on a real model); a place does not. Without
+ * lane words, the first `topK`.
+ */
+function reserveLanePlaces<T extends { text: string }>(ranked: T[], topK: number, laneTerms: string[]): T[] {
+  const window = ranked.slice(0, topK);
+  if (laneTerms.length === 0) return window;
+  const carries = (h: T) => laneTermShare(h.text, laneTerms) === 1;
+  const missing = ranked.filter(carries).slice(0, ENTITY_LANE_RESERVED).filter(h => !window.includes(h));
+  for (const hit of missing) {
+    let at = window.length - 1;
+    while (at >= 0 && laneTermShare(window[at].text, laneTerms) > 0) at--;
+    if (at < 0) break;
+    window.splice(at, 1);
+    window.push(hit);
+  }
+  return window;
 }
 
 /** The window of hits of a read: scored, with the graph of its notes, their facts and dates, live and capped per note. Waits for nothing. */
 function rankWindow(read: {
   db: Database.Database; query: string; topK: number; priorityPaths: string[]; clock: { nowMs?: number }; opts: RetrieveOptions;
-  factHits: ReturnType<typeof factsFirstHits>; semanticHits: Omit<Awaited<ReturnType<typeof semanticSearch>>[number], 'startLine' | 'endLine'>[];
+  factHits: ReturnType<typeof factsFirstHits>; semanticHits: PoolHit[];
+  /** RENOR_ENTITY_LANE's words: a hit that carries them is lifted by up to ENTITY_LANE_BOOST. Empty when the lane is off. */
+  laneTerms: string[];
+  /** RENOR_NEAR_DUP_CAP: at most this many near-copies in the window; 0 is off. */
+  nearDupCap: number;
 }) {
-  const { db, query, topK, priorityPaths, clock, opts, factHits, semanticHits } = read;
+  const { db, query, topK, priorityPaths, clock, opts, factHits, semanticHits, laneTerms, nearDupCap } = read;
   // Raw cosines, kept only for a caller that asked to see them (get_context's relevance signal).
   const cosineByChunk = opts.probe ? new Map(semanticHits.map(h => [h.chunkId, h.score])) : null;
   const entityHit = lookupEntity(db, query.trim());
@@ -863,7 +954,7 @@ function rankWindow(read: {
     if (!noteRows.has(notePath)) noteRows.set(notePath, noteRowStmt().get(notePath) as NoteRow);
     return noteRows.get(notePath);
   };
-  const ownFactRows = new Map<number, any[]>();
+  const ownFactRows = new Map<number, FactRow[]>();
 
   const scored = semanticHits.map(h => {
     let score = h.score; let reason = 'semantic';
@@ -876,6 +967,10 @@ function rankWindow(read: {
     }
     if (priorityPaths.some(p => h.notePath.includes('/' + p) || h.notePath.startsWith(p))) { score += 0.1; reason += '+priority'; }
     if (entityHit?.sourceNote === h.notePath) { score += 0.2; reason += '+entity'; }
+    if (laneTerms.length > 0) {
+      const share = laneTermShare(h.text, laneTerms);
+      if (share > 0) { score += ENTITY_LANE_BOOST * share; reason += '+entity-lane'; }
+    }
     // Time-decay recency: +0.1 for today, linearly decaying to 0 over 30 days.
     // Skipped for explicit past-date (as-of) queries: recency answers "now",
     // the as-of query asks about "then".
@@ -931,13 +1026,13 @@ function rankWindow(read: {
   const asofPast = asofPastLike(query, asofNowMs);
   const asofRef = asofDatedRef(query, asofNowMs);
   const historicalNotes = new Set<string>();
-  const factsByNote = new Map<string, any[]>();
+  const factsByNote = new Map<string, FactRow[]>();
   if (temporal) {
     // Frontmatter historical flags for all hit notes (one batched query).
     if (hitNotePaths.length > 0) {
       const noteRows = listStatement(
         db, hitNotePaths.length, marks => `SELECT path, frontmatter_json FROM notes WHERE path IN (${marks})`
-      ).all(...paddedList(hitNotePaths)) as any[];
+      ).all(...paddedList(hitNotePaths)) as Array<{ path: string; frontmatter_json: string }>;
       for (const row of noteRows) {
         if (frontmatterMarksHistorical(row.frontmatter_json)) historicalNotes.add(row.path);
       }
@@ -949,16 +1044,16 @@ function rankWindow(read: {
       const ids = hitEntityIds.map(e => e.id);
       const nameRows = listStatement(
         db, ids.length, marks => `SELECT DISTINCT canonical_name FROM entities WHERE id IN (${marks})`
-      ).all(...paddedList(ids)) as any[];
+      ).all(...paddedList(ids)) as Array<{ canonical_name: string }>;
       const names = nameRows.map(r => String(r.canonical_name)).filter(Boolean);
       if (names.length > 0) {
         const entityRows = listStatement(
           db, names.length, marks => `SELECT id, canonical_name, source_note FROM entities WHERE canonical_name COLLATE NOCASE IN (${marks})`
-        ).all(...paddedList(names)) as any[];
+        ).all(...paddedList(names)) as Array<{ id: number; canonical_name: string; source_note: string }>;
         const nameByEntityId = new Map(entityRows.map(r => [r.id, String(r.canonical_name).toLowerCase()]));
         const factRows = listStatement(
           db, entityRows.length, marks => `SELECT subject_entity_id, predicate, object_text, valid_to FROM facts WHERE subject_entity_id IN (${marks})`
-        ).all(...paddedList(entityRows.map(r => r.id))) as any[];
+        ).all(...paddedList(entityRows.map(r => r.id))) as Array<FactRow & { subject_entity_id: number }>;
         for (const hitEntity of hitEntityIds) {
           const ownName = nameByEntityId.get(hitEntity.id);
           if (ownName === undefined) continue;
@@ -987,7 +1082,7 @@ function rankWindow(read: {
       const own = hitEntityIds.find(e => e.notePath === hit.notePath);
       if (!own) return [];
       let rows = ownFactRows.get(own.id);
-      if (!rows) ownFactRows.set(own.id, rows = ownFactsStmt().all(own.id) as any[]);
+      if (!rows) ownFactRows.set(own.id, rows = ownFactsStmt().all(own.id) as FactRow[]);
       return rows;
     })();
     const facts = factsByNote.get(hit.notePath) ?? [];
@@ -1101,7 +1196,8 @@ function rankWindow(read: {
     closedLedgerEvents(db), opts.includeHistory === true,
   ), opts.isLedgerNote);
   const diversityCap = resolveSessionDiversityCap(process.env, opts.noteCapWhenUnset);
-  let hits = applySessionDiversity(mixed, diversityCap, topK).slice(0, topK).map(h => ({
+  // RENOR_NEAR_DUP_CAP (default off): near-copies are capped before the per-note cap, on the visible text.
+  let hits = reserveLanePlaces(applySessionDiversity(applyNearDupCap(mixed, nearDupCap, contentfulText), diversityCap, topK), topK, laneTerms).map(h => ({
     notePath: h.notePath,
     chunkId: h.chunkId,
     headingPath: h.headingPath,

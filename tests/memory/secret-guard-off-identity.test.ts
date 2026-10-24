@@ -3,12 +3,13 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import Database from 'better-sqlite3';
+import Database from '../../src/db/sqlite';
 import { scanSecrets } from '../../src/extraction/secretScanner';
 import { BUNDLE_FORMAT, type ImportBundle, type ImportFact, type ImportNote } from '../../src/importing/types';
 import type { ParsedConversation } from '../../src/conversation/types';
 import type { MemoryMapContext } from '../../src/memorymap/memoryMap';
 import { KEY_SHAPES, Rng, password } from '../../scripts/eval/secret-guard/plantedSet';
+import { useCurrentDriver } from '../helpers/currentDriver';
 
 // Wraps the real scanner so the tests can count its calls. The behaviour is unchanged.
 vi.mock('../../src/extraction/secretScanner', async importOriginal => {
@@ -130,7 +131,9 @@ function exportSrc(sha: string): { dir: string; src: string } {
   const extracted = spawnSync('tar', ['-x', '-C', dir], { input: tar });
   if (extracted.status !== 0) throw new Error(`tar could not unpack the export of ${sha}`);
   fs.symlinkSync(path.join(ENGINE, 'node_modules'), path.join(dir, 'engine', 'node_modules'));
-  return { dir, src: path.join(dir, 'engine', 'src') };
+  const src = path.join(dir, 'engine', 'src');
+  useCurrentDriver(src); // the same driver as the tree under test, in place of better-sqlite3 (tests/helpers/currentDriver.ts)
+  return { dir, src };
 }
 
 // ----------------------------------------------------------------------------- what a run leaves, in a comparable form

@@ -1,4 +1,4 @@
-import Database from 'better-sqlite3';
+import Database from '../db/sqlite';
 import { SimdRows, SIMD_MIN_BYTES } from './simdScan';
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const sqliteVec = require('sqlite-vec') as { load: (db: Database.Database) => void };
@@ -385,7 +385,7 @@ export class VectorIndex {
   }
 
   get(chunkId: number): number[] | null {
-    const row = this.stmt('SELECT embedding FROM chunk_embeddings WHERE rowid = ?').get(BigInt(chunkId)) as any;
+    const row = this.stmt('SELECT embedding FROM chunk_embeddings WHERE rowid = ?').get(BigInt(chunkId)) as { embedding: Buffer } | undefined;
     if (!row) return null;
     return Array.from(new Float32Array(row.embedding.buffer ?? row.embedding));
   }
@@ -628,7 +628,6 @@ export class VectorIndex {
    */
   private searchMirror(qf: Float32Array, query: Buffer, topK: number, among?: number[]): VectorSearchResult[] | null {
     const m = this.mirror!;
-    const dims = this.dimensions;
     let slots: number[] | null = null;
     if (among) {
       const seen = new Set<number>();

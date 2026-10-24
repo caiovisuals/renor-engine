@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import Database from 'better-sqlite3';
+import Database from '../db/sqlite';
 import type { EmbedOptions, EmbeddingIdentity, EmbeddingProvider } from './types';
 
 /**

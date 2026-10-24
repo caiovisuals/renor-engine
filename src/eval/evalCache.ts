@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import Database from 'better-sqlite3';
+import Database from '../db/sqlite';
 
 /**
  * Content-addressed eval cache for LongMemEval QA runs.
@@ -58,6 +58,9 @@ import Database from 'better-sqlite3';
  */
 export const CACHE_SCHEMA_VERSION = 'evalcache-v4';
 
+/** Routing-free scope of the judge memo (see EvalCache.computeJudgeMemoKey). Bump with its key formula. */
+export const JUDGE_MEMO_SCOPE = 'judge-memo-v1';
+
 export interface CachedResponse {
   rawContent: string;
   modelEcho: string;
@@ -112,6 +115,9 @@ export interface EvalCacheStats {
   /** Cache lookup latency tracking. */
   cacheLookupTotalMs: number;
   cacheLookupCount: number;
+  /** Judge verdicts replayed from the judge memo (also counted in judgeHits) and judge-memo lookups that found nothing. */
+  judgeMemoHits: number;
+  judgeMemoMisses: number;
 }
 
 export interface EvalCacheEntry {
@@ -138,6 +144,7 @@ export class EvalCache {
     liveAnswerPromptTokens: 0, liveAnswerCompletionTokens: 0,
     liveJudgePromptTokens: 0, liveJudgeCompletionTokens: 0,
     cacheLookupTotalMs: 0, cacheLookupCount: 0,
+    judgeMemoHits: 0, judgeMemoMisses: 0,
   };
 
   private readonly lookupStmt: Database.Statement;
@@ -205,6 +212,57 @@ export class EvalCache {
     return crypto.createHash('sha256')
       .update(`${CACHE_SCHEMA_VERSION}\0${providerNamespace}\0${cacheScope}\0${JSON.stringify(requestBody)}`)
       .digest('hex');
+  }
+
+  /**
+   * Key of the judge memo: one judge verdict per (question id, judge endpoint and model, and the whole judge
+   * request: system prompt, the question, the gold answer, the model answer, temperature and token cap).
+   * No routing scope: a verdict is a function of what the judge was asked, so a later run with a new routing
+   * session asks nothing new. The READER's answer is never keyed this way: it keeps the scope, so independent
+   * draws stay independent (only an identical answer text earns an identical verdict).
+   */
+  static computeJudgeMemoKey(
+    providerNamespace: string,
+    questionId: string,
+    requestBody: Record<string, unknown>,
+  ): string {
+    return crypto.createHash('sha256')
+      .update(`${CACHE_SCHEMA_VERSION}\0${providerNamespace}\0${JUDGE_MEMO_SCOPE}\0${questionId}\0${JSON.stringify(requestBody)}`)
+      .digest('hex');
+  }
+
+  /** Look up a memoized judge verdict. A hit counts as a judge hit (and its avoided tokens); a miss is only counted as a memo miss. */
+  getJudgeMemo(memoKey: string): CachedResponse | null {
+    const row = this.lookupStmt.get(memoKey) as {
+      raw_content: string; model_echo: string; finish_reason: string;
+      prompt_tokens: number; completion_tokens: number; latency_ms: number;
+      provider_namespace: string;
+    } | undefined;
+    if (!row) {
+      this.stats.judgeMemoMisses++;
+      return null;
+    }
+    this.stats.judgeMemoHits++;
+    this.stats.judgeHits++;
+    this.stats.avoidedJudgePromptTokens += row.prompt_tokens;
+    this.stats.avoidedJudgeCompletionTokens += row.completion_tokens;
+    return {
+      rawContent: row.raw_content,
+      modelEcho: row.model_echo,
+      finishReason: row.finish_reason,
+      promptTokens: row.prompt_tokens,
+      completionTokens: row.completion_tokens,
+      latencyMs: row.latency_ms,
+      providerNamespace: row.provider_namespace,
+    };
+  }
+
+  /**
+   * Record a live judge verdict in the memo. Callers pass only verdicts that parsed: a response the parser
+   * refuses is retried by the next run, not replayed. Not a live call: put() already counted it.
+   */
+  putJudgeMemo(entry: EvalCacheEntry): boolean {
+    return this.insertEntry(entry) > 0;
   }
 
   /**

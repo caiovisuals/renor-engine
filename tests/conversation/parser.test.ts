@@ -148,6 +148,44 @@ describe("parseConversation", () => {
     expect(result.title).toBe("fallback-id");
   });
 
+  it("skips malformed lines and blocks instead of failing the session (found by tests/fuzz)", async () => {
+    const tmp = fixtureFile("malformed.jsonl");
+    await fs.promises.writeFile(
+      tmp,
+      [
+        "null",
+        '{"type":"ai-title","aiTitle":42}',
+        '{"type":"user","message":{"role":"user","content":[null,{"type":"text","text":5},{"type":"text","text":"Kept"}]}}',
+        '{"type":"assistant","message":{"role":"assistant","content":[null,{"type":"tool_use","name":"Bash","input":{"command":{"x":1}}},{"type":"tool_use","name":"Edit","input":{"file_path":"a.ts","old_string":7}}]}}',
+      ].join("\n") + "\n",
+      "utf8",
+    );
+    const result = await parseConversation(tmp, "test-id", "/test", { maxRetries: 0 });
+    expect(result.title).toBe("test-id");
+    expect(result.turns).toEqual([
+      { role: "user", text: "Kept", toolCalls: [] },
+      { role: "assistant", text: "", toolCalls: [{ kind: "edit", filePath: "a.ts", oldString: "", newString: "" }] },
+    ]);
+  });
+
+  it("takes timeStart only from a string timestamp: a malformed dequeue is skipped like any malformed field", async () => {
+    const tmp = fixtureFile("bad-timestamp.jsonl");
+    await fs.promises.writeFile(
+      tmp,
+      [
+        '{"type":"queue-operation","operation":"dequeue","timestamp":42}',
+        '{"type":"queue-operation","operation":"dequeue","timestamp":"2026-04-03T10:00:00.000Z"}',
+      ].join("\n") + "\n",
+      "utf8",
+    );
+    expect((await parseConversation(tmp, "test-id", "/test", { maxRetries: 0 })).timeStart).toBe("2026-04-03T10:00:00.000Z");
+
+    await fs.promises.writeFile(tmp, '{"type":"queue-operation","operation":"dequeue","timestamp":{"at":1}}\n', "utf8");
+    const { timeStart } = await parseConversation(tmp, "test-id", "/test", { maxRetries: 0 });
+    expect(typeof timeStart).toBe("string");
+    expect(Number.isNaN(Date.parse(timeStart))).toBe(false);
+  });
+
   it("skips sidechain messages", async () => {
     const tmp = fixtureFile("sidechain.jsonl");
     await fs.promises.writeFile(

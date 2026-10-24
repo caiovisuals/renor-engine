@@ -1,7 +1,7 @@
 import express from 'express';
 import { hostHeaderValidation } from '@modelcontextprotocol/sdk/server/middleware/hostHeaderValidation.js';
 import { bearerTokenGuard, LOCAL_API_HOSTNAMES } from './apiAuth';
-import Database from 'better-sqlite3';
+import Database from '../db/sqlite';
 import { retrieveContext } from '../retrieval/orchestrator';
 import { ledgerNoteMatcher, presentLedgerEvents } from '../retrieval/ledgerPresentation';
 import { lookupEntity } from '../retrieval/entityLookup';
@@ -12,7 +12,10 @@ import { attachSearchEvidence, searchEvidenceEnabled, EVIDENCE_HIT_PATH } from '
 import { createEvidenceExtractor, resolveEvidenceToolOptions } from '../evidence/options';
 import { composeQueryContextFromDb, structuredContextEnabled } from '../context/composer';
 import { readHonestyEnabled, readHonestyForItems } from '../context/readHonesty';
-import { readBuildIdentity } from '../buildIdentity';
+import { ENGINE_VERSION, readBuildIdentity } from '../buildIdentity';
+import { createLogger } from '../mvp/log';
+
+const log = createLogger('engine');
 
 interface ProviderLike { embed(texts: string[]): Promise<number[][]>; dimensions: number }
 
@@ -56,17 +59,17 @@ export function createServer(
   // at build time by scripts/ci/stamp-build.mjs and read through the shared,
   // non-throwing helper (src/buildIdentity.ts) that the MVP's GET /version also
   // uses. Deploy drift must be observable; the manifest never throws.
-  app.get('/api/health', (req: any, res: any) => {
-    res.json({ ok: true, name: 'renor', version: '1.0.0', ...readBuildIdentity() });
+  app.get('/api/health', (_req, res) => {
+    res.json({ ok: true, name: 'renor', version: ENGINE_VERSION, ...readBuildIdentity() });
   });
 
-  app.post('/retrieve-context', async (req: any, res: any) => {
+  app.post('/retrieve-context', async (req, res) => {
     const { query, topK: rawTopK = 20 } = req.body;
     if (!query) return void res.status(400).json({ error: 'query required' });
     const topK = Math.min(100, Math.max(1, Math.floor(Number(rawTopK) || 20)));
     // LANE 3 read-time honesty (RENOR_READ_HONESTY, default OFF): provenance +
     // contradiction + abstention alongside the unchanged hits array.
-    const readHonesty = (hits: any[]) =>
+    const readHonesty = (hits: Parameters<typeof readHonestyForItems>[0]['items']) =>
       readHonestyEnabled()
         ? {
             readHonesty: readHonestyForItems({
@@ -108,16 +111,16 @@ export function createServer(
         ...readHonesty(shown),
       });
     }
-    catch (e: any) { res.status(500).json({ error: e.message }); }
+    catch (e) { res.status(500).json({ error: e instanceof Error ? e.message : String(e) }); }
   });
 
-  app.get('/entity/:name', (req: any, res: any) => {
+  app.get('/entity/:name', (req, res) => {
     const entity = lookupEntity(db, req.params.name);
     if (!entity) return void res.status(404).json({ error: 'not found' });
     res.json(entity);
   });
 
-  app.get('/facts/:entityId', (req: any, res: any) => {
+  app.get('/facts/:entityId', (req, res) => {
     // Current-only by default (temporal-memory contract): superseded facts carry
     // valid_to and are opt-in via history/asOf endpoints, never the ID route.
     const rows = db.prepare(
@@ -127,45 +130,45 @@ export function createServer(
   });
 
 
-  app.post('/memory/daily', async (req: any, res: any) => {
+  app.post('/memory/daily', async (req, res) => {
     const { date, text, source = 'api' } = req.body;
     if (!date || !text) return void res.status(400).json({ error: 'date and text required' });
     try { await appendDailyMemory(vaultPath, date, { text, source }, memoryDir); res.json({ ok: true }); }
-    catch (e: any) { res.status(500).json({ error: e.message }); }
+    catch (e) { res.status(500).json({ error: e instanceof Error ? e.message : String(e) }); }
   });
 
   // Lifecycle-backed durable memory (ledger-first, supersedes, idempotent, returns receipt).
-  app.post('/memory/fact', async (req: any, res: any) => {
+  app.post('/memory/fact', async (req, res) => {
     const { subject, predicate, object, source } = req.body;
     if (!subject || !predicate || !object) return void res.status(400).json({ error: 'subject, predicate, object required' });
     try { res.json(await remember(db, vaultPath, config_ledgerPath, { subject, predicate, object, source })); }
-    catch (e: any) {
+    catch (e) {
       // A rejected lifecycle FIELD is the caller's mistake, not an engine fault: remember()
       // validates every field before touching the ledger, so this is a bad request and must
       // answer 4xx. Answering 500 made a client-side type bug (a non-string `object`) look like
       // a server outage. Engine faults — unreadable ledger, reused event id, clock regression,
       // an escaping ledger path — still throw plain Errors and stay 500.
       if (e instanceof LifecycleInputError) return void res.status(400).json({ error: e.message });
-      res.status(500).json({ error: e.message });
+      res.status(500).json({ error: e instanceof Error ? e.message : String(e) });
     }
   });
 
   // Facts by entity NAME (agents don't know DB ids). ?asOf=ISO&history=1
-  app.get('/facts-for/:name', (req: any, res: any) => {
+  app.get('/facts-for/:name', (req, res) => {
     try {
       res.json(factsFor(db, req.params.name, {
         asOf: req.query.asOf as string | undefined,
         includeHistory: req.query.history === '1' || req.query.history === 'true',
       }));
-    } catch (e: any) { res.status(500).json({ error: e.message }); }
+    } catch (e) { res.status(500).json({ error: e instanceof Error ? e.message : String(e) }); }
   });
 
   // One generic answer for anything a route did not handle: Express's own error page names the absolute path of the
   // file that threw. The cause stays in this process's log.
-  app.use((err: any, _req: express.Request, res: express.Response, next: express.NextFunction) => {
+  app.use((err: { status?: unknown } | null | undefined, _req: express.Request, res: express.Response, next: express.NextFunction) => {
     if (res.headersSent) return next(err);
-    const status = Number.isInteger(err?.status) && err.status >= 400 && err.status < 500 ? err.status : 500;
-    if (status >= 500) console.error('[serve] request failed:', err);
+    const status = typeof err?.status === 'number' && Number.isInteger(err.status) && err.status >= 400 && err.status < 500 ? err.status : 500;
+    if (status >= 500) log.error('serve_request_failed', { status }, err);
     res.status(status).json({ error: status >= 500 ? 'internal error' : 'bad request' });
   });
 

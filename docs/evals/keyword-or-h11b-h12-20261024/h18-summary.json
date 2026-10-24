@@ -1,0 +1,18 @@
+{
+  "queries": 409,
+  "or": {
+    "neededOnPage": 0.7334963325183375,
+    "meanTokens": 601.1662591687042,
+    "present": 300
+  },
+  "orlean": {
+    "neededOnPage": 0.7334963325183375,
+    "meanTokens": 348.36919315403424,
+    "present": 300
+  },
+  "orleanVsBase": {
+    "base": "or",
+    "gains": 0,
+    "losses": 0
+  }
+}

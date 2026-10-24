@@ -18,12 +18,20 @@ const MODEL_DIMENSIONS: Record<string, number> = {
   'intfloat/multilingual-e5-base': 768,
 };
 
+/** The slice of @xenova/transformers this provider calls. The package is an optional peer: its own types may be absent. */
+type FeatureExtractor = (texts: string[], options: { pooling: 'mean'; normalize: boolean }) => Promise<{ tolist(): unknown }>;
+interface TransformersModule {
+  pipeline(task: 'feature-extraction', model: string): Promise<FeatureExtractor>;
+  env: { cacheDir: string };
+}
+const TRANSFORMERS_PACKAGE: string = '@xenova/transformers';
+
 export class LocalEmbeddingProvider implements EmbeddingProvider {
   dimensions: number;
   readonly identity: EmbeddingIdentity;
   private modelName: string;
-  private extractor: any = null;
-  private initPromise: Promise<any> | null = null;
+  private extractor: FeatureExtractor | null = null;
+  private initPromise: Promise<FeatureExtractor> | null = null;
 
   constructor(modelName?: string) {
     this.modelName = modelName ?? 'Xenova/multilingual-e5-base';
@@ -31,18 +39,19 @@ export class LocalEmbeddingProvider implements EmbeddingProvider {
     this.identity = { kind: 'local', model: this.modelName };
   }
 
-  private getExtractor(): Promise<any> {
+  private getExtractor(): Promise<FeatureExtractor> {
     if (this.extractor) return Promise.resolve(this.extractor);
     if (this.initPromise) return this.initPromise;
     this.initPromise = (async () => {
       // An optional peer dependency: an `npx renor-engine` install leaves it out (it is hundreds of megabytes), a clone has it.
-      const { pipeline, env } = await import('@xenova/transformers' as any).catch((err: unknown) => {
+      const { pipeline, env } = await (import(TRANSFORMERS_PACKAGE) as Promise<TransformersModule>).catch((err: unknown) => {
         if (!/cannot find (module|package)/i.test(String((err as Error)?.message))) throw err;
         throw new Error('EMBEDDING_PROVIDER=local needs the optional package @xenova/transformers: add it (`npx -y -p renor-engine -p @xenova/transformers renor-engine mcp`, or `npm install @xenova/transformers` beside a clone) or set EMBEDDING_PROVIDER=none');
       });
       env.cacheDir = path.join(os.homedir(), '.cache', 'osm-memory', 'models');
-      this.extractor = await pipeline('feature-extraction', this.modelName);
-      return this.extractor;
+      const extractor = await pipeline('feature-extraction', this.modelName);
+      this.extractor = extractor;
+      return extractor;
     })();
     return this.initPromise;
   }

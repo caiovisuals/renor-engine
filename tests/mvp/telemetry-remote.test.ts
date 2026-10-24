@@ -120,6 +120,28 @@ describe('MVP remote telemetry', () => {
     expect(JSON.stringify(span)).not.toContain('alpha-three');
   });
 
+  it('exports a tool call to Langfuse as timings and ids only, even when the caller hands it memory text', async () => {
+    process.env.LANGFUSE_PUBLIC_KEY = 'pk-lf-test';
+    process.env.LANGFUSE_SECRET_KEY = 'sk-lf-test';
+    const fetchMock = okFetch();
+    vi.stubGlobal('fetch', fetchMock);
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    const memory = 'my partner is allergic to peanuts';
+
+    emitTelemetry({
+      event: 'tool_use', tool: 'get_context', ok: true, ms: 42,
+      query: memory, content: memory, email: 'ada@example.com', phases: { embed: 3 },
+    } as unknown as Parameters<typeof emitTelemetry>[0]);
+    await flushTelemetry();
+
+    const body = String((fetchMock.mock.calls[0] as unknown as [string, RequestInit])[1].body);
+    const span = JSON.parse(body).resourceSpans[0].scopeSpans[0].spans[0];
+    expect(span.attributes.map((a: { key: string }) => a.key)).toEqual([
+      'renor.event', 'renor.instance_id', 'renor.tool', 'renor.ok', 'renor.duration_ms',
+    ]);
+    for (const text of ['peanuts', 'ada@example.com', 'embed']) expect(body).not.toContain(text);
+  });
+
   it('forwards a schema-rejected call to PostHog as the tool, the argument and the kind, and nothing else', async () => {
     process.env.MVP_INSTANCE_ID = 'alpha-four';
     process.env.RENOR_POSTHOG_KEY = 'phc_test';

@@ -1,0 +1,20 @@
+{
+  "off": {
+    "n": 409,
+    "candidate": 264,
+    "final": 167,
+    "candidateNotFinal": 98,
+    "notCandidate": 145,
+    "proxyPresent": 347,
+    "proxyAndNotFinal": 193
+  },
+  "or": {
+    "n": 409,
+    "candidate": 346,
+    "final": 300,
+    "candidateNotFinal": 46,
+    "notCandidate": 63,
+    "proxyPresent": 347,
+    "proxyAndNotFinal": 52
+  }
+}

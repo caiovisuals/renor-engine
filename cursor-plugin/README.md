@@ -4,7 +4,7 @@ Cursor plugin that connects agents to [Renor](https://renor.cloud), durable memo
 
 Tell an agent something once. Renor keeps it, and your agents in Cursor (and Claude Code, Codex, OpenCode and the rest) recall it when it is relevant later.
 
-This plugin needs a Renor account (<https://renor.cloud>) and connects only to the hosted service. To connect Cursor to an engine you run yourself, skip the plugin and follow "Cursor" in the [engine README](https://github.com/patrickpassosb/renor-engine#connect-your-agent).
+This plugin needs a Renor account (<https://renor.cloud>) and connects only to the hosted service. To connect Cursor to an engine you run yourself, skip the plugin and follow "Cursor" in the [engine README](https://github.com/renorai/renor-engine#connect-your-agent).
 
 ## Install
 
@@ -50,14 +50,14 @@ The hosted runtime is the source of truth for tool names and schemas.
 
 - Tool calls run as the Renor user who authorizes the connection, in that user's own workspace.
 - `https://mcp.renor.cloud/mcp` is the only Renor MCP endpoint.
-- Renor's engine is open source (AGPL-3.0) and can be self-hosted: <https://github.com/patrickpassosb/renor-engine>. This plugin points at the hosted service.
+- Renor's engine is open source (Apache-2.0) and can be self-hosted: <https://github.com/renorai/renor-engine>. This plugin points at the hosted service.
 
 ## Docs
 
 - Renor docs: https://renor.mintlify.app
-- Engine source: https://github.com/patrickpassosb/renor-engine
+- Engine source: https://github.com/renorai/renor-engine
 - Server URL: https://mcp.renor.cloud/mcp
 
 ## License
 
-AGPL-3.0-only, the same license as the rest of this repository.
+Apache-2.0, the same license as the rest of this repository.

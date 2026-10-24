@@ -4,7 +4,7 @@ import { openDb } from '../../src/db/client';
 import { runMigrations } from '../../src/db/schema';
 import { VectorIndex } from '../../src/embeddings/vectorIndex';
 import { remember } from '../../src/memory/lifecycle';
-import type Database from 'better-sqlite3';
+import type Database from '../../src/db/sqlite';
 import fs from 'fs';
 import { tmpPath } from '../helpers/tmpPath';
 

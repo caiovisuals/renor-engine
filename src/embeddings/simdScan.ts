@@ -19,6 +19,10 @@
  * RENOR_VECTOR_SIMD=0 turns it off.
  */
 
+import { createLogger } from '../mvp/log';
+
+const log = createLogger('engine');
+
 /** Rows one call writes distances for; the output area below holds this many f32. */
 const CHUNK_ROWS = 8192;
 /** The most floats in a row this module scans (the query area below). */
@@ -200,7 +204,7 @@ export class SimdRows {
     } catch (err) {
       if (!warned) {
         warned = true;
-        console.warn(`[vectors] no memory for the SIMD scan (${err instanceof Error ? err.message : String(err)}): scanning in JavaScript`);
+        log.warn('simd_scan_unavailable', { detail: 'scanning in JavaScript' }, err);
       }
       return null;
     }

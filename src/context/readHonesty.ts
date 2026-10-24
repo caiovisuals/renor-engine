@@ -1,4 +1,4 @@
-import Database from 'better-sqlite3';
+import Database from '../db/sqlite';
 import { matchForm, normDedupeValue, splitWords } from './rowStore';
 import { MAX_DRIFT_VALUES } from '../memory/factConflicts';
 import { normalizeScope, savedScopeSqlPredicate } from '../mvp/scope';

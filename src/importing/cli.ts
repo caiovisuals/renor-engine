@@ -1,7 +1,7 @@
 import path from 'path';
 import { assertImportNamespace, buildImportPlan } from './plan';
 import { readExistingStreams } from './existing';
-import { applyImportPlan } from './apply';
+import { applyImportPlan, type ApplyResult } from './apply';
 import { readSource } from './source';
 import { writeBundle } from './bundle-write';
 import { ImportBundle } from './types';
@@ -326,6 +326,7 @@ export async function run(argv: string[]): Promise<number> {
   };
 
   let exitCode = 0;
+  let applied: ApplyResult | undefined;
   if (options.apply) {
     const result = await applyImportPlan(plan, bundle, {
       memoryDir,
@@ -333,7 +334,7 @@ export async function run(argv: string[]): Promise<number> {
       ledgerRelPath: options.ledgerRel,
       canonicalOnly: options.canonicalOnly,
     });
-    summary.applied = result;
+    summary.applied = applied = result;
     summary.counts = {
       ...(summary.counts as Record<string, unknown>),
       eventsAlreadyInDestination: result.eventsAlreadyPresent,
@@ -365,29 +366,29 @@ export async function run(argv: string[]): Promise<number> {
       console.log(`      ! ${plan.counts.chunksNotLocated} chunk(s) not locatable in the carried bytes; ${plan.counts.chunksSpanInherited} inherited the source span, the rest have an unknown span`);
     }
     console.log(`  ledger events : ${plan.counts.eventsToAppend} new`
-      + (options.apply ? ` (${(summary.applied as any).eventsAppended} appended, ${(summary.applied as any).eventsAlreadyPresent} already present)` : ''));
+      + (applied ? ` (${applied.eventsAppended} appended, ${applied.eventsAlreadyPresent} already present)` : ''));
     console.log(`  facts         : ${plan.counts.factsInBundle} current in source, ${plan.counts.eventsToAppend} carried, `
       + `${plan.counts.multiValuedFactsDropped} multi-valued dropped, ${plan.counts.factsSkipped} other skips`);
     for (const skip of plan.skipped.events) {
       console.log(`      - ${skip.count} × ${skip.reason}`);
     }
-    if (options.apply) {
-      const applied = summary.applied as any;
+    if (applied) {
+      const dest = applied.destination;
       console.log(`  files         : ${applied.notesWritten} written, ${applied.notesUnchanged} already identical, ${applied.notesConflicting} conflicting (never overwritten or indexed)`);
-      for (const conflict of (applied.conflicts ?? []).slice(0, 10)) {
+      for (const conflict of applied.conflicts.slice(0, 10)) {
         console.log(`      ! conflict (left as-is, not indexed): ${conflict}`);
       }
-      if ((applied.conflicts ?? []).length > 10) {
+      if (applied.conflicts.length > 10) {
         console.log(`      ! …and ${applied.conflicts.length - 10} more`);
       }
       console.log(`  index rows    : ${applied.indexRows.notesInserted} notes, ${applied.indexRows.chunksInserted} chunks, ${applied.indexRows.entitiesInserted} entities inserted`);
       console.log(`  replayed      : ${applied.ledgerReplayed} ledger event(s) applied to the index`);
-      console.log(`  workspace now : notes ${applied.destination.notes} · chunks ${applied.destination.chunks} · entities ${applied.destination.entities} · facts ${applied.destination.facts} (${applied.destination.currentFacts} current)`);
+      console.log(`  workspace now : notes ${dest?.notes} · chunks ${dest?.chunks} · entities ${dest?.entities} · facts ${dest?.facts} (${dest?.currentFacts} current)`);
     }
     for (const warning of warnings) console.log(`  note          : ${warning}`);
   }
 
-  if (options.apply && (summary.applied as any).notesConflicting > 0) exitCode = 3;
+  if (applied && applied.notesConflicting > 0) exitCode = 3;
   // Like a conflict, a note the guard left out is something the operator asked for that was not imported.
   const guardSkips = plan.skipped.secretGuard;
   if (options.apply && guardSkips && guardSkips.notes.length + guardSkips.events.length > 0) exitCode = 3;

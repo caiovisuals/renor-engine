@@ -11,6 +11,7 @@ import { loadMvpConfig, type MvpConfig } from '../../src/mvp/config';
 import { startMvpService, MVP_MCP_PATH, MVP_VERSION_PATH, type MvpApp } from '../../src/mvp/server';
 import {
   BUILD_MANIFEST_PATH,
+  ENGINE_VERSION,
   MAX_BUILD_MANIFEST_BYTES,
   readBuildIdentity,
   type BuildIdentity,
@@ -744,13 +745,19 @@ describe('librarian GET /api/health shares the manifest reader', () => {
     return { app: createServer(db, idx, provider as any, tmpDirs[0], [], undefined, undefined, { apiToken: LIBRARIAN_TOKEN }), db };
   }
 
+  it('announces the version package.json holds', () => {
+    // The MCP initialize reply, /api/health and `renor --version` all read ENGINE_VERSION.
+    const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, '..', '..', 'package.json'), 'utf8'));
+    expect(ENGINE_VERSION).toBe(pkg.version);
+  });
+
   it('reports the stamped identity on the librarian route too', async () => {
     const stamped = readManifest();
     const { app, db } = await createLibrarianApp();
     try {
       const res = await request(app).get('/api/health').set('Authorization', `Bearer ${LIBRARIAN_TOKEN}`).expect(200);
       expect(res.body).toEqual({
-        ok: true, name: 'renor', version: '1.0.0',
+        ok: true, name: 'renor', version: ENGINE_VERSION,
         commit: stamped.commit, branch: stamped.branch, dirty: stamped.dirty, builtAt: stamped.builtAt,
       });
     } finally {
@@ -767,7 +774,7 @@ describe('librarian GET /api/health shares the manifest reader', () => {
       try {
         const res = await request(app).get('/api/health').set('Authorization', `Bearer ${LIBRARIAN_TOKEN}`).expect(200);
         expect(res.body).toEqual({
-          ok: true, name: 'renor', version: '1.0.0',
+          ok: true, name: 'renor', version: ENGINE_VERSION,
           commit: 'unknown', branch: 'unknown', dirty: null, builtAt: null,
         });
       } finally {

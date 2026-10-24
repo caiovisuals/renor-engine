@@ -1,4 +1,4 @@
-import Database from 'better-sqlite3';
+import Database from '../db/sqlite';
 import { readUntilWrite } from '../db/readCache';
 import { prepareOnce } from '../db/statements';
 import { savedScopeSqlPredicate, scopeSqlPredicate, type NormalizedScope } from '../mvp/scope';
@@ -55,11 +55,40 @@ function tieOrder(table = ''): string {
   return `(${table}source_note = '${LIFECYCLE_NOTE_PATH}') DESC, ${table}source_note, ${table}id`;
 }
 
-interface NameBounds { name: number; alias: number; note: number }
+/**
+ * `names` and `notes` hold one bit for each UTF-16 unit: set when the unit is in some canonical name (`names`) or source path
+ * (`notes`) once SQLite's `lower` has folded its capitals. Null when that cannot be said, and then no query is ruled out by it.
+ */
+interface NameBounds { name: number; alias: number; note: number; names: Uint32Array | null; notes: Uint32Array | null }
+
+/**
+ * The units that occur in `column` of any entity, folded the way SQLite's `lower` folds (A to Z only: a build with ICU would
+ * fold more, and `lowerIsAscii` says whether this one does). Null when a value is not text.
+ */
+function unitsOf(db: Database.Database, column: 'canonical_name' | 'source_note'): Uint32Array | null {
+  const units = new Uint32Array(0x10000 / 32);
+  for (const value of prepareOnce(db, `SELECT ${column} FROM entities`).pluck().all() as unknown[]) {
+    if (value === null) continue; // instr(NULL, x) is NULL: such a row never matches
+    if (typeof value !== 'string') return null;
+    for (let i = 0; i < value.length; i++) {
+      const unit = value.charCodeAt(i);
+      const folded = unit >= 65 && unit <= 90 ? unit + 32 : unit;
+      units[folded >> 5] |= 1 << (folded & 31);
+    }
+  }
+  return units;
+}
+
+/** Whether `lower` leaves everything but A to Z alone, which is what `unitsOf` assumes. */
+function lowerIsAscii(db: Database.Database): boolean {
+  const probe = 'ÀÉÎÕÜÇΩДЖİß';
+  return prepareOnce(db, 'SELECT lower(?)').pluck().get(`${probe}ABC`) === `${probe}abc`;
+}
 
 /**
  * The longest canonical name, alias and source path, in SQLite characters (one code point, not a JavaScript UTF-16
- * unit). Read once until the next write. An alias list that cannot be read counts as unbounded, so that query still runs.
+ * unit), and the units that occur in the names and in the paths. Read once until the next write. An alias list that cannot
+ * be read counts as unbounded, so that query still runs.
  */
 function entityNameBounds(db: Database.Database): NameBounds {
   return readUntilWrite(db, 'entityLookupBounds', () => {
@@ -74,8 +103,30 @@ function entityNameBounds(db: Database.Database): NameBounds {
         `SELECT COALESCE(MAX(length(alias.value)), 0) AS n FROM entities AS e, json_each(e.aliases_json) AS alias`,
       ).pluck().get() as number;
     } catch { /* malformed aliases: do not skip the alias query */ }
-    return { name: Number(row.name), alias: Number(alias), note: Number(row.note) };
+    const folded = lowerIsAscii(db);
+    return {
+      name: Number(row.name),
+      alias: Number(alias),
+      note: Number(row.note),
+      names: folded ? unitsOf(db, 'canonical_name') : null,
+      notes: folded ? unitsOf(db, 'source_note') : null,
+    };
   });
+}
+
+/**
+ * False when `name` cannot be a substring of any value whose units are `units`: it has a unit (capitals folded) that none
+ * of them has. A name with a half of a pair, or a NUL, is left to SQLite.
+ */
+function mayBeWithin(units: Uint32Array | null, name: string): boolean {
+  if (units === null) return true;
+  for (let i = 0; i < name.length; i++) {
+    const unit = name.charCodeAt(i);
+    if (unit === 0 || (unit >= 0xd800 && unit <= 0xdfff)) return true;
+    const folded = unit >= 65 && unit <= 90 ? unit + 32 : unit;
+    if ((units[folded >> 5] & (1 << (folded & 31))) === 0) return false;
+  }
+  return true;
 }
 
 /**
@@ -98,7 +149,7 @@ export function lookupEntity(db: Database.Database, name: string, filter?: Entit
 
   if (fits(bounds.name)) {
     const byName = prepareOnce(db, `SELECT * FROM entities WHERE canonical_name = ? COLLATE NOCASE${where} ORDER BY ${tieOrder()} LIMIT 1`)
-      .get(name, ...params) as any;
+      .get(name, ...params) as EntityDbRow | undefined;
     if (byName) return toRow(byName);
   }
 
@@ -111,33 +162,36 @@ export function lookupEntity(db: Database.Database, name: string, filter?: Entit
        ORDER BY ${tieOrder('entities.')}
        LIMIT 1`,
     )
-      .get(name, ...params) as any;
+      .get(name, ...params) as EntityDbRow | undefined;
     if (byAlias) return toRow(byAlias);
   }
 
   // Partial match: canonical_name contains the search term (e.g. "User" → "USER.md — About User")
-  if (fits(bounds.name)) {
+  if (fits(bounds.name) && mayBeWithin(bounds.names, name)) {
     const byPartial = prepareOnce(
       db,
       `SELECT * FROM entities WHERE instr(lower(canonical_name), lower(?)) > 0${where} ORDER BY length(canonical_name) ASC, ${tieOrder()} LIMIT 1`,
     )
-      .get(name, ...params) as any;
+      .get(name, ...params) as EntityDbRow | undefined;
     if (byPartial) return toRow(byPartial);
   }
 
   // Path match: source note path contains the search term (e.g. "Cora" → notes in .../Cora/...)
-  if (fits(bounds.note)) {
+  if (fits(bounds.note) && mayBeWithin(bounds.notes, name)) {
     const byPath = prepareOnce(
       db,
       `SELECT * FROM entities WHERE instr(lower(source_note), lower(?)) > 0${where} ORDER BY length(canonical_name) ASC, ${tieOrder()} LIMIT 1`,
     )
-      .get(name, ...params) as any;
+      .get(name, ...params) as EntityDbRow | undefined;
     if (byPath) return toRow(byPath);
   }
 
   return null;
 }
 
-function toRow(r: any): EntityRow {
+/** An `entities` table row, as SQLite returns it. */
+interface EntityDbRow { id: number; type: string; canonical_name: string; aliases_json: string | null; source_note: string; confidence: number }
+
+function toRow(r: EntityDbRow): EntityRow {
   return { id: r.id, type: r.type, canonicalName: r.canonical_name, aliases: JSON.parse(r.aliases_json ?? '[]'), sourceNote: r.source_note, confidence: r.confidence };
 }

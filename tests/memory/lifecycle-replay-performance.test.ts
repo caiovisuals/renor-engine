@@ -6,7 +6,7 @@ import crypto from 'crypto';
 import { openDb } from '../../src/db/client';
 import { runMigrations } from '../../src/db/schema';
 import { replayLedger } from '../../src/memory/lifecycle';
-import type Database from 'better-sqlite3';
+import type Database from '../../src/db/sqlite';
 
 const dirs: string[] = [];
 afterEach(() => {

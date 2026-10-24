@@ -4,6 +4,10 @@
   // Node16 module mode rejects (TS1479) but nodenext (require(esm), Node 22) accepts. `build` still
   // compiles src/** under Node16, so this widens nothing for shipped code.
   // Its own buildinfo, so the eval project never overwrites the build's state in dist/.
-  "compilerOptions": { "rootDir": ".", "noEmit": true, "module": "nodenext", "moduleResolution": "nodenext", "tsBuildInfoFile": "dist/tsconfig.eval.tsbuildinfo" },
+  // src/** is held to the unused-parameter and override checks by `build`; tests and scripts are not yet (left for later).
+  "compilerOptions": {
+    "rootDir": ".", "noEmit": true, "module": "nodenext", "moduleResolution": "nodenext", "tsBuildInfoFile": "dist/tsconfig.eval.tsbuildinfo",
+    "noUnusedParameters": false, "noImplicitOverride": false
+  },
   "include": ["src/**/*", "scripts/eval/**/*.ts", "scripts/bench/**/*.ts", "tests/**/*.ts"]
 }

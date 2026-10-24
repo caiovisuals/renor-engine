@@ -7,18 +7,22 @@
 // It starts no server, reads no workspace and needs no environment beyond the cache directory. The engine copies the result into
 // each workspace's own cache on its first start of the release (compileCache.ts, seedFromRelease).
 import { enableWorkspaceCompileCache } from './compileCache';
+import path from 'node:path';
+import { createLogger } from './log';
+
+const log = createLogger('engine');
 const report = enableWorkspaceCompileCache();
 
 try {
   if (!report.enabled) {
-    console.error(`[compile-seed] not seeding: ${report.reason}`);
+    log.warn('compile_seed_skipped', { reason: report.reason });
     process.exit(2);
   }
   // Plain requires, after the cache is on, for the same reason cli.ts enables it first: these are the heavy modules.
   for (const module of ['./config', './server', './telemetry', './posthogMcp']) require(module);
-  console.log(`[compile-seed] loaded the startup modules into ${report.directory}`);
+  log.info('compile_seed_loaded', { directory: report.directory ? path.basename(report.directory) : null });
   process.exit(0);
 } catch (err) {
-  console.error('[compile-seed] failed:', err instanceof Error ? err.message : err);
+  log.error('compile_seed_failed', {}, err);
   process.exit(1);
 }

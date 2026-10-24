@@ -1,4 +1,4 @@
-import type Database from 'better-sqlite3';
+import type Database from '../db/sqlite';
 import path from 'path';
 
 const sqliteVec = require('sqlite-vec') as { load: (db: Database.Database) => void };

@@ -1,7 +1,7 @@
 import { describe, it, expect, afterEach } from 'vitest';
 import fs from 'fs';
 import path from 'path';
-import Database from 'better-sqlite3';
+import Database from '../../src/db/sqlite';
 import { readUntilWrite, tableHasColumns } from '../../src/db/readCache';
 import { closedLedgerEvents } from '../../src/retrieval/ledgerLiveness';
 import { openDb } from '../../src/db/client';

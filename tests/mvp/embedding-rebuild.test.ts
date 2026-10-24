@@ -5,7 +5,7 @@ import path from 'path';
 import net from 'net';
 import crypto from 'crypto';
 import request from 'supertest';
-import type Database from 'better-sqlite3';
+import type Database from '../../src/db/sqlite';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { openDb } from '../../src/db/client';
@@ -313,7 +313,7 @@ describe('engineRebuildEmbeddings', () => {
     expect(held).toMatchObject({ ok: false, error: 'semantic-rebuilding', hits: [] });
     expect(held.notice).toContain(`(1 of ${chunks} chunks left)`);
     expect(engineStatus(db, engine, config).embeddingRebuild).toEqual({ chunksLeft: 1, chunks });
-    expect(error.mock.calls[0].join(' ')).toMatch(new RegExp(`1 of ${chunks} chunk\\(s\\) still to embed; semantic search stays off.*chunk \\d+ of .*d\\.md could not be embedded`, 's'));
+    expect(error.mock.calls[0].join(' ')).toMatch(new RegExp(`"event":"embedding_rebuild_interrupted","unembedded":1,"chunks":${chunks},.*"detail":"semantic search stays off".*chunk \\d+ of \\[path\\] could not be embedded`, 's'));
     expect(settled).toBe(false); // it keeps trying: it did not give up, and did not finish
     await vi.waitFor(() => expect(waits.length).toBeGreaterThanOrEqual(3));
     expect(waits.slice(0, 3)).toEqual([0, 1, 2]); // and the wait between attempts grows

@@ -1,12 +1,14 @@
 Copyright 2026 Patrick Passos
 
-Renor's own work in this tree is licensed under the GNU Affero General
-Public License, Version 3 (AGPL-3.0-only). See the LICENSE file.
+Renor's own work in this tree is licensed under the Apache License,
+Version 2.0 (Apache-2.0). See the LICENSE file. Releases up to and
+including 1.0.0 were published under AGPL-3.0-only; 1.1.0 and later are
+Apache-2.0.
 
 Files imported from the public project obsidian-semantic-memory
 (https://github.com/sterben-enec/obsidian-semantic-memory) stay under
 that project's ISC license. The upstream notice is reproduced below
-unchanged. It is not an AGPL-3.0 grant, and the upstream copyright
+unchanged. It is not an Apache-2.0 grant, and the upstream copyright
 line is not Renor's.
 
 -----
@@ -35,9 +37,9 @@ Third-party components
 are LGPL-3.0-or-later. @img/sharp-wasm32 is Apache-2.0 AND LGPL-3.0-or-later
 AND MIT. The sharp override in package.json pulls them in so
 @xenova/transformers can run a local embedding model. They ship as separate
-shared objects, not as AGPL-3.0 source. LGPL-3.0 stays compatible with
-this AGPL-3.0-only program while those libraries remain separate and this
-notice is kept. They are not AGPL-3.0.
+shared objects, not as Apache-2.0 source. They may be used with this
+Apache-2.0 program while those libraries remain separate and this notice
+is kept. They are not Apache-2.0.
 
 Token vocabulary (src/indexer/o200k.json)
 

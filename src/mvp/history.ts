@@ -210,7 +210,7 @@ function collectEligible(historyDir: string): {
   if (manifestStat.size > MAX_MANIFEST_BYTES) {
     throw new HistoryUnavailableError(`${MANIFEST_NAME} exceeds the size bound`);
   }
-  let manifest: any;
+  let manifest: { schema?: unknown; notes?: unknown } | null | undefined;
   try {
     manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf-8'));
   } catch {
@@ -230,11 +230,12 @@ function collectEligible(historyDir: string): {
     // any other metadata; never a path.
     if (!SAFE_NOTE_NAME.test(name)) { skipped++; continue; }
     if (typeof entry !== 'object' || entry === null) { skipped++; continue; }
-    if ((entry as any).carried === true) { skipped++; continue; } // withdrawn: excluded
-    const rel = (entry as any).rel;
+    const record = entry as Record<string, unknown>;
+    if (record.carried === true) { skipped++; continue; } // withdrawn: excluded
+    const rel = record.rel;
     if (typeof rel !== 'string' || rel !== `notes/${name}`) { skipped++; continue; }
-    const expectedSha = (entry as any).note_sha256;
-    const convId = (entry as any).conversation_id;
+    const expectedSha = record.note_sha256;
+    const convId = record.conversation_id;
     if (typeof expectedSha !== 'string' || !/^[0-9a-f]{64}$/.test(expectedSha)) { skipped++; continue; }
     if (typeof convId !== 'string' || convId.length === 0 || convId.length > 200) { skipped++; continue; }
 

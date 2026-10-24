@@ -11,6 +11,9 @@ export default defineConfig({
     // left holding the longest file after the others are done. It only orders; it selects and skips nothing.
     sequence: { sequencer: DurationSequencer },
     include: ['tests/**/*.test.ts'],
+    // A `.only` left in a file runs that test and silently skips the rest of the file. vitest refuses it only when CI is set,
+    // and a gate slot does not set it, so refuse it here: a run with a `.only` fails. (`npx vitest --allowOnly` to iterate.)
+    allowOnly: false,
     // Every worker gets the backstop that kills process groups a suite left behind when the
     // runner is signalled (gate timeout, Ctrl-C) — the per-file afterEach cannot run in that case.
     setupFiles: ['tests/setup/childTreeBackstop.ts'],

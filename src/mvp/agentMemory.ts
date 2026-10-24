@@ -1,11 +1,12 @@
 import path from 'path';
-import Database from 'better-sqlite3';
+import Database from '../db/sqlite';
 import { encodeTokens } from '../indexer/tokenizer';
 import { escapeInvisibleControls } from './sanitize';
 import { labelMemoryText } from './hiddenSpans';
 import { engineSearchMemory, engineSearchText, type Engine } from './engine';
 import { leadingSummaryHits } from '../digests/digests';
-import { normalizeScope, savedScopeMatches, savedScopeSqlPredicate } from './scope';
+import { normalizeScope, savedScopeMatches } from './scope';
+import { contextDistinctEnabled, distinctMemories } from './contextDistinct';
 import { claimsReservedEntrySource, eventMarker, factAuthorsByEvent } from './factMarkers';
 import { authorMarker } from '../memory/sourceName';
 import type { HitOrder } from '../retrieval/orchestrator';
@@ -39,6 +40,7 @@ import { assessQueryRelevance, CALIBRATED_BARS, contextRelevanceEnabled, renderF
 import type { RetrievalProbe } from '../retrieval/semantic';
 import { hasReplacements, withReplacements, type ReplacedLabel, type ReplacementPair } from '../memorymap/replacements';
 import { markRetrieved } from '../callPhases';
+import { staleStatusOf, statusFreshnessMode } from '../memory/statusFacts';
 
 export interface AgentContextOptions {
   query?: string;
@@ -76,40 +78,8 @@ export interface AgentContextFact {
   provenance?: Provenance;
   /** Set on a current fact that replaced a value another writer saved, until that writer saves it again (memory/writerConflicts.ts). */
   writerConflict?: string;
-}
-
-/** Reserved synthetic note path owning lifecycle entities (mirrors lifecycle.ts). */
-const LIFECYCLE_NOTE_PATH = '_mcp_';
-
-/**
- * Map of fact identity -> source path, resolved ONLY when read-time honesty is
- * armed. Kept out of `currentLifecycleFacts` so the default response contract
- * (and every existing caller) is unchanged when the flag is off.
- */
-function factSourcePaths(
-  db: Database.Database,
-  scopeFilter: string | undefined,
-): Map<string, string> {
-  const inScope = scopeFilter === undefined ? undefined : savedScopeSqlPredicate(normalizeScope(scopeFilter), 'f.scope');
-  const rows = db
-    .prepare(
-      `SELECT e.canonical_name AS subject, f.predicate AS predicate,
-              COALESCE(f.scope, 'global') AS scope, f.source_path AS sourcePath
-       FROM facts f
-       JOIN entities e ON e.id = f.subject_entity_id
-       WHERE f.valid_to IS NULL
-         AND f.source_path = '_mcp_'${inScope ? `
-         AND ${inScope.sql}` : ''}`,
-    )
-    .all(...(inScope?.params ?? [])) as Array<Record<string, unknown>>;
-  const out = new Map<string, string>();
-  for (const r of rows) {
-    out.set(
-      `${r.subject as string}\u0000${r.predicate as string}\u0000${(r.scope as string) ?? 'global'}`,
-      r.sourcePath as string,
-    );
-  }
-  return out;
+  /** Set (RENOR_STATUS_FRESHNESS) on a short-lived status fact past its freshness window. */
+  staleStatus?: string;
 }
 
 export interface AgentContextMemory {
@@ -425,7 +395,27 @@ export function capFactObject(object: string, maxTokens: number): string {
 const objectIs = (shown: string, value: string): boolean =>
   shown === value || (shown.includes('…') && value.startsWith(shown.split('…')[0]));
 
-function keywordVariants(query: string): string[] {
+/**
+ * H11b (RENOR_KEYWORD_OR_ALL=1, default off): the keyword lane issues one FTS expression, the question's content words joined
+ * by OR (BM25 ranks rare words highest), instead of the variants. Unset, nothing changes. Pre-registered in
+ * data/renor-goal-better-temporal-2/prereg/H11b-H18-H12.md.
+ */
+export function keywordOrAll(env: NodeJS.ProcessEnv = process.env): boolean {
+  return (env.RENOR_KEYWORD_OR_ALL ?? '').trim() === '1';
+}
+
+/** The FTS expression of H11b: each content word quoted, joined by OR. */
+export function keywordOrMatch(query: string): string {
+  const terms = [...new Set(words(query).filter(word => !FTS_STOP_WORDS.has(word)))];
+  return terms.map(term => `"${term.replace(/"/g, '""')}"`).join(' OR ');
+}
+
+/** H12 (RENOR_SEARCH_TEXT_FALLBACK=1, default off): search_text falls back to an OR over the words when the exact phrase is empty. */
+export function searchTextFallbackEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  return (env.RENOR_SEARCH_TEXT_FALLBACK ?? '').trim() === '1';
+}
+
+export function keywordVariants(query: string): string[] {
   const compact = words(query).filter(word => !FTS_STOP_WORDS.has(word));
   const variants: string[] = [query.trim()];
   if (compact.length >= 2) variants.push(compact.slice(0, 4).join(' '));
@@ -769,8 +759,40 @@ export function searchRelevance(
 /** A note the import tool wrote (importing/hosted.ts: `Imported/<label>/…`), never one of the engine's own notes. */
 const IMPORTED_PATH = /^Imported\//;
 
-function normalizeMemory(hit: any, fallbackReason: string, reader?: string): AgentContextMemory | null {
-  if (!hit || typeof hit.text !== 'string' || !hit.text.trim()) return null;
+/**
+ * A score as a reply lists it: six decimals, whatever else is on the page. Tools tell agents to judge hits by score, so the
+ * rounding must not tie hits the ranking told apart: four decimals did (0.50004 and 0.50003 are both 0.5), six tie only
+ * scores closer than 5e-7, and no pair on the 50 search_memory pages of the agent-workflow eval. A hit shows the same score on
+ * every page.
+ */
+export function scoreForReply(score: number): number {
+  return Math.round(score * 1e6) / 1e6;
+}
+
+/** A heading that only repeats the note's own name (a daily note's heading is its date) says nothing the path does not. */
+export function headingForReply<T extends { notePath?: unknown; headingPath?: string }>(hit: T): T {
+  if (typeof hit.notePath !== 'string' || !hit.headingPath) return hit;
+  const file = hit.notePath.slice(hit.notePath.lastIndexOf('/') + 1).replace(/\.md$/i, '');
+  if (hit.headingPath !== file) return hit;
+  const { headingPath: _headingPath, ...rest } = hit;
+  return rest as T;
+}
+
+/** The fields normalizeMemory reads from a semantic or keyword hit: each one is checked before it is used. */
+interface HitFields {
+  text?: unknown;
+  reason?: unknown;
+  notePath?: unknown;
+  headingPath?: unknown;
+  score?: unknown;
+  session_date?: unknown;
+  author?: string | null;
+}
+
+function normalizeMemory(raw: unknown, fallbackReason: string, reader?: string): AgentContextMemory | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const hit = raw as HitFields;
+  if (typeof hit.text !== 'string' || !hit.text.trim()) return null;
   const reason = typeof hit.reason === 'string' ? hit.reason : fallbackReason;
   return {
     notePath: typeof hit.notePath === 'string' ? hit.notePath : '',
@@ -882,6 +904,23 @@ export const NEWEST_SESSION_STATEMENT_WEIGHT = 2;
  * tokens). A statement that shares two words, and every match retrieval scored, are not counted.
  */
 export const NEWEST_SESSION_WEAK_STATEMENTS = 1;
+
+export const CONTEXT_SPLIT_FLAG = 'RENOR_CONTEXT_SPLIT';
+
+/**
+ * How get_context splits its budget between facts, the newest session and the older evidence (RENOR_CONTEXT_SPLIT, off by
+ * default; unset, or anything but `facts,recent,pieces`, gives the constants above). `facts` is the facts' share while memories
+ * wait and `recent` the newest session's share, both in (0, 1]; `pieces` is the most pieces of that session, an integer from
+ * 1 to 12. The older evidence takes what the two leave.
+ */
+export function budgetSplit(): { facts: number; recent: number; pieces: number } {
+  const off = { facts: FACTS_BUDGET_SHARE, recent: NEWEST_SESSION_SHARE, pieces: NEWEST_SESSION_PIECES };
+  const raw = process.env[CONTEXT_SPLIT_FLAG];
+  if (!raw) return off;
+  const [facts, recent, pieces] = raw.split(',').map(part => Number(part.trim()));
+  const share = (n: number) => Number.isFinite(n) && n > 0 && n <= 1;
+  return share(facts) && share(recent) && Number.isInteger(pieces) && pieces >= 1 && pieces <= 12 ? { facts, recent, pieces } : off;
+}
 
 /** The fewest of the question's content words the newest match above the bar must share with it (`newestMatchAbove`). */
 export const NEWEST_ANCHOR_RELEVANCE_FLOOR = 1;
@@ -1195,7 +1234,7 @@ function budgetWith(
   ordered = false,
 ): Budgeted {
   const added = (memory: number): boolean => memories[memory].reason === SESSION_EXPAND_REASON;
-  const factShare = memories.some((_, i) => !added(i)) ? Math.floor(allowance * FACTS_BUDGET_SHARE) : allowance;
+  const factShare = memories.some((_, i) => !added(i)) ? Math.floor(allowance * budgetSplit().facts) : allowance;
   let used = 0;
   let held: Item | undefined; // `keep`, once it has its room
   const fits = (item: Item, limit: number): boolean => {
@@ -1254,7 +1293,8 @@ function budgetWith(
   // while what it said elsewhere still fits, and the statement that decides the answer is usually one of the small ones.
   const reserved = recent === undefined ? -1 : memories.indexOf(recent as AgentContextMemory);
   if (reserved >= 0) {
-    const room = Math.floor(allowance * NEWEST_SESSION_SHARE);
+    const split = budgetSplit();
+    const room = Math.floor(allowance * split.recent);
     const said = (item: Item): number => relevance?.(item) ?? 0;
     const weight = (item: Item): number => ((item as AgentContextMemory).reason === SESSION_EXPAND_REASON ? NEWEST_SESSION_STATEMENT_WEIGHT : 1);
     const value = (item: Item): number => (weight(item) * said(item) * said(item)) / Math.max(1, cost(item));
@@ -1270,7 +1310,7 @@ function budgetWith(
     let taken = 0;
     let weakTaken = 0;
     for (const piece of pool) {
-      if (taken >= (ordered ? Infinity : NEWEST_SESSION_PIECES)) break;
+      if (taken >= (ordered ? Infinity : split.pieces)) break;
       const statement = (piece as AgentContextMemory).reason === SESSION_EXPAND_REASON;
       const weak = !ordered && statement && said(piece) < 2;
       if (weak && weakTaken >= NEWEST_SESSION_WEAK_STATEMENTS) continue;
@@ -1411,6 +1451,16 @@ function pinToCorrections(reply: Record<string, unknown>, correctionOf: Map<Agen
   if (cut) reply.truncated = true;
 }
 
+/**
+ * What the semantic search's notices (mvp/engine.ts: a failed search, a rebuild) say keyword search still does, and what
+ * get_context says instead when its keyword index is missing too: the reply never claims it in one sentence and denies
+ * it in the next.
+ */
+const KEYWORD_STILL_ANSWERS: ReadonlyArray<readonly [string, string]> = [
+  ['the saved facts and keyword search do not need it and still answer.', 'the saved facts still answer.'],
+  ['Keyword search works meanwhile.', 'The saved facts still answer.'],
+];
+
 export async function buildAgentContext(
   db: Database.Database,
   engine: Engine,
@@ -1442,7 +1492,7 @@ export async function buildAgentContext(
     if (semantic.error === 'semantic-unavailable' && semantic.notice) degraded.push('semantic');
     if (semantic.ok) {
       rankedBy = semantic.rankedBy;
-      for (const hit of semantic.hits as any[]) {
+      for (const hit of semantic.hits) {
         const normalized = normalizeMemory(hit, 'semantic', options.reader);
         if (normalized) (normalized.reason === SESSION_EXPAND_REASON ? added : memories).push(normalized);
       }
@@ -1457,11 +1507,12 @@ export async function buildAgentContext(
     // The variants find the same chunks of the ledger: each chunk is parsed once for this read.
     const ledgerRecords: LedgerRecordCache = new Map();
     inReadSnapshot(db, () => {
-      for (const variant of keywordVariants(query)) {
-        const keyword = engineSearchText(db, memoryDir, variant, 6, scopeNorm, options.includeHistory === true, options.ledgerRelPath, ledgerRecords);
+      const orAll = keywordOrAll();
+      for (const variant of orAll ? [query.trim()] : keywordVariants(query)) {
+        const keyword = engineSearchText(db, memoryDir, variant, 6, scopeNorm, options.includeHistory === true, options.ledgerRelPath, ledgerRecords, orAll ? keywordOrMatch(query) : undefined);
         keywordAvailable = keywordAvailable || keyword.ok;
         if (!keyword.ok) { keywordFailed = true; continue; }
-        for (const hit of keyword.results as any[]) {
+        for (const hit of keyword.results) {
           const normalized = normalizeMemory(hit, 'fts', options.reader);
           if (normalized) memories.push(normalized);
         }
@@ -1469,8 +1520,8 @@ export async function buildAgentContext(
     });
     if (keywordFailed && !keywordAvailable) {
       degraded.push('keyword');
-      notice = `${notice ? `${notice.replace('the saved facts and keyword search do not need it and still answer.', 'the saved facts still answer.')} ` : ''}`
-        + 'Keyword search is unavailable: its index is missing, so nothing here was found by words.';
+      const semanticNotice = KEYWORD_STILL_ANSWERS.reduce((text, [claim, instead]) => text.replace(claim, instead), notice ?? '');
+      notice = `${semanticNotice ? `${semanticNotice} ` : ''}Keyword search is unavailable: its index is missing, so nothing here was found by words.`;
     }
   }
 
@@ -1478,11 +1529,19 @@ export async function buildAgentContext(
   // used (and its query vector, when it ran), when that path is the calibrated (Vertex) model; otherwise, or when it
   // fails, by words alone (permissionMeaning).
   const meaning = query ? await permissionMeaning(db, engine, query, scopeNorm, probe.queryVector) : undefined;
-  const facts = inReadSnapshot(db, () => currentFactMatches(db, query, scopeNorm, query ? 12 : 20, meaning));
+  // Status facts ("PR 648 is not merged") past their freshness window are labelled, or left out (RENOR_STATUS_FRESHNESS, off by default).
+  const freshness = statusFreshnessMode(options.env);
+  const readAt = Date.now();
+  const staleOf = (fact: CurrentFact): string | null => freshness === 'off' ? null : staleStatusOf(fact, readAt);
+  const facts = inReadSnapshot(db, () => currentFactMatches(db, query, scopeNorm, query ? 12 : 20, meaning))
+    .filter(fact => freshness !== 'hide' || staleOf(fact) === null);
   markRetrieved(); // the matches and the facts are in hand: what follows builds the reply (callPhases.ts)
 
   // After the keyword matches, so a statement a keyword search also found is that match, not the added copy.
-  const merged = dedupeMemories([...memories, ...added]);
+  const isLedger = ledgerNoteMatcher({ memoryDir, ledgerRelPath: options.ledgerRelPath ?? DEFAULT_LEDGER_REL });
+  const deduplicated = dedupeMemories([...memories, ...added]);
+  // RENOR_CONTEXT_DISTINCT (off by default): a memory that repeats the reply's facts or another memory is not listed.
+  const merged = contextDistinctEnabled(options.env) ? distinctMemories(deduplicated, facts, isLedger) : deduplicated;
   // A correction takes the best score of the memories it corrects and is cut to a share of the budget (`bindCorrections`), and
   // the reply keeps them in pairs: a replaced memory is never listed without its correction, nor before it, whatever the
   // budget cut and however the layout sorts (`pinToCorrections`, and `pinned` below). Awaited only when the workspace has a
@@ -1513,9 +1572,11 @@ export async function buildAgentContext(
   const shaped = (fact: CurrentFact): AgentContextFact => {
     const base = toAgentFact(fact, options.reader);
     const line = fact.eventId === null ? undefined : disputes.get(fact.eventId);
-    return line === undefined ? base : { ...base, writerConflict: line };
+    const stale = staleOf(fact);
+    const marked = stale === null ? base : { ...base, staleStatus: stale };
+    return line === undefined ? marked : { ...marked, writerConflict: line };
   };
-  const factLaneBudget = hasMemories ? Math.floor(maxTokens * FACTS_BUDGET_SHARE) : maxTokens;
+  const factLaneBudget = hasMemories ? Math.floor(maxTokens * budgetSplit().facts) : maxTokens;
   const maxFactObjectTokens = Math.max(32, Math.floor(factLaneBudget * MAX_FACT_OBJECT_LANE_SHARE));
   // The cap is a crowding rule: it applies only when the facts would not otherwise fit the lane, and never to the
   // top-ranked fact — a long fact that is itself the answer is delivered whole when the lane has room for it.
@@ -1544,7 +1605,6 @@ export async function buildAgentContext(
   // A memory of the ledger names no note and no heading (retrieval/ledgerPresentation.ts); the event in its heading is
   // read first, so that a memory that is the event of a listed fact is not listed again. Its heading alone: its text is
   // the user's words now, which may hold a line that looks like a record's heading.
-  const isLedger = ledgerNoteMatcher({ memoryDir, ledgerRelPath: options.ledgerRelPath ?? DEFAULT_LEDGER_REL });
   const candidateFacts = shownFacts.map((fact, index) => capFact(fact, index));
   const factEvents = shownFacts.map(fact => fact.eventId?.toLowerCase() ?? null);
   // The agent-facing text: hidden spans labelled (hiddenSpans.ts). It is taken after every judgment above, which compares
@@ -1624,18 +1684,9 @@ export async function buildAgentContext(
     lean ? { ...body, memories: (body.memories as AgentContextMemory[]).map(leanMemory) } : body,
   ));
   const ledgerRel = options.ledgerRelPath ?? DEFAULT_LEDGER_REL;
-  const paths = honestyLane ? factSourcePaths(db, scopeNorm) : new Map<string, string>();
-  // Each item the lane lists says where it came from and when it was last verified.
-  const factWithProvenance = (f: AgentContextFact): AgentContextFact => {
-    const sourcePath = paths.get(`${f.subject}\u0000${f.predicate}\u0000${f.scope ?? 'global'}`);
-    return {
-      ...f,
-      provenance:
-        sourcePath && sourcePath !== LIFECYCLE_NOTE_PATH
-          ? noteProvenance(clientSafePath(memoryDir, sourcePath), f.validFrom)
-          : factProvenance(f.validFrom, ledgerRel),
-    };
-  };
+  // Each item the lane lists says where it came from and when it was last verified. A fact get_context lists is a
+  // lifecycle fact (memory/factTerms.ts reads `source_path = '_mcp_'` only), so the ledger is its source.
+  const factWithProvenance = (f: AgentContextFact): AgentContextFact => ({ ...f, provenance: factProvenance(f.validFrom, ledgerRel) });
   const memoryWithProvenance = (m: AgentContextMemory): AgentContextMemory & { provenance: Provenance } => ({
     ...m,
     provenance: noteProvenance(m.notePath, m.session_date ?? null),

@@ -35,7 +35,7 @@ function walk(dir: string, out: string[] = []): string[] {
 let work = '';
 let unpacked = '';
 let packed: { name: string; version: string; files: Array<{ path: string }> };
-let manifest: { name: string; bin: Record<string, string>; private?: boolean; license: string; dependencies: Record<string, string>; peerDependencies?: Record<string, string>; peerDependenciesMeta?: Record<string, { optional?: boolean }> };
+let manifest: { name: string; version: string; bin: Record<string, string>; private?: boolean; license: string; dependencies: Record<string, string>; peerDependencies?: Record<string, string>; peerDependenciesMeta?: Record<string, { optional?: boolean }> };
 
 beforeAll(() => {
   work = scratch('renor-pack-');
@@ -62,12 +62,26 @@ afterAll(() => {
 });
 
 describe('the npm package', () => {
-  it('is renor-engine, AGPL, with one bin named like the package that points at the built CLI', () => {
+  it('is renor-engine, Apache-2.0, with one bin named like the package that points at the built CLI', () => {
     expect(packed.name).toBe('renor-engine');
-    expect(manifest.license).toBe('AGPL-3.0-only');
+    expect(manifest.license).toBe('Apache-2.0');
     // `renor` is the setup CLI on npm; a second package claiming that command would collide on a global install.
     expect(manifest.bin).toEqual({ 'renor-engine': 'dist/cli.js' });
     expect(fs.readFileSync(path.join(unpacked, manifest.bin['renor-engine']), 'utf8').startsWith('#!/usr/bin/env node')).toBe(true);
+  });
+
+  it('is at or past the version NOTICE and the public README name as the first Apache-2.0 release', () => {
+    // NOTICE says "<v> and later are Apache-2.0"; a packed version below <v> would ship Apache metadata on an AGPL-era number.
+    const boundary = (text: string) => /(\d+\.\d+\.\d+) and later are\s+Apache-2\.0/.exec(text.replace(/\s+/g, ' '))?.[1];
+    const notice = boundary(fs.readFileSync(path.join(unpacked, 'NOTICE'), 'utf8'));
+    expect(notice).toBeDefined();
+    // The private tree packs README.public.md; the public export renames it README.md (oss/public-files.txt).
+    const readme = ['README.public.md', 'README.md'].map(name => path.join(unpacked, name)).find(file => fs.existsSync(file))!;
+    expect(boundary(fs.readFileSync(readme, 'utf8'))).toBe(notice);
+    const parts = (v: string) => v.split('-')[0].split('.').map(Number);
+    const [have, need] = [parts(manifest.version), parts(notice!)];
+    const cmp = have[0] - need[0] || have[1] - need[1] || have[2] - need[2];
+    expect(cmp, `package ${manifest.version} is below NOTICE's Apache-2.0 boundary ${notice}`).toBeGreaterThanOrEqual(0);
   });
 
   it('packs the built output and the legal files, and nothing else', () => {
@@ -155,6 +169,23 @@ describe('npx renor-engine mcp, from the unpacked tarball', () => {
     };
     return { client, call, close: () => client.close(), stderr: () => stderr };
   }
+
+  it('announces the packed package.json version from the MCP server and the CLI', async () => {
+    const bin = path.join(unpacked, manifest.bin['renor-engine']);
+    const cli = spawnSync(process.execPath, [bin, '--version'], { encoding: 'utf8' });
+    expect(cli.stdout.trim()).toBe(manifest.version);
+    const home = scratch('renor-pack-version-');
+    try {
+      const { client, close } = await session({}, home);
+      try {
+        expect(client.getServerVersion()).toMatchObject({ name: 'renor', version: manifest.version });
+      } finally {
+        await close();
+      }
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true, maxRetries: 3 });
+    }
+  });
 
   it('with nothing set, remembers a fact in ~/.renor and recalls it', async () => {
     const home = scratch('renor-pack-home-');

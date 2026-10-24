@@ -1,5 +1,5 @@
 import fs from 'node:fs';
-import Database from 'better-sqlite3';
+import Database from '../db/sqlite';
 import { openDb } from '../db/client';
 import { isOllamaCloudEndpoint } from './keyPool';
 

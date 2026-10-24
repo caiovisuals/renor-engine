@@ -6,7 +6,7 @@ import { openDb } from '../../src/db/client';
 import { runMigrations } from '../../src/db/schema';
 import { indexFile } from '../../src/indexer/pipeline';
 import type { ExtractedNumericFact } from '../../src/extraction/typedFacts';
-import type Database from 'better-sqlite3';
+import type Database from '../../src/db/sqlite';
 
 /**
  * C2 fixtures (HYP-20260921-facts-product-join fixture list):

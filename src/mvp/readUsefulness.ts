@@ -1,5 +1,5 @@
 import { createHmac, randomBytes } from 'node:crypto';
-import type Database from 'better-sqlite3';
+import type Database from '../db/sqlite';
 import { listStatement, paddedList } from '../db/statements';
 import { ledgerEventIds } from '../retrieval/ledgerLiveness';
 import { emitTelemetry, type TelemetryEvent } from './telemetry';

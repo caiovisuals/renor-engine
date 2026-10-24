@@ -19,6 +19,7 @@ export const ENV_KEYS = [
   'MVP_MEMORY_DIR', 'MVP_AUTH_STATE_PATH', 'MVP_BASE_URL', 'MVP_OWNER_EMAIL', 'MVP_OWNER_PASSWORD', 'MVP_PORT',
   'MVP_ALLOWED_CALLBACK_URIS', 'MVP_HISTORY_DIR', 'MVP_LEDGER_REL', 'MVP_EMBEDDING_PROVIDER', 'EMBEDDING_PROVIDER',
   'RENOR_SECRET_GUARD', 'RENOR_ASK_AGENT_PER_HOUR', 'MVP_GATEWAY_SECRET', 'RENOR_CONNECTION_NAME', 'MVP_MCP_JSON',
+  'RENOR_HANDOFF_NOTE',
 ];
 
 export const savedEnv = Object.fromEntries(ENV_KEYS.map(key => [key, process.env[key]]));
@@ -57,8 +58,9 @@ export interface Harness {
  * sets from the key's label); a connection with only a User-Agent stands in for a client that
  * reaches the engine with no gateway-set header.
  */
-export async function startWorkspace(opts: { secretGuard?: boolean; selfHosted?: boolean; sse?: boolean } = {}): Promise<Harness> {
-  const memoryDir = fs.mkdtempSync(path.join(os.tmpdir(), 'hive-breaker-'));
+export async function startWorkspace(opts: { secretGuard?: boolean; selfHosted?: boolean; sse?: boolean; memoryDir?: string } = {}): Promise<Harness> {
+  // `memoryDir`: an existing folder to serve (a throwaway copy: close() removes it). Default: a new empty one.
+  const memoryDir = opts.memoryDir ?? fs.mkdtempSync(path.join(os.tmpdir(), 'hive-breaker-'));
   const authRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'hive-breaker-auth-'));
   const port = await freePort();
   process.env.MVP_MEMORY_DIR = memoryDir;
@@ -169,12 +171,12 @@ export const HIVE_ARGS: Record<string, Record<string, unknown>> = {
 };
 
 /** Launches the built CLI (`node dist/cli.js mcp`, the documented stdio entry) and speaks JSON-RPC over its pipes. */
-export async function realStdioConnection(vault: string, connectionName: string) {
+export async function realStdioConnection(vault: string, connectionName: string, extraEnv: Record<string, string> = {}) {
   const child = spawnTree(process.execPath, [path.resolve(__dirname, '../../dist/cli.js'), 'mcp'], {
     cwd: path.resolve(__dirname, '../..'),
     env: { PATH: process.env.PATH, VAULT_PATH: vault, EMBEDDING_PROVIDER: 'eval-hash',
       RENOR_TELEMETRY_DISABLED: 'true', RENOR_EVIDENCE_MODE: 'off', RENOR_VAULT_STALENESS: 'off',
-      RENOR_CONNECTION_NAME: connectionName },
+      RENOR_CONNECTION_NAME: connectionName, ...extraEnv },
     stdio: ['pipe', 'pipe', 'pipe'],
   });
   let stderr = '', pending = '', nextId = 1;

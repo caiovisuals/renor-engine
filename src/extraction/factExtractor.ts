@@ -53,11 +53,11 @@ Rules:
     throw new Error('Fact extraction returned invalid JSON');
   }
 
-  if (!parsed || typeof parsed !== 'object' || !Array.isArray((parsed as any).facts)) {
+  if (!parsed || typeof parsed !== 'object' || !Array.isArray((parsed as { facts?: unknown }).facts)) {
     throw new Error('Fact extraction response is missing a facts array');
   }
 
-  return (parsed as any).facts.filter((f: any) =>
-    f.subject && f.predicate && f.object && typeof f.confidence === 'number'
+  return (parsed as { facts: Array<Partial<Record<keyof ExtractedFact, unknown>>> }).facts.filter((f): f is ExtractedFact =>
+    Boolean(f.subject && f.predicate && f.object && typeof f.confidence === 'number')
   );
 }

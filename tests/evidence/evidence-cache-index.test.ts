@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import Database from 'better-sqlite3';
+import Database from '../../src/db/sqlite';
 import { EvidenceCache } from '../../src/evidence/evidenceCache';
 
 describe('EvidenceCache indexes', () => {

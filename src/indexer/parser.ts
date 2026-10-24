@@ -128,7 +128,10 @@ export function parseNoteDetailed(filePath: string, content: string): { note: Pa
   // the memory map's note view, the evidence pass). A daily note keeps a line of the user's words that would
   // start like an entry behind a backslash; the words are restored here, so none of them sees the escape.
   const text = isDailyNotePath(filePath) ? decodeDailyNoteText(content) : content;
-  const { data: frontmatter, content: rawBody } = matter(text, MATTER_OPTIONS);
+  const { data, content: rawBody } = matter(text, MATTER_OPTIONS);
+  // Only a mapping is front matter. YAML also parses a list, a string, a number or a date as a document, and passing
+  // one on made the export write a list's items as keys `0`, `1`, ...
+  const frontmatter: Record<string, unknown> = Object.prototype.toString.call(data) === '[object Object]' ? data : {};
   assertFrontmatterBounded(frontmatter, content.length);
   const heading = rawBody.match(/^#\s+(.+)$/m);
   const title = heading?.[1].trim() ?? path.basename(filePath, '.md');

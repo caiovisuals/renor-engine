@@ -829,7 +829,7 @@ function mvpConfig(memoryDir: string): MvpConfig {
  */
 async function getContext(
   query: string,
-  opts: { seed?: (db: import('better-sqlite3').Database) => void; after?: (call: (name: string, args: any) => Promise<any>, token: string) => Promise<void>; arm?: boolean } = {},
+  opts: { seed?: (db: import('../../src/db/sqlite').default.Database) => void; after?: (call: (name: string, args: any) => Promise<any>, token: string) => Promise<void>; arm?: boolean } = {},
 ): Promise<any> {
   const prevHonesty = process.env[READ_HONESTY_FLAG];
   const arm = opts.arm !== false;
@@ -845,7 +845,7 @@ async function getContext(
 
 async function getContextArmed(
   query: string,
-  opts: { seed?: (db: import('better-sqlite3').Database) => void; after?: (call: (name: string, args: any) => Promise<any>, token: string) => Promise<void>; arm?: boolean } = {},
+  opts: { seed?: (db: import('../../src/db/sqlite').default.Database) => void; after?: (call: (name: string, args: any) => Promise<any>, token: string) => Promise<void>; arm?: boolean } = {},
 ): Promise<any> {
   const memoryDir = mkdir();
   const config = mvpConfig(memoryDir);

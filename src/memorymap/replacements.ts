@@ -2,7 +2,7 @@ import fsSync from 'fs';
 import fs from 'fs/promises';
 import path from 'path';
 import crypto from 'crypto';
-import { DAILY_FILE_RE, entryInstant } from '../memory/dailyNote';
+import { DAILY_FILE_RE } from '../memory/dailyNote';
 import { notePathMatchesScope, type NormalizedScope } from '../mvp/scope';
 import { refusal } from '../toolRefusal';
 import { headerSource, isReservedSource } from '../memory/sourceName';
@@ -251,10 +251,14 @@ export async function recordReplacement(ctx: MemoryMapContext, old: string, by: 
     ...(oldSource !== undefined ? { oldSource } : {}),
   };
   const dir = await ensureRealDir(await fs.realpath(ctx.memoryDir), RETIRED_DIR);
-  const handle = await fs.open(path.join(dir, path.basename(REPLACED_FILE)), fs.constants.O_RDWR | fs.constants.O_APPEND | fs.constants.O_CREAT | NOFOLLOW, 0o600);
+  // O_NONBLOCK and the single-name check: the same rules as the retirement journal (appendJournal), so neither a FIFO nor a
+  // hard link under this name is written through.
+  const handle = await fs.open(path.join(dir, path.basename(REPLACED_FILE)), fs.constants.O_RDWR | fs.constants.O_APPEND | fs.constants.O_CREAT | fs.constants.O_NONBLOCK | NOFOLLOW, 0o600);
   try {
+    const stat = await handle.stat();
+    if (!stat.isFile() || stat.nlink !== 1) throw new Error(`refusing to write ${JSON.stringify(REPLACED_FILE_NAME)}: it is not a regular file with a single name`);
     // A crash can leave a torn last line; start on a fresh line so this record is never glued to it.
-    const size = (await handle.stat()).size;
+    const size = stat.size;
     let prefix = '';
     if (size > 0) {
       const last = Buffer.alloc(1);

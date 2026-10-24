@@ -2,7 +2,7 @@ import { describe, it, expect, afterEach, vi } from 'vitest';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
-import type Database from 'better-sqlite3';
+import type Database from '../../src/db/sqlite';
 import * as queryHelpers from '../../src/retrieval/queryHelpers';
 import { openDb } from '../../src/db/client';
 import { runMigrations } from '../../src/db/schema';

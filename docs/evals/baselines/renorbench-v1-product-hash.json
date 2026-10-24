@@ -1,9 +1,9 @@
 {
   "schema": 1,
   "benchmark": "renorbench-v1-product",
-  "reason": "Evaluator identity only: every runner counts tokens through src/eval/textTokens.ts (special-token spellings as text; the 2026-10-21 LongMemEval-S nightly crashed on <|endoftext|>), which joins EVALUATOR_SOURCES. Counts of text without such a spelling are unchanged, and so is every number.",
-  "recordedAt": "2026-10-21T12:35:02.614Z",
-  "gitSha": "98e4393ff47fc63bc0f8c7285da40b0415e834bf",
+  "reason": "evaluator source src/eval/indexSnapshots.ts changed (its default snapshot directory no longer names the private benchmark directory, so the public tree passes check-public); no metric moved",
+  "recordedAt": "2026-10-24T09:05:02.451Z",
+  "gitSha": "b5c2b8f53103948305fc8ca998772cd529af81ef",
   "manifest": {
     "benchmark": "renorbench-v1-product",
     "casesSha256": "dcefabf571d40270f780281f08ecd09be90d5403207c816d0aeaac2d3a0d4060",
@@ -15,7 +15,7 @@
       "qualityEligible": false
     },
     "qualityEligible": false,
-    "evaluatorSha256": "7f3c56fdb63df5fdfd29b8b1f5a6602139875c91ba87adab4f0fd85dddec49d4",
+    "evaluatorSha256": "2cfea5578931a8850bba92b48fbf66d4e704a0b51c823a6d8e2c67ea39edc706",
     "chunking": {
       "maxTokens": 400,
       "overlapTokens": 0
@@ -54,8 +54,8 @@
       "verdictRelevantRate": 0.6135,
       "verdictAbstainRate": 0.75,
       "verdictMissingCases": 0,
-      "meanReplyTokens": 2572.8743,
-      "p95ReplyTokens": 3189
+      "meanReplyTokens": 2493.7539,
+      "p95ReplyTokens": 3110
     },
     "byCategory": {
       "stable_fact": {
@@ -72,8 +72,8 @@
         "verdictRelevantRate": 0.7333,
         "verdictAbstainRate": null,
         "verdictMissingCases": 0,
-        "meanReplyTokens": 2484,
-        "p95ReplyTokens": 3247
+        "meanReplyTokens": 2404.8,
+        "p95ReplyTokens": 3167
       },
       "semantic_paraphrase": {
         "cases": 16,
@@ -89,8 +89,8 @@
         "verdictRelevantRate": 0.4375,
         "verdictAbstainRate": null,
         "verdictMissingCases": 0,
-        "meanReplyTokens": 2875.125,
-        "p95ReplyTokens": 3188
+        "meanReplyTokens": 2796.125,
+        "p95ReplyTokens": 3109
       },
       "correction_supersession": {
         "cases": 20,
@@ -106,8 +106,8 @@
         "verdictRelevantRate": 0.6,
         "verdictAbstainRate": null,
         "verdictMissingCases": 0,
-        "meanReplyTokens": 2550.05,
-        "p95ReplyTokens": 3193
+        "meanReplyTokens": 2470.9,
+        "p95ReplyTokens": 3115
       },
       "prefer_current": {
         "cases": 8,
@@ -123,8 +123,8 @@
         "verdictRelevantRate": 0.5,
         "verdictAbstainRate": null,
         "verdictMissingCases": 0,
-        "meanReplyTokens": 2180.875,
-        "p95ReplyTokens": 3146
+        "meanReplyTokens": 2102.125,
+        "p95ReplyTokens": 3068
       },
       "prefer_historical": {
         "cases": 11,
@@ -140,8 +140,8 @@
         "verdictRelevantRate": 0.6364,
         "verdictAbstainRate": null,
         "verdictMissingCases": 0,
-        "meanReplyTokens": 3011.7273,
-        "p95ReplyTokens": 3251
+        "meanReplyTokens": 2932.4545,
+        "p95ReplyTokens": 3172
       },
       "temporal": {
         "cases": 18,
@@ -157,8 +157,8 @@
         "verdictRelevantRate": 0.8333,
         "verdictAbstainRate": null,
         "verdictMissingCases": 0,
-        "meanReplyTokens": 2447.1111,
-        "p95ReplyTokens": 3229
+        "meanReplyTokens": 2368.1667,
+        "p95ReplyTokens": 3149
       },
       "multi_hop": {
         "cases": 14,
@@ -174,8 +174,8 @@
         "verdictRelevantRate": 0.3571,
         "verdictAbstainRate": null,
         "verdictMissingCases": 0,
-        "meanReplyTokens": 2483.2143,
-        "p95ReplyTokens": 3146
+        "meanReplyTokens": 2403.7857,
+        "p95ReplyTokens": 3066
       },
       "distractor_resistance": {
         "cases": 18,
@@ -191,8 +191,8 @@
         "verdictRelevantRate": 0.7778,
         "verdictAbstainRate": null,
         "verdictMissingCases": 0,
-        "meanReplyTokens": 2514.5556,
-        "p95ReplyTokens": 3217
+        "meanReplyTokens": 2435.4444,
+        "p95ReplyTokens": 3137
       },
       "negation": {
         "cases": 15,
@@ -208,8 +208,8 @@
         "verdictRelevantRate": 0.6667,
         "verdictAbstainRate": null,
         "verdictMissingCases": 0,
-        "meanReplyTokens": 2419.7333,
-        "p95ReplyTokens": 3190
+        "meanReplyTokens": 2340.8,
+        "p95ReplyTokens": 3110
       },
       "multi_attribute": {
         "cases": 14,
@@ -225,8 +225,8 @@
         "verdictRelevantRate": 0.3571,
         "verdictAbstainRate": null,
         "verdictMissingCases": 0,
-        "meanReplyTokens": 2745.1429,
-        "p95ReplyTokens": 3147
+        "meanReplyTokens": 2666.0714,
+        "p95ReplyTokens": 3067
       },
       "deletion_erasure": {
         "cases": 14,
@@ -242,8 +242,8 @@
         "verdictRelevantRate": null,
         "verdictAbstainRate": 0.8571,
         "verdictMissingCases": 0,
-        "meanReplyTokens": 2349.2143,
-        "p95ReplyTokens": 3185
+        "meanReplyTokens": 2270.1429,
+        "p95ReplyTokens": 3107
       },
       "provenance": {
         "cases": 14,
@@ -259,8 +259,8 @@
         "verdictRelevantRate": 0.7143,
         "verdictAbstainRate": null,
         "verdictMissingCases": 0,
-        "meanReplyTokens": 2750.4286,
-        "p95ReplyTokens": 3189
+        "meanReplyTokens": 2671.0714,
+        "p95ReplyTokens": 3111
       },
       "abstention": {
         "cases": 14,
@@ -276,8 +276,8 @@
         "verdictRelevantRate": null,
         "verdictAbstainRate": 0.6429,
         "verdictMissingCases": 0,
-        "meanReplyTokens": 2598.7143,
-        "p95ReplyTokens": 3217
+        "meanReplyTokens": 2519.5,
+        "p95ReplyTokens": 3138
       }
     }
   }

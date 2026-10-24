@@ -1,3 +1,4 @@
+import fs from 'fs';
 import net from 'net';
 
 /**
@@ -9,14 +10,49 @@ import net from 'net';
  *
  *  - the block's first port is its lock: the claim is a listening socket on it, held until the process releases it or
  *    exits, so the kernel grants a block to one process at a time and takes it back when that process dies, however it dies;
- *  - the blocks sit below Linux's ephemeral range (32768-60999), where neither bind(0) nor an outgoing connection picks a
- *    port, so no other process on the machine lands in a block by chance;
+ *  - the blocks sit below every ephemeral range the tests can meet, where neither bind(0) nor an outgoing connection picks a
+ *    port, so no other process on the machine lands in a block by chance. A client socket whose source port is a block port
+ *    makes listen() on that port fail with EADDRINUSE for as long as the connection lives and then for the 60 s of TIME_WAIT
+ *    (measured, see the PR that moved the blocks), and a fixture engine that cannot bind stays alive and answers nothing.
+ *    Linux's default range starts at 32768, but the range is not the same everywhere (netstack-based sandboxes hand out
+ *    16000-65535, and /proc there can still say 32768), so the blocks sit below 16000 and below what /proc reports;
  *  - a port something else holds anyway (an engine a killed run left behind, a service) is skipped, never assumed free.
  */
 
-const FIRST_BLOCK = 20_000;
+/** The lowest port any platform the tests run on is known to hand out to outgoing connections (netstack's FirstEphemeral). */
+const LOWEST_KNOWN_EPHEMERAL = 16_000;
+/** Ports below this are the well-known and registered services' own. */
+const LOWEST_BLOCK_PORT = 1_100;
 const BLOCK_SIZE = 64;
-const BLOCK_COUNT = 128;
+const MAX_BLOCK_COUNT = 128;
+const MIN_BLOCK_COUNT = 8;
+const EPHEMERAL_RANGE_FILE = '/proc/sys/net/ipv4/ip_local_port_range';
+
+/**
+ * The ports blocks may sit in, given the first ephemeral port the kernel reports (null when it cannot be read): the top of
+ * the space below every ephemeral range, `BLOCK_COUNT` blocks of it at most. Throws when too little room is left, instead of
+ * handing out ports that an outgoing connection can take.
+ */
+export function blockRegion(kernelEphemeralLow: number | null): { first: number; count: number } {
+  const ceiling = Math.min(LOWEST_KNOWN_EPHEMERAL, kernelEphemeralLow ?? LOWEST_KNOWN_EPHEMERAL);
+  const count = Math.min(MAX_BLOCK_COUNT, Math.floor((ceiling - LOWEST_BLOCK_PORT) / BLOCK_SIZE));
+  if (count < MIN_BLOCK_COUNT) {
+    throw new Error(
+      `the kernel hands out outgoing-connection ports from ${kernelEphemeralLow} up (${EPHEMERAL_RANGE_FILE}), which leaves room for ${Math.max(count, 0)} test port blocks below it ` +
+        `(${MIN_BLOCK_COUNT} needed): a port a test names could be taken by any outgoing connection first. Raise the range's start, e.g. sysctl net.ipv4.ip_local_port_range="32768 60999".`,
+    );
+  }
+  return { first: ceiling - count * BLOCK_SIZE, count };
+}
+
+function kernelEphemeralLow(): number | null {
+  try {
+    const low = Number(fs.readFileSync(EPHEMERAL_RANGE_FILE, 'utf8').trim().split(/\s+/)[0]);
+    return Number.isInteger(low) && low > 0 ? low : null;
+  } catch {
+    return null; // no /proc: only the known-platform floor applies
+  }
+}
 
 export interface PortBlock {
   /** The ports this process may use, both ends included. The port just below `first` is the block's lock. */
@@ -45,13 +81,14 @@ const close = (server: net.Server): Promise<void> => new Promise((resolve) => se
 
 /** Claim a block no other process holds, trying the spot the pid picks first so concurrent runs rarely even meet. */
 export async function claimPortBlock(): Promise<PortBlock> {
-  for (let i = 0; i < BLOCK_COUNT; i++) {
-    const lock = FIRST_BLOCK + ((process.pid + i) % BLOCK_COUNT) * BLOCK_SIZE;
+  const region = blockRegion(kernelEphemeralLow());
+  for (let i = 0; i < region.count; i++) {
+    const lock = region.first + ((process.pid + i) % region.count) * BLOCK_SIZE;
     const server = await listenOn(lock);
     if (server) return { first: lock + 1, last: lock + BLOCK_SIZE - 1, release: () => close(server) };
   }
   throw new Error(
-    `no free port block in ${FIRST_BLOCK}-${FIRST_BLOCK + BLOCK_COUNT * BLOCK_SIZE - 1}: ${BLOCK_COUNT} test processes hold one each`,
+    `no free port block in ${region.first}-${region.first + region.count * BLOCK_SIZE - 1}: ${region.count} test processes hold one each`,
   );
 }
 

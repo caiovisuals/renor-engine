@@ -10,7 +10,7 @@ import { runMigrations } from '../../src/db/schema';
 import { indexVault } from '../../src/indexer/pipeline';
 import { DEFAULT_LEDGER_REL } from '../../src/memory/lifecycle';
 import { retireMemory, type MemoryMapContext } from '../../src/memorymap/memoryMap';
-import type Database from 'better-sqlite3';
+import type Database from '../../src/db/sqlite';
 
 function write(vault: string, rel: string, content: string) {
   const abs = path.join(vault, rel);

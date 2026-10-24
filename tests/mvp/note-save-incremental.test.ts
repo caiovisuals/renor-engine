@@ -5,7 +5,7 @@ import os from 'os';
 import path from 'path';
 import crypto from 'crypto';
 import request from 'supertest';
-import type Database from 'better-sqlite3';
+import type Database from '../../src/db/sqlite';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { openDb } from '../../src/db/client';

@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
-import Database from 'better-sqlite3';
+import Database from '../../src/db/sqlite';
 import { openDb } from '../../src/db/client';
 import { runMigrations } from '../../src/db/schema';
 import { remember, factsFor, resolveLedgerPath, appendLedgerEvent, replayLedger } from '../../src/memory/lifecycle';

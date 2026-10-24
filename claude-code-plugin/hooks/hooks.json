@@ -1,0 +1,51 @@
+{
+  "description": "Renor, opt-in and off by default: per-prompt recall (RENOR_AUTO_RECALL=1), pre-action standing rules before merges, releases, deploys, spending and questions to the user (RENOR_ACTION_RECALL=1), the standing rules the owner approved at session start, after /clear and after compaction (RENOR_STANDING_RULES_HOOK=1), and a save before the agent finishes of the lines the user flagged to keep (RENOR_SAVE_HOOK=1).",
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/renor-recall/autoRecall.js\"",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Bash|AskUserQuestion|mcp__.*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/renor-recall/autoRecall.js\"",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "matcher": "startup|clear|compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/standing-rules/session-start.mjs\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/stop-save.mjs\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}

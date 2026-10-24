@@ -1,4 +1,7 @@
-import Database from 'better-sqlite3';
+import Database from './sqlite';
+import { createLogger } from '../mvp/log';
+
+const log = createLogger('engine', { stderr: true });
 
 interface Migration {
   version: number;
@@ -89,7 +92,7 @@ const migrations: Migration[] = [
   {
     version: 3,
     name: 'fts5_chunks',
-    up: (db) => {
+    up: () => {
       // Intentionally left as no-op — superseded by migration 4
     },
   },
@@ -132,7 +135,7 @@ const migrations: Migration[] = [
     version: 5,
     name: '5_facts_event_id',
     up: (db: Database.Database) => {
-      const cols = (db.prepare('PRAGMA table_info(facts)').all() as any[]).map((c: any) => c.name);
+      const cols = (db.prepare('PRAGMA table_info(facts)').all() as { name: string }[]).map((c) => c.name);
       if (!cols.includes('event_id')) {
         db.exec('ALTER TABLE facts ADD COLUMN event_id TEXT');
         db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_facts_event ON facts(event_id)');
@@ -214,7 +217,7 @@ const migrations: Migration[] = [
       // Optional product scope on lifecycle facts. Missing/legacy = 'global'.
       // Uniqueness becomes (subject_entity_id, predicate, scope) for current
       // _mcp_ facts so the same subject+predicate can coexist across scopes.
-      const cols = (db.prepare('PRAGMA table_info(facts)').all() as any[]).map((c: any) => c.name);
+      const cols = (db.prepare('PRAGMA table_info(facts)').all() as { name: string }[]).map((c) => c.name);
       if (!cols.includes('scope')) {
         db.exec(`ALTER TABLE facts ADD COLUMN scope TEXT NOT NULL DEFAULT 'global'`);
       }
@@ -271,7 +274,7 @@ const migrations: Migration[] = [
       // plan step 2 — dedupe on (value, NFKD-ASCII-lowercased object) with a
       // confirm count). Identical re-extraction bumps the count instead of
       // writing a duplicate row.
-      const cols = (db.prepare('PRAGMA table_info(structured_rows)').all() as any[]).map((c: any) => c.name);
+      const cols = (db.prepare('PRAGMA table_info(structured_rows)').all() as { name: string }[]).map((c) => c.name);
       if (!cols.includes('confirm_count')) {
         db.exec('ALTER TABLE structured_rows ADD COLUMN confirm_count INTEGER NOT NULL DEFAULT 1');
       }
@@ -690,6 +693,6 @@ export function runMigrations(db: Database.Database): void {
       }
     })();
     currentVersion = migration.version;
-    console.error(`[migrations] applied: ${migration.version}_${migration.name}`);
+    log.info('migration_applied', { version: migration.version, name: migration.name });
   }
 }

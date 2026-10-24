@@ -1,7 +1,8 @@
-# Renor stdio MCP server (renor-engine). Node 22 is required (native modules).
+# Renor stdio MCP server (renor-engine). Node 22.16+ is required (it uses Node's built-in SQLite).
 FROM node:22-bookworm-slim
 
-# Toolchain fallback in case a prebuilt better-sqlite3 binary is not available.
+# Toolchain fallback for a dev dependency whose prebuilt binary is not available (the engine itself compiles nothing:
+# SQLite is node:sqlite and sqlite-vec ships a prebuilt optional binary).
 RUN apt-get update \
  && apt-get install -y --no-install-recommends python3 make g++ git ca-certificates \
  && rm -rf /var/lib/apt/lists/*
@@ -9,8 +10,7 @@ RUN apt-get update \
 WORKDIR /app
 
 COPY package.json package-lock.json ./
-RUN npm ci \
- && npm rebuild better-sqlite3 --ignore-scripts=false
+RUN npm ci
 
 # Copy only what the build reads. A bare `COPY . .` would bake the builder's local files into the image:
 # .env.local, credentials, keys, a local vault or SQLite state. The build needs tsconfig.json, src/ and the stamp script.

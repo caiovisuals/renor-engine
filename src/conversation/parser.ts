@@ -26,18 +26,50 @@ export function resolveJSONLPath(sessionId: string, cwd: string): string {
   return file;
 }
 
+const isText = (v: unknown): v is string => typeof v === "string" && v !== "";
+
+/** A content block of a Claude Code JSONL message. The format is external: every field is checked where it is read. */
+type TranscriptBlock = Record<string, unknown>;
+
+/** A JSONL entry (one line, once known to be an object): only the fields the parser reads, none of them trusted. */
+interface TranscriptEntry {
+  type?: unknown;
+  aiTitle?: unknown;
+  operation?: unknown;
+  timestamp?: unknown;
+  isMeta?: unknown;
+  isSidechain?: unknown;
+  message?: { role?: unknown; content?: unknown } | null;
+}
+
+/** A message's content blocks: an array of objects, or a non-blank string as one text block. Anything else in the array is dropped. */
+function contentBlocks(raw: unknown): TranscriptBlock[] {
+  if (Array.isArray(raw)) return raw.filter((b): b is TranscriptBlock => b !== null && typeof b === "object");
+  return typeof raw === "string" && raw.trim() ? [{ type: "text", text: raw }] : [];
+}
+
+/** The text of the text blocks, joined; a block whose text is not a string adds nothing. */
+function textOf(content: TranscriptBlock[]): string {
+  return content
+    .filter(b => b.type === "text" && typeof b.text === "string")
+    .map(b => b.text as string)
+    .join("\n")
+    .trim();
+}
+
 /**
  * Определяет, является ли сообщение пользователя внутренним (системным).
  * Внутренние сообщения не включаются в итоговый разговор:
  * - только tool_result блоки (ответ инструмента, не пользователь)
  * - сообщения с тегами CLI (local-command, command-name)
  */
-function isInternalUserMessage(content: any[]): boolean {
+function isInternalUserMessage(content: TranscriptBlock[]): boolean {
   if (content.length === 0) return true;
   // Только tool_result блоки — ответ инструмента, не настоящий пользователь
-  if (content.every((b: any) => b.type === "tool_result")) return true;
+  if (content.every((b) => b.type === "tool_result")) return true;
   // Внутренние теги Claude Code CLI
-  const firstText = content.find((b: any) => b.type === "text")?.text ?? "";
+  const first = content.find((b) => b.type === "text")?.text;
+  const firstText = typeof first === "string" ? first : "";
   if (
     firstText.startsWith("<local-command") ||
     firstText.startsWith("<command-name>")
@@ -70,8 +102,8 @@ async function waitForAiTitle(
     for (const line of raw.split("\n")) {
       try {
         const entry = JSON.parse(line);
-        if (entry.type === "ai-title" && entry.aiTitle) {
-          return entry.aiTitle as string;
+        if (entry?.type === "ai-title" && typeof entry.aiTitle === "string" && entry.aiTitle) {
+          return entry.aiTitle;
         }
       } catch {
         continue;
@@ -103,15 +135,19 @@ export async function parseConversation(
   const turns: ConversationTurn[] = [];
 
   for (const line of lines) {
-    let entry: any;
+    let parsed: unknown;
     try {
-      entry = JSON.parse(line);
+      parsed = JSON.parse(line);
     } catch {
       continue;
     }
 
+    // A line of the file is any JSON value; only an object can be an entry.
+    if (parsed === null || typeof parsed !== "object") continue;
+    const entry = parsed as TranscriptEntry;
+
     // Извлекаем заголовок сессии из специальной записи ai-title
-    if (entry.type === "ai-title" && entry.aiTitle) {
+    if (entry.type === "ai-title" && typeof entry.aiTitle === "string" && entry.aiTitle) {
       title = entry.aiTitle;
       continue;
     }
@@ -120,7 +156,8 @@ export async function parseConversation(
     if (
       !timeStartFound &&
       entry.type === "queue-operation" &&
-      entry.operation === "dequeue"
+      entry.operation === "dequeue" &&
+      typeof entry.timestamp === "string"
     ) {
       timeStart = entry.timestamp;
       timeStartFound = true;
@@ -133,50 +170,33 @@ export async function parseConversation(
 
     if (entry.type === "user" && entry.message?.role === "user") {
       // content может быть строкой (короткие сессии) или массивом блоков
-      const rawContent = entry.message.content;
-      const content: any[] = Array.isArray(rawContent)
-        ? rawContent
-        : typeof rawContent === "string" && rawContent.trim()
-          ? [{ type: "text", text: rawContent }]
-          : [];
+      const content = contentBlocks(entry.message.content);
       if (isInternalUserMessage(content)) continue;
-      const text = content
-        .filter((b: any) => b.type === "text")
-        .map((b: any) => b.text as string)
-        .join("\n")
-        .trim();
+      const text = textOf(content);
       if (!text) continue;
       turns.push({ role: "user", text, toolCalls: [] });
       continue;
     }
 
     if (entry.type === "assistant" && entry.message?.role === "assistant") {
-      const rawContent = entry.message.content;
-      const content: any[] = Array.isArray(rawContent)
-        ? rawContent
-        : typeof rawContent === "string" && rawContent.trim()
-          ? [{ type: "text", text: rawContent }]
-          : [];
-      const text = content
-        .filter((b: any) => b.type === "text")
-        .map((b: any) => b.text as string)
-        .join("\n")
-        .trim();
+      const content = contentBlocks(entry.message.content);
+      const text = textOf(content);
 
       const toolCalls: ToolCall[] = [];
       for (const block of content) {
         if (block.type !== "tool_use") continue;
-        if (block.name === "Edit" && block.input?.file_path) {
+        const input = (block.input ?? {}) as Record<string, unknown>;
+        if (block.name === "Edit" && isText(input.file_path)) {
           toolCalls.push({
             kind: "edit",
-            filePath: block.input.file_path,
-            oldString: block.input.old_string ?? "",
-            newString: block.input.new_string ?? "",
+            filePath: input.file_path,
+            oldString: typeof input.old_string === "string" ? input.old_string : "",
+            newString: typeof input.new_string === "string" ? input.new_string : "",
           });
-        } else if (block.name === "Write" && block.input?.file_path) {
-          toolCalls.push({ kind: "write", filePath: block.input.file_path });
-        } else if (block.name === "Bash" && block.input?.command) {
-          toolCalls.push({ kind: "bash", command: block.input.command });
+        } else if (block.name === "Write" && isText(input.file_path)) {
+          toolCalls.push({ kind: "write", filePath: input.file_path });
+        } else if (block.name === "Bash" && isText(input.command)) {
+          toolCalls.push({ kind: "bash", command: input.command });
         }
       }
 

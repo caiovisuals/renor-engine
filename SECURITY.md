@@ -4,7 +4,7 @@
 
 Please report security issues privately through GitHub's private vulnerability reporting:
 
-https://github.com/patrickpassosb/renor-engine/security/advisories/new
+https://github.com/renorai/renor-engine/security/advisories/new
 
 Do not open a public issue for vulnerabilities such as secret exposure, authentication or authorization bypass, unsafe network exposure, or data leaks.
 

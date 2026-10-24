@@ -3,7 +3,7 @@ import { statSync } from 'fs';
 import path from 'path';
 import crypto from 'crypto';
 import { hashContent } from '../indexer/hasher';
-import type Database from 'better-sqlite3';
+import type Database from '../db/sqlite';
 import { parseNote } from '../indexer/parser';
 import { isIgnoredByVault } from '../indexer/walker';
 import { indexFile, type IndexOptions } from '../indexer/pipeline';
@@ -810,6 +810,8 @@ async function collectMemories(
       const dated = blocks.map((b) => ({ b, at: entryAt(bound, n.path, daily[2], b, n.modified_at) }));
       const newest = keep ? dated : [...dated].sort((x, y) => y.at.localeCompare(x.at)).slice(0, MAX_ENTRIES_PER_DAY);
       if (newest.length < blocks.length) truncated = true;
+      // An entry past the cap was still read, so it is live: a retirement of it that never completed is not listed.
+      for (const b of blocks) seen.add(b.id);
       for (const { b, at } of newest) {
         add({
           id: b.id, kind: 'entry', path: rel,
@@ -1247,7 +1249,8 @@ export async function readMemory(ctx: MemoryMapContext, id: string): Promise<Mem
   return {
     ok: true,
     memory: {
-      id, kind: 'note', path: file.rel, title: row?.title ?? parsed.title, at: row?.modified_at ?? new Date(0).toISOString(),
+      // A note not indexed yet is dated by its file, as an entry is above.
+      id, kind: 'note', path: file.rel, title: row?.title ?? parsed.title, at: row?.modified_at ?? (await fs.stat(file.real)).mtime.toISOString(),
       ...(dated ? { session_date: dated } : {}),
       source: typeof parsed.frontmatter.source === 'string' ? parsed.frontmatter.source : null,
       tags: tagsOf(parsed.frontmatter),

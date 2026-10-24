@@ -443,6 +443,10 @@ function gitDirtyLike(value: unknown): boolean {
 export const EVALUATOR_SOURCES = [
   'src/eval/hashEmbedding.ts',
   'src/eval/evalCache.ts',
+  // Which memory store a case is searched against (a restored index snapshot or a cold build): it decides every page.
+  'src/eval/indexSnapshots.ts',
+  // How a page dump is hashed and checked before a QA run reads it.
+  'src/eval/pageDump.ts',
   // How every runner counts a context's tokens (special-token spellings as text): it decides what fits a token cap.
   'src/eval/textTokens.ts',
   'scripts/eval/run-longmemeval-qa.ts',

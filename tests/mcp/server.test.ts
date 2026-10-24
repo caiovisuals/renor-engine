@@ -10,7 +10,7 @@ import { DEFAULT_LEDGER_REL, replayLedger, factsFor } from '../../src/memory/lif
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
-import type Database from 'better-sqlite3';
+import type Database from '../../src/db/sqlite';
 import { tmpPath } from '../helpers/tmpPath';
 import { hitList } from '../helpers/hitList';
 

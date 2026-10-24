@@ -4,7 +4,7 @@ import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import type { AddressInfo } from 'node:net';
-import Database from 'better-sqlite3';
+import Database from '../../src/db/sqlite';
 import { EVIDENCE_FAILURE_TTL_MS, EvidenceCache } from '../../src/evidence/evidenceCache';
 import {
   EvidenceExtractor,

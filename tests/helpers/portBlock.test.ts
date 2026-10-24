@@ -1,6 +1,6 @@
 import { describe, it, expect, afterEach } from 'vitest';
 import net from 'net';
-import { claimPortBlock, freePorts, type PortBlock } from './portBlock';
+import { blockRegion, claimPortBlock, freePorts, type PortBlock } from './portBlock';
 
 /**
  * The port block (helpers/portBlock.ts) is what lets two test runs on one machine name ports without ever naming the same
@@ -44,11 +44,11 @@ describe('claimPortBlock', () => {
     await expect(freePorts(first.first - 1, first.first - 1, 1)).rejects.toThrow(/only 0 of the 1 ports/);
   });
 
-  it('keeps its ports below the range the kernel hands out to bind(0) and to outgoing connections', async () => {
+  it('keeps its ports below the range the kernel hands out to bind(0) and to outgoing connections, and below the one netstack-based sandboxes hand out', async () => {
     const block = await claim();
 
     expect(block.first).toBeGreaterThanOrEqual(1024);
-    expect(block.last).toBeLessThan(32768);
+    expect(block.last).toBeLessThan(16_000);
   });
 
   it('gives the block back when its holder lets go of it', async () => {
@@ -60,6 +60,23 @@ describe('claimPortBlock', () => {
     const again = await claim();
 
     expect([again.first, again.last]).toEqual([first, last]);
+  });
+});
+
+describe('blockRegion', () => {
+  it('stays under 16000 whatever the kernel reports, and under the kernel\'s own first ephemeral port when that is lower', () => {
+    for (const reported of [null, 32768, 49152, 16000]) {
+      const { first, count } = blockRegion(reported);
+      expect(first + count * 64, String(reported)).toBeLessThanOrEqual(16_000);
+    }
+    const lowered = blockRegion(10_000);
+    expect(lowered.first + lowered.count * 64).toBeLessThanOrEqual(10_000);
+    expect(lowered.first).toBeGreaterThanOrEqual(1_100);
+  });
+
+  it('refuses a kernel range that leaves no room, naming the range, instead of handing out ports an outgoing connection can take', () => {
+    expect(() => blockRegion(1024)).toThrow(/ip_local_port_range/);
+    expect(() => blockRegion(1_500)).toThrow(/room for \d+ test port blocks/);
   });
 });
 

@@ -21,8 +21,6 @@ import { normalizeScope, type NormalizedScope } from '../mvp/scope';
  * silently loses memory.
  */
 
-export const EVENT_ID_RE = /^mem_[A-Za-z0-9]+$/;
-
 /** Field limits as enforced by `lifecycle.ts` `validateField`. */
 const FIELD_LIMITS: Record<string, number> = { subject: 512, predicate: 256, object: 8192, source: 256 };
 

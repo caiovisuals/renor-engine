@@ -1,4 +1,4 @@
-import type Database from 'better-sqlite3';
+import type Database from '../db/sqlite';
 
 /**
  * The zero-yield half of the ADR-0003 §4.2 lane cache (#189).

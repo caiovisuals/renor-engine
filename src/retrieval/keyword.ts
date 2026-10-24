@@ -1,4 +1,4 @@
-import type Database from 'better-sqlite3';
+import type Database from '../db/sqlite';
 import { databaseStamp } from '../db/readCache';
 import { prepareOnce } from '../db/statements';
 import { byPlace } from './semantic';

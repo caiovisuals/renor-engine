@@ -1,7 +1,7 @@
 import fs from 'fs/promises';
 import path from 'path';
 import crypto from 'crypto';
-import Database from 'better-sqlite3';
+import Database from '../db/sqlite';
 import { lookupEntity, type EntityRowFilter } from '../retrieval/entityLookup';
 import { identityKey, identityNames } from '../retrieval/queryHelpers';
 import { normalizeScope, savedScopeMatches, savedScopeSqlPredicate, scopeSpellings, type NormalizedScope } from '../mvp/scope';
@@ -18,6 +18,9 @@ import { withDailyFileLock } from './writer';
 import { assertStorable, secretGuardEnabled, SecretRefusedError } from '../extraction/secretGuard';
 import { markErrorReason, refusalReason, type ToolErrorReason } from '../toolRefusal';
 import type { IndexOptions } from '../indexer/pipeline';
+import { createLogger } from '../mvp/log';
+
+const log = createLogger('engine');
 
 // ---------------------------------------------------------------------------
 // Lifecycle layer — the piece that turns OSM from an index into a memory.
@@ -539,7 +542,13 @@ async function moveTornTailAside(
   }
   await ledger.truncate(offset);
   await ledger.sync();
-  console.error(`[memory] ledger ${path.resolve(vaultPath, relFile)}: its final event was cut short (a crash or a full disk); moved its ${tornBytes.length} byte(s) to ${tornPath} and kept every complete event. If that file holds a hand-written event that was never replayed, restore it by adding its \`- source:\` line and a final newline (if it has none), appending its bytes to the ledger, and restarting; a block still without that line is set aside again.`);
+  log.error('ledger_tail_set_aside', {
+    ledger: relFile,
+    bytes: tornBytes.length,
+    movedTo: path.relative(vaultPath, tornPath),
+    detail: 'the final event was cut short (a crash or a full disk); every complete event was kept',
+    remedy: 'a hand-written event never replayed: add its `- source:` line and a final newline (if it has none), append its bytes to the ledger and restart; a block still without that line is set aside again',
+  });
 }
 
 /**
@@ -1445,7 +1454,8 @@ export async function replayLedger(
       eventId => prepareOnce(db, 'SELECT 1 FROM applied_ledger_events WHERE event_id = ?').get(eventId) !== undefined,
       options.setTornTailAside === true,
     ));
-  } catch (err: any) {
+  } catch (caught) {
+    const err = caught as NodeJS.ErrnoException | null | undefined;
     if (err?.code === 'ENOENT') {
       // Only an absent ledger means "known-new empty vault: nothing recorded yet".
       // If the index already projects canonical events, the authoritative ledger
@@ -1652,8 +1662,8 @@ async function repeatsCurrentEvent(
   let content: Buffer;
   try {
     content = await fs.readFile(file);
-  } catch (err: any) {
-    if (err?.code === 'ENOENT') return false;
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException | null)?.code === 'ENOENT') return false;
     throw err;
   }
   // Always read first: the bytes say whether the events held from the last check are still the ledger's.
@@ -2139,7 +2149,14 @@ const DEFAULT_CURRENT_SQL =
  * — and it must not hide half the memory behind a silent pick, so the ambiguity is
  * disclosed instead. New writes refuse the same state (LegacyIdentityAmbiguityError).
  */
-export function factsFor(db: Database.Database, entityName: string, opts: { asOf?: string; includeHistory?: boolean; scope?: string } = {}) {
+/** A `facts` table row as `SELECT *` returns it (columns: db/migrations.ts); factsFor selects by subject, so it has one. */
+export interface StoredFactRow {
+  id: number; subject_entity_id: number; predicate: string; object_text: string | null; object_entity_id: number | null;
+  source_path: string; source_chunk_id: number | null; confidence: number; valid_from: string; valid_to: string | null;
+  updated_at: string; event_id: string | null; scope: string; author: string | null; statement_words: string | null;
+}
+
+export function factsFor(db: Database.Database, entityName: string, opts: { asOf?: string; includeHistory?: boolean; scope?: string } = {}): StoredFactRow[] {
   let entityIds: number[] = [];
   for (const alias of identityNames(entityName)) {
     entityIds = lifecycleEntityMatches(db, alias).map(match => match.id);
@@ -2157,9 +2174,9 @@ export function factsFor(db: Database.Database, entityName: string, opts: { asOf
   const inScope = scopeFilter ? savedScopeSqlPredicate(scopeFilter, 'scope') : null;
   if (opts.includeHistory) {
     if (inScope) {
-      return db.prepare(`SELECT * FROM facts WHERE subject_entity_id IN (${placeholders}) AND ${inScope.sql} ORDER BY valid_from DESC, id DESC`).all(...entityIds, ...inScope.params);
+      return db.prepare(`SELECT * FROM facts WHERE subject_entity_id IN (${placeholders}) AND ${inScope.sql} ORDER BY valid_from DESC, id DESC`).all(...entityIds, ...inScope.params) as StoredFactRow[];
     }
-    return db.prepare(`SELECT * FROM facts WHERE subject_entity_id IN (${placeholders}) ORDER BY valid_from DESC, id DESC`).all(...entityIds);
+    return db.prepare(`SELECT * FROM facts WHERE subject_entity_id IN (${placeholders}) ORDER BY valid_from DESC, id DESC`).all(...entityIds) as StoredFactRow[];
   }
   // S1: asOf is an INSTANT. It is normalized to the canonical format so the
   // SQL textual comparison is exactly the instant comparison for every
@@ -2172,11 +2189,11 @@ export function factsFor(db: Database.Database, entityName: string, opts: { asOf
     if (inScope) {
       return prepareOnce(db, 
         `SELECT * FROM facts WHERE subject_entity_id IN (${placeholders}) AND ${inScope.sql} AND valid_from <= ? AND (valid_to IS NULL OR valid_to > ?) ORDER BY valid_from DESC, id DESC`
-      ).all(...entityIds, ...inScope.params, t, t);
+      ).all(...entityIds, ...inScope.params, t, t) as StoredFactRow[];
     }
     return prepareOnce(db, 
       `SELECT * FROM facts WHERE subject_entity_id IN (${placeholders}) AND valid_from <= ? AND (valid_to IS NULL OR valid_to > ?) ORDER BY valid_from DESC, id DESC`
-    ).all(...entityIds, t, t);
+    ).all(...entityIds, t, t) as StoredFactRow[];
   }
   // The default read judges a lifecycle fact (source_path '_mcp_') the way the
   // write path does (streamCurrentFacts): current exactly when it is open, so a
@@ -2188,9 +2205,9 @@ export function factsFor(db: Database.Database, entityName: string, opts: { asOf
   if (inScope) {
     return prepareOnce(db, 
       `SELECT * FROM facts WHERE subject_entity_id IN (${placeholders}) AND ${inScope.sql} AND ${DEFAULT_CURRENT_SQL} ORDER BY valid_from DESC, id DESC`
-    ).all(...entityIds, ...inScope.params, readInstant, readInstant);
+    ).all(...entityIds, ...inScope.params, readInstant, readInstant) as StoredFactRow[];
   }
   return prepareOnce(db, 
     `SELECT * FROM facts WHERE subject_entity_id IN (${placeholders}) AND ${DEFAULT_CURRENT_SQL} ORDER BY valid_from DESC, id DESC`
-  ).all(...entityIds, readInstant, readInstant);
+  ).all(...entityIds, readInstant, readInstant) as StoredFactRow[];
 }
