@@ -1,4 +1,6 @@
 import path from 'path';
+import { learningSettings, type LearningSettings } from '../learning/settings';
+import { sharingDirFor } from '../sharing/state';
 import { compileCacheOverlap } from './compileCache';
 
 /**
@@ -110,6 +112,16 @@ export interface MvpConfig {
    * data and Node's cache blobs do not belong in them.
    */
   compileCacheDir: string | null;
+  /**
+   * The learning log (RENOR_LEARNING_LOG and its two companions, src/learning/settings.ts). Off unless RENOR_LEARNING_LOG=1:
+   * with it off no file is made and no call is recorded. Optional so a test may build a config without it.
+   */
+  learning?: LearningSettings;
+  /**
+   * The folder holding this workspace's choice to share learning data (src/sharing): its consent record and what the sender needs.
+   * One per memory folder, so one per workspace. Nothing is written there until the owner chooses a level above off.
+   */
+  sharingDir?: string;
 }
 
 export const DEFAULT_LEDGER_REL = 'System/Memory Events Ledger.md';
@@ -410,5 +422,7 @@ export function loadMvpConfig(): MvpConfig {
     explicitDbPath,
     idleExitMs,
     compileCacheDir,
+    learning: learningSettings(memoryDirResolved),
+    sharingDir: sharingDirFor(memoryDirResolved),
   };
 }

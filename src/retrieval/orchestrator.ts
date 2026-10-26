@@ -19,6 +19,7 @@ import {
   ENTITY_LANE_BOOST, NEAR_DUP_POOL, applyNearDupCap, entityLaneChunkIds, entityLaneEnabled, entityLaneTerms, laneTermShare,
   queryRewriteEnabled, resolveNearDupCap, rewriteConversationalQuery,
 } from './plainWording';
+import { addRankingTerm, attachRankingTerms, currentRankingTrace, newRankingTerms, rankingTermIndex } from './rankingTrace';
 
 export interface RetrievalHit {
   notePath: string;
@@ -636,20 +637,31 @@ export function resolveRankedExpansion(env: NodeJS.ProcessEnv = process.env): Ra
 }
 
 /**
- * RENOR_SESSION_EXPAND_RANKED_STATEMENT_TOKENS (default unset, which is off): the longest conversation statement, in tokens,
- * that the RANKED expansion alone may add. The former expansion keeps RENOR_SESSION_EXPAND_STATEMENT_TOKENS (120), and an
- * unset, empty, non-numeric or below-1 value changes nothing anywhere, byte for byte. Set, it wins over
- * RENOR_SESSION_EXPAND_STATEMENT_TOKENS in the ranked expansion only.
+ * The longest conversation statement the RANKED expansion adds when nothing says otherwise: 400 tokens. The former expansion
+ * (a command line that does not declare a calibrated model) keeps RENOR_SESSION_EXPAND_STATEMENT_TOKENS (120).
+ */
+export const SESSION_EXPAND_RANKED_STATEMENT_TOKENS = 400;
+
+/**
+ * RENOR_SESSION_EXPAND_RANKED_STATEMENT_TOKENS (default 400 since the flip of 2026-10-25): the longest conversation statement,
+ * in tokens, that the RANKED expansion alone may add. Unset or empty: 400, unless RENOR_SESSION_EXPAND_STATEMENT_TOKENS is set,
+ * which an operator's explicit value keeps winning as it always did. A number of 1 or more: that limit, over the general one.
+ * The off switch: `0`, a negative number or anything that is not a number returns null, and the ranked expansion then takes
+ * RENOR_SESSION_EXPAND_STATEMENT_TOKENS (120 unset), as it did before the flip. The former expansion and the documents are
+ * never touched by it.
  *
- * Why it exists: the session expansion skips a conversation statement over its limit, whole, and the long user turn that
- * answers a question is often just over 120 tokens (501 to 700 characters: missing from the page 5 times in 21, against 6 in
- * 777 for shorter ones, on the Haiku default run of 2026-10-23). The chunker splits a section of over 400 tokens into
- * paragraphs, which this limit never takes, so 400 is the largest value that changes anything. Measured as 400 beside
- * RENOR_EMBEDDING_SERVED_BY=vertex (the ranked expansion a hosted workspace runs) on the official LongMemEval-S instrument:
- * engine/docs/evals/results/ranked-statement-limit-20261024/ and LEDGER section BE. A research switch until a default flip lands.
+ * Why 400: the session expansion skips a conversation statement over its limit, whole, and the long user turn that answers a
+ * question is often just over 120 tokens (501 to 700 characters: missing from the page 5 times in 21, against 6 in 777 for
+ * shorter ones, on the Haiku default run of 2026-10-23). The chunker leaves no section over 400 tokens as one chunk, so 400 is
+ * the largest value that changes anything. On the official LongMemEval-S instrument with a Haiku 5.5 reader the ranked
+ * expansion with 400 scored 433 of 500 and with 120 (the control) 431, against 418, 417 and 423 for the command-line default;
+ * the four pages only the limit completes are right 4 of 4 with it and 0 of 4 without, and the page is 5.5% smaller:
+ * engine/docs/evals/results/ranked-statement-limit-20261024/ and LEDGER sections BE and BF.
  */
 export function rankedStatementTokens(env: NodeJS.ProcessEnv = process.env): number | null {
-  const value = Number((env.RENOR_SESSION_EXPAND_RANKED_STATEMENT_TOKENS ?? '').trim());
+  const raw = (env.RENOR_SESSION_EXPAND_RANKED_STATEMENT_TOKENS ?? '').trim();
+  if (raw === '') return (env.RENOR_SESSION_EXPAND_STATEMENT_TOKENS ?? '').trim() === '' ? SESSION_EXPAND_RANKED_STATEMENT_TOKENS : null;
+  const value = Number(raw);
   return Number.isFinite(value) && value >= 1 ? Math.floor(value) : null;
 }
 
@@ -934,6 +946,8 @@ function rankWindow(read: {
   nearDupCap: number;
 }) {
   const { db, query, topK, priorityPaths, clock, opts, factHits, semanticHits, laneTerms, nearDupCap } = read;
+  // Set only while the learning log collects the ranker's terms (rankingTrace.ts); otherwise every use below is skipped.
+  const trace = currentRankingTrace();
   // Raw cosines, kept only for a caller that asked to see them (get_context's relevance signal).
   const cosineByChunk = opts.probe ? new Map(semanticHits.map(h => [h.chunkId, h.score])) : null;
   const entityHit = lookupEntity(db, query.trim());
@@ -958,18 +972,26 @@ function rankWindow(read: {
 
   const scored = semanticHits.map(h => {
     let score = h.score; let reason = 'semantic';
+    const terms = trace ? newRankingTerms() : null;
     if (isSpeakerStub(h.text)) {
       score -= 0.5;
+      if (terms) terms[rankingTermIndex('stub')] -= 0.5;
       reason = 'semantic+stub';
     } else {
       const boost = contentBoost(h.text);
-      if (boost > 0) { score += boost; reason += '+content'; }
+      if (boost > 0) { score += boost; reason += '+content'; if (terms) terms[rankingTermIndex('content')] += boost; }
     }
-    if (priorityPaths.some(p => h.notePath.includes('/' + p) || h.notePath.startsWith(p))) { score += 0.1; reason += '+priority'; }
-    if (entityHit?.sourceNote === h.notePath) { score += 0.2; reason += '+entity'; }
+    if (priorityPaths.some(p => h.notePath.includes('/' + p) || h.notePath.startsWith(p))) {
+      score += 0.1; reason += '+priority'; if (terms) terms[rankingTermIndex('priority')] += 0.1;
+    }
+    if (entityHit?.sourceNote === h.notePath) { score += 0.2; reason += '+entity'; if (terms) terms[rankingTermIndex('entity')] += 0.2; }
     if (laneTerms.length > 0) {
       const share = laneTermShare(h.text, laneTerms);
-      if (share > 0) { score += ENTITY_LANE_BOOST * share; reason += '+entity-lane'; }
+      if (share > 0) {
+        const boost = ENTITY_LANE_BOOST * share;
+        score += boost; reason += '+entity-lane';
+        if (terms) terms[rankingTermIndex('entity_lane')] += boost;
+      }
     }
     // Time-decay recency: +0.1 for today, linearly decaying to 0 over 30 days.
     // Skipped for explicit past-date (as-of) queries: recency answers "now",
@@ -979,9 +1001,10 @@ function rankWindow(read: {
     if (row && !asofPrePast) {
       const daysSince = ((clock.nowMs ?? Date.now()) - new Date(row.modified_at).getTime()) / 86400000;
       const recencyBoost = Math.max(0, 0.1 * (1 - daysSince / 30));
-      if (recencyBoost > 0.001) { score += recencyBoost; reason += '+recency'; }
+      if (recencyBoost > 0.001) { score += recencyBoost; reason += '+recency'; if (terms) terms[rankingTermIndex('recency')] += recencyBoost; }
     }
-    return { ...h, score, reason, session_date };
+    const out = { ...h, score, reason, session_date };
+    return terms ? attachRankingTerms(out, terms) : out;
   });
 
   // Graph expansion
@@ -1095,6 +1118,7 @@ function rankWindow(read: {
     );
     if (factMatch) {
       hit.score += 0.15;
+      if (trace) addRankingTerm(hit, 'fact', 0.15);
       hit.reason += '+fact';
     }
 
@@ -1106,11 +1130,13 @@ function rankWindow(read: {
       const lowerText = hit.text.toLowerCase();
       if (lowerText.includes(yearToken)) {
         hit.score += 0.08;
+        if (trace) addRankingTerm(hit, 'asof_year', 0.08);
         hit.reason += '+asof-year';
         if (asofRef.month !== undefined) {
           const monthName = Object.keys(ASOF_MONTHS).find(m => ASOF_MONTHS[m] === asofRef.month);
           if (monthName && lowerText.includes(monthName)) {
             hit.score += 0.04;
+            if (trace) addRankingTerm(hit, 'asof_month', 0.04);
             hit.reason += '+asof-month';
           }
         }
@@ -1134,6 +1160,7 @@ function rankWindow(read: {
           // Must clear recency (+0.1 max) + fact boost (+0.15) the current note
           // typically carries, or past-intent queries can never win.
           hit.score += 0.3;
+          if (trace) addRankingTerm(hit, 'historical_intent', 0.3);
           hit.reason += '+historical-intent';
         }
       }
@@ -1148,9 +1175,11 @@ function rankWindow(read: {
         if (stale.length >= 3 && text.includes(stale)) {
           if (pastIntent) {
             hit.score += 0.1;
+            if (trace) addRankingTerm(hit, 'past_fact', 0.1);
             hit.reason += '+historical-intent';
           } else {
             hit.score -= 0.15;
+            if (trace) addRankingTerm(hit, 'stale_fact', -0.15);
             hit.reason += '+stale-fact';
           }
           break; // one demotion per hit; stale signal already applied
@@ -1167,6 +1196,7 @@ function rankWindow(read: {
           const cur = (f.object_text ?? '').trim().toLowerCase();
           if (cur.length >= 3 && text.includes(cur)) {
             hit.score += 0.1;
+            if (trace) addRankingTerm(hit, 'current_fact', 0.1);
             hit.reason += '+current-fact';
             break;
           }
@@ -1176,6 +1206,7 @@ function rankWindow(read: {
   }
 
   const ranked = dedupeHits(scored.sort(byScoreThenPlace));
+  if (trace) ranked.forEach((hit, index) => trace.pool(hit, index + 1));
   // Fail-open floor. The stub filter must never empty the window: a zero-hit
   // retrieval is a hard abort on the product path, because the benchmark client
   // refuses to score a case with no hits ("Retrieval precondition failed: public
@@ -1197,7 +1228,10 @@ function rankWindow(read: {
   ), opts.isLedgerNote);
   const diversityCap = resolveSessionDiversityCap(process.env, opts.noteCapWhenUnset);
   // RENOR_NEAR_DUP_CAP (default off): near-copies are capped before the per-note cap, on the visible text.
-  let hits = reserveLanePlaces(applySessionDiversity(applyNearDupCap(mixed, nearDupCap, contentfulText), diversityCap, topK), topK, laneTerms).map(h => ({
+  const windowed = reserveLanePlaces(applySessionDiversity(applyNearDupCap(mixed, nearDupCap, contentfulText), diversityCap, topK), topK, laneTerms);
+  // The window's candidates are recorded before they are copied into the plain hits below, which carry no terms.
+  if (trace) for (const hit of windowed) trace.touch(hit);
+  let hits = windowed.map(h => ({
     notePath: h.notePath,
     chunkId: h.chunkId,
     headingPath: h.headingPath,
@@ -1255,5 +1289,8 @@ async function finishContext(read: {
   const newestFirst = !bestFirst && newestFirstEnabled() && !(temporal && pastIntent) && !asofPast;
   const rankedBy: HitOrder = newestFirst ? 'session_date' : 'score';
   contentfulHeld.clear(); // nothing outlives the read it was worked out for
-  return { query, hits: orderHits(hits, rankedBy), rankedBy };
+  // The order the reply presents its hits in, so a candidate's place in it is recorded for the learning log (rankingTrace.ts).
+  const presented = orderHits(hits, rankedBy);
+  currentRankingTrace()?.presented(presented);
+  return { query, hits: presented, rankedBy };
 }

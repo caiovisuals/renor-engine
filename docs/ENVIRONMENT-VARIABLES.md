@@ -122,7 +122,7 @@ Switches for how results are chosen and laid out. The defaults are the ones the 
 | `RENOR_SESSION_EXPAND_RANK` | on | `0` makes the expansion take statements best note first, in the order they sit in each note, instead of ranking them by closeness to the query. Ranking applies only with an embedding model the product has calibrated; with any other setting this has no effect. |
 | `RENOR_SESSION_EXPAND_TOKENS` | `2000`, or `1300` when ranked | The most tokens the expansion may add. |
 | `RENOR_SESSION_EXPAND_STATEMENT_TOKENS` | `120` | The longest statement, in tokens, the expansion adds from a conversation-shaped note. A longer one is skipped, never cut. |
-| `RENOR_SESSION_EXPAND_RANKED_STATEMENT_TOKENS` | unset (off) | The same limit for the ranked expansion alone, and it wins over `RENOR_SESSION_EXPAND_STATEMENT_TOKENS` there; the former expansion keeps its own. A number of 1 or more turns it on, and `400` is the measured value (the chunker splits a section over 400 tokens, so a larger value changes nothing). Unset, empty or anything else changes nothing. It is not in the benchmark run manifest's flag list (that list is part of the frozen evaluator hash): a run that sets it says so in its own record. A research switch: on the official LongMemEval-S instrument with a Claude Haiku 5.5 reader, `400` beside `RENOR_EMBEDDING_SERVED_BY=vertex` scored 433 of 500 against 418, 417 and 423 for the shipped defaults (LEDGER section BE: one draw, found on the same 500 questions, two changes at once). |
+| `RENOR_SESSION_EXPAND_RANKED_STATEMENT_TOKENS` | `400` | The longest statement, in tokens, the **ranked** expansion adds from a conversation-shaped note (the expansion a hosted workspace runs, and the command line with `RENOR_EMBEDDING_SERVED_BY`). A longer one is skipped, never cut. Unset or empty gives 400, unless `RENOR_SESSION_EXPAND_STATEMENT_TOKENS` is set: an explicit value of that one keeps deciding. A number of 1 or more sets the limit over the general one. **The off switch:** `0`, a negative number or anything that is not a number restores the general limit in the ranked expansion (120 unset), as it was before 25 Oct 2026. The former expansion and the documents are never touched by it. 400 is the largest value that changes anything: a section over 400 tokens is never a single chunk. It is not in the benchmark run manifest's flag list (that list is part of the frozen evaluator hash): a run that changes it says so in its own record. On the official LongMemEval-S instrument with a Claude Haiku 5.5 reader, the ranked expansion with 400 scored 433 of 500 and with 120 scored 431, against 418, 417 and 423 for the command-line default (LEDGER sections BE and BF: one draw each, found on the same 500 questions). |
 | `RENOR_SESSION_EXPAND_DOCUMENT_STATEMENT_TOKENS` | `200` | The same limit for every other note. |
 | `RENOR_READER_DURATION` | on | `0`, `false`, `no` or `off` turns it off. When it is on (the default), it adds one line first to a search reply (the reader layout must be on too) when the question asks how many days, weeks or months lie between two events and the user wrote the date of each in their own words: the two dates, each with the sentence it was written in, and the time between them, counted from the written dates alone and never from a session date. A question it cannot answer that way, or any other question, gets the reply it would get without the flag. No stored text is cut or reworded. The `search_memory` tool description names the line only when the switch is written out as `1`, `true`, `yes` or `on`; left unset, the line is added to the reply but the description is unchanged. |
 | `RENOR_READER_EVENTS` | on | `0`, `false`, `no` or `off` turns them off. When they are on (the default), they add one block first to a search reply (the reader layout must be on too) when the question asks for the order or the date of something you did ("which happened first", "when did I ..."): one line for each of your own statements that matches the question, each under the day it is about, oldest first, quoted as you wrote it. The excerpts stay in full below it. It makes no model call; with a real embedding model it also uses the vectors the index already holds to pick the lines, and without one it picks them by the words of the question. A question about a duration or about anything else gets the reply it would get without the flag. No stored text is cut or reworded. The `search_memory` tool description names the block only when the switch is written out as `1`, `true`, `yes` or `on`; left unset, the block is added to the reply but the description is unchanged. With `RENOR_READER_TIMELINE` on as well, a question that asks for a date can get both blocks, the timeline first. |
@@ -192,6 +192,8 @@ Off unless you turn them on. The four extractor lanes need a named provider: a b
 | `RENOR_FACTS_WRITE_PATH` | off | `1`, `true`, `yes` or `on` runs the local-rules facts extractor on the write path (no model call). |
 | `RENOR_CLASSIFY_CAPTURE` | off | `1`, `true`, `yes` or `on` classifies a saved statement and plans how to store it. A draft only: nothing is written because of it. |
 | `RENOR_SECRET_GUARD` | off | `1`, `true`, `yes` or `on` refuses to store text that looks like a credential or a personal identifier, and says why. It decides what may be stored; it does not look at what is already stored. |
+| `RENOR_JEV_OPTIN` | unset | The slug of one hosted workspace, and it must equal that workspace's `MVP_INSTANCE_ID` or it stays off. On, each text about to be stored by `remember`, `save_memory` or `remember_note` is also sent to TypeSafe's Jev (a US-hosted API) for a second sensitivity opinion and a recorded, advisory "worth saving" label, with a 1.5 s limit, falling back to the local rules on any failure. Needs `RENOR_JEV_KEY_FILE` and `MVP_MEMORY_DIR`. See `docs/security/JEV-SAVE-SCREEN.md`. |
+| `RENOR_JEV_KEY_FILE` | unset | With `RENOR_JEV_OPTIN`: the absolute path of a file holding one key. |
 
 ## Opt-in trials
 
@@ -230,6 +232,25 @@ Write-time digests (`RENOR_DIGESTS`, default off) write a short digest of each n
 | `RENOR_DIGEST_PRICE_IN_PER_M` | `0.225` | US dollars per million input tokens, for the cap. |
 | `RENOR_DIGEST_PRICE_OUT_PER_M` | `0.75` | US dollars per million output tokens, for the cap. |
 
+## Consolidation (the dreamer)
+
+HTTP server only, **off by default**. A background pass that finds current facts which may be one thing under two names or scopes ("Atlas project" and "Atlas" with different `deploy_target`s; a value saved without its project scope), asks a model whether the newer one replaces the older, and writes only the replacements, as ordinary supersede events whose ledger statement names who and how: the dreamer, the prompt version, the model, whether a second look agreed, the reason and the events relied on (never the values). Nothing is deleted: the replaced value stays in history, and, as with any replacement of another writer's value, stays visible beside the new one, marked, until its writer saves again. A predicate that holds a collection (`supports`, `integrates_with`, `contributors`...) is never replaced automatically; its group is reported as both-may-hold. It runs after 20 fact saves, or after one idle hour once something is new, never twice within 8 hours. Turned on, it sends the subject, predicate, value, scope, saving agent, date and quoted words of the facts of each candidate group (not notes) to the endpoint below. It does nothing without a key.
+
+| Variable | Default | What it does |
+| --- | --- | --- |
+| `RENOR_CONSOLIDATE` | off | `1`, `true`, `yes` or `on` starts the dreamer, when a key is set. Anything else constructs nothing: no timer, no table, no read, no write, and every answer and file is the same as before. |
+| `RENOR_CONSOLIDATE_API_KEY` | unset | The key for the endpoint, required: with none, the dreamer stays off and says why once. |
+| `RENOR_CONSOLIDATE_API_KEYS` | unset | Several keys, separated by commas, used in turn. |
+| `RENOR_CONSOLIDATE_BASE_URL` | `https://opencode.ai/zen/go/v1` | An OpenAI-compatible chat endpoint (OpenCode Go). For `opencode.ai` the request carries the session id header that endpoint requires. Separate from the evidence pass: turning the dreamer on never turns the read-time extractor on. |
+| `RENOR_CONSOLIDATE_MODEL` | `deepseek-v4.1-flash` | The model id the endpoint serves. |
+| `RENOR_CONSOLIDATE_MAX_TOKENS` | `600` | The output ceiling of one call, reasoning included. A positive whole number. |
+| `RENOR_CONSOLIDATE_REASONING_EFFORT` | `low` | `none`, `minimal`, `low`, `medium` or `high`. |
+| `RENOR_CONSOLIDATE_REVIEW` | `updates` | The second look: one more call, with both saves in full, for a pair the first call called an update (`updates`), could not settle (`uncertain`), or both (`both`). `off` makes one call per group. An update stands only if the second look agrees. |
+| `RENOR_CONSOLIDATE_DRY_RUN` | off | `1`, `true`, `yes` or `on` judges and plans and writes nothing: no event, no table, no index pass. The log lists each planned write by event id, subject, predicate and scope, never a value. |
+| `RENOR_CONSOLIDATE_MAX_USD_PER_DAY` | `0.05` | The workspace's spend cap per UTC day, in US dollars, estimated from the two prices below. A call that could pass it is not made; the groups left are asked on a later run. The count is kept in the workspace's index, so a restart does not hand the day back (a dry run keeps its count in the process). |
+| `RENOR_CONSOLIDATE_PRICE_IN_PER_M` | `0.15` | US dollars per million input tokens, for the cap. |
+| `RENOR_CONSOLIDATE_PRICE_OUT_PER_M` | `0.6` | US dollars per million output tokens, for the cap. |
+
 ## Automatic recall (Claude Code hook)
 
 Read by the `UserPromptSubmit` hook (`dist/recall/autoRecall.js`, see [claude-code-plugin/README.md](../claude-code-plugin/README.md)), not by either server. Off by default. On, each prompt that is not trivial is sent to `get_context` and the reply is added to the agent's context. A failure, a timeout or an unrelated reply adds nothing and never blocks the prompt.
@@ -261,6 +282,31 @@ Read by the `UserPromptSubmit` hook (`dist/recall/autoRecall.js`, see [claude-co
 | `RENOR_SEARCH_RECALL` | unset (off) | `1` (or `on`, `true`, `yes`) turns search recall on. |
 | `RENOR_SEARCH_RECALL_MAX_TOKENS` | `150` | Most tokens added per search, the boundary's label included (100 to 1000). |
 | `RENOR_SEARCH_RECALL_STATE_DIR` | `renor-search-recall` in the OS temp directory | Where the hook marks the memories it has shown, one file per memory and session. If it cannot write there, it shows nothing. |
+
+## Learning log
+
+The learning log records, for the MVP server, what each retrieval served, what each save or forget changed, and what each cite named, as ids, keyed hashes and numbers, in `<memory folder>/.memory-index/learning.sqlite`. It is off unless you turn it on, and it is separate from telemetry and from the index. The schema, the privacy rules and how to export or delete it are in [docs/learning/FEEDBACK-LOG.md](learning/FEEDBACK-LOG.md).
+
+| Variable | Default | What it does |
+| --- | --- | --- |
+| `RENOR_LEARNING_LOG` | off | `1` or `true` records retrievals, memory operations and cites in the learning log. Off, no file is made and nothing is recorded. A value other than 1, true, 0 or false stops the server at start. |
+| `RENOR_LEARNING_RAW_QUERY` | off | `1` or `true` also keeps the query text of each retrieval. It needs `RENOR_LEARNING_LOG=1`, and a query the secret scanner flags is never kept. |
+| `RENOR_LEARNING_RETENTION_DAYS` | `30` | Rows older than this many days are deleted, and never exported: 1 to 365. |
+
+## Sharing with Renor (optional, off by default)
+
+The user's choice to share anonymous labelled signals, or signals plus the text of examples for training, with Renor. Nothing is recorded for it or sent until the user picks a level with `renor-engine telemetry signals|data` (or the owner does, in the hosted dashboard). Every field sent is in [TELEMETRY.md](TELEMETRY.md); `renor-engine telemetry preview` prints exactly what would be sent.
+
+| Variable | Default | What it does |
+| --- | --- | --- |
+| `RENOR_SHARING` | unset | `off`, `signals` or `data`. Overrides the recorded choice for this process, and can only lower it: it never turns sharing on, because a choice needs a record of the words the user saw. Any other value stops the command at start. |
+| `DO_NOT_TRACK` | unset | `1` is the same as `RENOR_SHARING=off`, and also means this process makes no request at all, even to ask Renor to delete what it holds. |
+| `RENOR_SHARING_DEBUG` | off | `1` or `true`: debug mode. The sender builds the exact request bodies and prints them instead of sending them, and changes no state. |
+| `RENOR_SHARING_DIR` | `<memory folder>/.memory-index/sharing`, else `~/.config/renor` | The folder holding the choice (`sharing.json`), the sender's state and, at `data`, the saved example texts. Owner-only. |
+| `XDG_CONFIG_HOME` | `~/.config` | Where `~/.config/renor` is taken from when no memory folder and no `RENOR_SHARING_DIR` is given. |
+| `RENOR_SHARING_ENDPOINT` | Renor's ingestion endpoint | Where rows are posted. It must be https (http only for a loopback address, for a test). |
+| `RENOR_SHARING_STATUS_URL` | `https://mcp.renor.cloud/sharing/status` | Renor's sharing switch, read only after Renor refused a batch because sharing is closed: sending resumes when it answers exactly `{"open": true}`. It must be https (http only for a loopback address, for a test). |
+| `RENOR_SHARING_INTERVAL_MIN` | `60` | How often the service looks for rows that are final and unsent: 1 to 1440 minutes. At off a tick reads one small file and does nothing else. |
 
 ## Telemetry
 

@@ -73,6 +73,12 @@ import { noteTurnsLoader, readerEventsEnabled, readerEventsNamed, turnScorer, ve
 import type { RetrievalProbe } from '../retrieval/semantic';
 import { searchBestFirstEnabled } from '../retrieval/orchestrator';
 import { readBuildIdentity } from '../buildIdentity';
+import { learningObserver } from '../learning/tap';
+import { RankingTrace, withRankingTrace } from '../retrieval/rankingTrace';
+import { sharingHook } from '../sharing/examples';
+import { SHARING_LEVELS } from '../sharing/fields';
+import { chooseLevel, deleteAllShared } from '../sharing/send';
+import { contributorId, effectiveLevel, ensureState, readConsent } from '../sharing/state';
 import { hostHeaderValidation } from '@modelcontextprotocol/sdk/server/middleware/hostHeaderValidation.js';
 import { LOCAL_API_HOSTNAMES } from '../api/apiAuth';
 import { ensureOwnerOnlyFile, ensureOwnerOnlyMemoryDir } from './memoryDir';
@@ -80,6 +86,7 @@ import { previewImport, applyHostedImport, undoHostedImport, importPreviewSchema
 import { exportEverything, EXPORT_SECTIONS } from './exportAll';
 import { DEFAULT_MAP_LIMIT, buildMemoryMap, findMemories, purgeRetired, readMemory, retireMemory, restoreMemory } from '../memorymap/memoryMap';
 import { IdleMonitor } from './idle';
+import { createDreamer, type Dreamer } from '../memory/dreamer/dreamer';
 import { ACTIVITY_PATH, ActivityGauge } from './activity';
 import { StoredSizeGauge, measureMarkdownBytes } from './storedSize';
 import { escapeInvisibleControls, sanitizeErrorMessage } from './sanitize';
@@ -163,6 +170,8 @@ export interface MvpApp {
    * that pass before the service listens.
    */
   reindexPending: boolean;
+  /** The consolidation pass (memory/dreamer); null unless RENOR_CONSOLIDATE is on and a model is configured. */
+  dreamer: Dreamer | null;
   close(): Promise<void>;
 }
 
@@ -553,11 +562,12 @@ function withAnnotationTitle<C extends { title?: unknown; annotations?: Record<s
 }
 
 /**
- * The one tool only the dashboard may list or run: it erases retired memories for good. Its registerTool call below spells the name
- * as a literal, because the docs binding and the hosted-tool tests read the registry off the literal call sites; if the two ever
- * differ, registeredToolEntry throws when an agent's server is built.
+ * The tools only the dashboard may list or run: one erases retired memories for good, the other reads and sets the workspace's
+ * choice to share learning data. Each registerTool call below spells its name as a literal, because the docs binding and the
+ * hosted-tool tests read the registry off the literal call sites; if the two ever differ, registeredToolEntry throws when an
+ * agent's server is built.
  */
-const OWNER_ONLY_TOOL = 'delete_retired_memory';
+const OWNER_ONLY_TOOLS = ['delete_retired_memory', 'sharing_settings'] as const;
 
 /** The tools agents use to reach each other. A directory client is offered none of them; registeredToolEntry throws if one is renamed. */
 const HIVE_TOOLS = ['whats_new', 'ask_agent', 'list_requests', 'answer_request', 'close_request'];
@@ -577,7 +587,7 @@ function registeredToolEntry(server: McpServer, name: string): { enabled: boolea
  * binds one transport per Protocol instance, so SSE sessions each get
  * their own server (bounded, in-process); JSON mode shares one.
  */
-function buildMcpServer(db: Database.Database, config: MvpConfig, engine: Engine, idle: Pick<IdleMonitor, 'track'> | null, digests: EngineDigests | null, usefulness: ReadUsefulness, connection: ConnectionStatus | null, announceFirst: boolean, telemetrySession: string | null = null, dashboard = false, directory = false): McpServer {
+function buildMcpServer(db: Database.Database, config: MvpConfig, engine: Engine, idle: Pick<IdleMonitor, 'track'> | null, digests: EngineDigests | null, usefulness: ReadUsefulness, connection: ConnectionStatus | null, announceFirst: boolean, telemetrySession: string | null = null, dashboard = false, directory = false, dreamer: Dreamer | null = null): McpServer {
   // RENOR_TOOL_OUTPUT_SCHEMAS, read once for this server: its tools list an outputSchema exactly when its answers carry
   // structuredContent.
   const withSchemas = toolOutputSchemasEnabled();
@@ -634,6 +644,17 @@ function buildMcpServer(db: Database.Database, config: MvpConfig, engine: Engine
     return !(result && result.isError);
   }
 
+  // The learning log (RENOR_LEARNING_LOG, src/learning): null unless it is on, and then one record per successful call of the
+  // tools it covers. The observer reads the reply before it is decorated and never changes it.
+  const learner = learningObserver(config.learning, {
+    actor: dashboard ? 'dashboard' : 'agent',
+    session: telemetrySession,
+    model: () => engine.modelKey ?? null,
+    agent: extra => agentOf(extra as CallExtra | undefined, config),
+    // The owner's choice to share, read at each call: recording turns on when they choose a level and off when they choose off.
+    sharing: config.sharingDir === undefined ? undefined : sharingHook(config.sharingDir),
+  });
+
   /** Privacy-safe: tool name / ok / ms and, on a refusal, its code from the closed set — never args or memory content. */
   function tracedTool<H extends (...args: never[]) => CallToolResult | Promise<CallToolResult>>(tool: string, handler: H): H {
     // On-demand: a running tool call (a write, an index job) holds the engine awake
@@ -650,8 +671,12 @@ function buildMcpServer(db: Database.Database, config: MvpConfig, engine: Engine
         return report && Object.keys(report).length > 0 ? { phases: report } : {};
       };
       try {
-        const result = await (phases ? phases.run(() => run(...args)) : run(...args));
+        // The ranker's terms are collected only for the learning log (rankingTrace.ts): with the log off no scope is opened.
+        const trace = learner ? new RankingTrace(config.memoryDir) : undefined;
+        const invoke = () => (phases ? phases.run(() => run(...args)) : run(...args));
+        const result = await (trace ? withRankingTrace(trace, invoke) : invoke());
         const ok = toolResultOk(result);
+        learner?.observe(tool, args[0], result, ok, Date.now() - started, args[1], trace);
         emitTelemetry({
           event: 'tool_use',
           tool,
@@ -791,6 +816,7 @@ function buildMcpServer(db: Database.Database, config: MvpConfig, engine: Engine
         // FULL_VAULT_CHECK_MS (see engineIndexChanged).
         let refresh: Record<string, unknown> = {};
         if (receipt.action !== 'nochange') {
+          dreamer?.noteFactSave();
           try {
             const pass = await engineIndexChanged(db, config, engine, undefined, {
               interactive: true,
@@ -955,6 +981,7 @@ function buildMcpServer(db: Database.Database, config: MvpConfig, engine: Engine
       try {
         duplicates = possibleDuplicates(db, receipt, receipt.created?.factId ?? null, scopeFilterFor(args.scope), readerOf(extra));
       } catch { /* no hint */ }
+      if (receipt.action !== 'nochange') dreamer?.noteFactSave();
       return jsonResult({
         ok: receipt.ok,
         action: receipt.action,
@@ -1079,6 +1106,7 @@ function buildMcpServer(db: Database.Database, config: MvpConfig, engine: Engine
       counts: z.record(z.string(), z.unknown()),
       sections: z.array(z.object({ name: z.string(), items: z.number().nullable(), events: z.number().nullable().optional() })),
       notExported: z.array(z.object({ kind: z.string(), what: z.string(), reason: z.string() })),
+      learningLog: z.union([z.null(), z.object({ file: z.string(), data: z.record(z.string(), z.unknown()) })]),
       included: z.array(z.string()),
       truncated: z.boolean(),
       nextSection: z.string().nullable(),
@@ -1659,7 +1687,72 @@ function buildMcpServer(db: Database.Database, config: MvpConfig, engine: Engine
       return toolError(err);
     }
   });
-  if (!dashboard) registeredToolEntry(server, OWNER_ONLY_TOOL).enabled = false;
+  if (!dashboard) registeredToolEntry(server, 'delete_retired_memory').enabled = false;
+
+  // Only for the owner, from the dashboard: the workspace's choice to share learning data with Renor (src/sharing). The consent
+  // record the owner's click writes in the control plane (set_learning_consent) is the proof; THIS is what the tenant obeys, so the
+  // dashboard calls it right after the record is written, and recording and sending start or stop on the next call. It guards
+  // itself exactly as delete_retired_memory does, and for an agent it is neither listed nor callable.
+  server.registerTool('sharing_settings', {
+    title: 'Learning-data sharing choice (owner only)',
+    annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: true },
+    description: 'Reads, sets or deletes this workspace\'s choice to share learning data with Renor. action "get" returns the choice; "set" needs level (off, signals or data) and, for signals or data, adult: true and the notice_version the owner saw; "delete" asks Renor to delete what it holds for this workspace and removes the local sharing files. Off is the default.',
+    inputSchema: {
+      action: z.enum(['get', 'set', 'delete']).describe('get, set or delete'),
+      level: z.enum(SHARING_LEVELS).optional().describe('With set: off, signals or data'),
+      notice_version: z.string().min(1).max(80).optional().describe('With set: the id of the words the owner saw'),
+      adult: z.boolean().optional().describe('With set to signals or data: the owner confirmed they are 18 or older'),
+    },
+    outputSchema: z.looseObject({
+      ok: z.boolean(),
+      action: z.enum(['get', 'set', 'delete']),
+      level: z.enum(SHARING_LEVELS),
+      effective: z.enum(SHARING_LEVELS),
+      changedAt: z.string().nullable(),
+      noticeVersion: z.string().nullable(),
+      remoteDeleted: z.boolean().nullable(),
+      contributorId: z.string().nullable(),
+    }),
+  }, async (args, extra) => {
+    try {
+      if (!isDashboardCall(extra?.requestInfo?.headers, config)) {
+        throw refusal('invalid_argument', 'sharing_settings is only available to the owner, from the Renor dashboard');
+      }
+      const dir = config.sharingDir;
+      if (dir === undefined) throw refusal('invalid_argument', 'sharing is not configured on this server');
+      let remoteDeleted: boolean | null = null;
+      if (args.action === 'set') {
+        if (args.level === undefined) throw refusal('invalid_argument', 'set needs level');
+        if (args.level !== 'off' && (args.adult !== true || args.notice_version === undefined)) {
+          throw refusal('invalid_argument', 'sharing signals or data needs adult: true and the notice_version the owner saw');
+        }
+        const result = await chooseLevel({
+          dir, level: args.level, wording: args.notice_version ?? 'dashboard', adult: args.adult === true, source: 'dashboard', hosted: true,
+        });
+        remoteDeleted = result.remoteDeleted;
+      } else if (args.action === 'delete') {
+        const result = await deleteAllShared({ dir, hosted: true });
+        remoteDeleted = result.remote.requested ? result.remote.ok : null;
+      }
+      const record = readConsent(dir);
+      // The name the control plane ties to this workspace, so the endpoint can check the control plane's consent record before it
+      // stores a row. It is the hash of the sender's secret; made on first use only for a workspace that has chosen to share.
+      const sharing = record !== null && record.level !== 'off' && record.adult;
+      return jsonResult({
+        ok: true,
+        action: args.action,
+        contributorId: sharing ? contributorId(ensureState(dir).secret) : null,
+        level: record?.level ?? 'off',
+        effective: effectiveLevel(dir),
+        changedAt: record?.changedAt ?? null,
+        noticeVersion: record?.wording ?? null,
+        remoteDeleted,
+      });
+    } catch (err) {
+      return toolError(err);
+    }
+  });
+  if (!dashboard) registeredToolEntry(server, 'sharing_settings').enabled = false;
 
   server.registerTool('whats_new', {
     title: "What's new for me",
@@ -1891,7 +1984,7 @@ function buildMcpServer(db: Database.Database, config: MvpConfig, engine: Engine
     const headers = extra?.requestInfo?.headers;
     const forDirectory = directory || isDirectoryCall(headers, config);
     const hidden = new Set<unknown>();
-    if (!isDashboardCall(headers, config)) hidden.add(OWNER_ONLY_TOOL);
+    if (!isDashboardCall(headers, config)) for (const name of OWNER_ONLY_TOOLS) hidden.add(name);
     if (forDirectory) for (const name of [...HIVE_TOOLS, ...DIRECTORY_HIDDEN_TOOLS]) hidden.add(name);
     if (hidden.size === 0 && !forDirectory && !profile.descriptions) return answer;
     // An answer this cannot read is not passed on unfiltered.
@@ -1971,7 +2064,16 @@ export function createMvpApp(config: MvpConfig, engineOverride?: EmbeddingProvid
   digests?.worker.start();
   const usefulness = new ReadUsefulness();
   const connection = connectionStatusFromEnv(process.env);
-  const server = buildMcpServer(db, config, engine, activity, digests, usefulness, connection, false);
+  // The consolidation pass (RENOR_CONSOLIDATE, default off): null, and nothing else changes, unless it is switched on.
+  const dreamer = createDreamer(process.env, {
+    db,
+    vaultPath: config.memoryDir,
+    ledgerRelPath: config.ledgerRelPath,
+    index: () => engineIndexChanged(db, config, engine),
+    hold: run => { activity.track(() => run).catch(() => undefined); },
+  });
+
+  const server = buildMcpServer(db, config, engine, activity, digests, usefulness, connection, false, null, false, false, dreamer);
 
   // An index an earlier build wrote holds the engine's own daily-note headers as facts, and a note that has not changed
   // is never rebuilt, so they are removed here, before anything is read. A failure must not keep a workspace from serving.
@@ -2410,7 +2512,7 @@ export function createMvpApp(config: MvpConfig, engineOverride?: EmbeddingProvid
       // calls, isPlatformInitialize) gets no id: it still counts as a connection, but it writes no first call and its mcp_init
       // carries no id for the recall share to join, so the share counts agents only.
       const telemetrySession = isPlatformInitialize(req.body) ? null : crypto.randomBytes(8).toString('hex');
-      const sessionServer = buildMcpServer(db, config, engine, activity, digests, usefulness, connection, true, telemetrySession, isDashboardCall(req.headers, config), isDirectoryCall(req.headers, config));
+      const sessionServer = buildMcpServer(db, config, engine, activity, digests, usefulness, connection, true, telemetrySession, isDashboardCall(req.headers, config), isDirectoryCall(req.headers, config), dreamer);
       transport.onclose = () => {
         sseSessions.delete(sessionId);
         emitTelemetry({ event: 'session', kind: 'mcp_close' });
@@ -2492,9 +2594,12 @@ export function createMvpApp(config: MvpConfig, engineOverride?: EmbeddingProvid
     idle,
     digests,
     reindexPending: pendingPass,
+    dreamer,
     close: () => {
       closing ??= (async () => {
         // First: it is background work, and what it has started it finishes before the database closes.
+        dreamer?.stop();
+        await dreamer?.inFlight()?.catch(() => undefined);
         runningEmbeddingRebuild(engine)?.abort();
         runningBackgroundIndex(db)?.abort();
         // The digest worker uses the database too: its sweep in flight ends before the database closes.
@@ -2652,6 +2757,7 @@ export async function startMvpService(config: MvpConfig, engineOverride?: Embedd
     // Restart recovery: replay the authoritative ledger before readiness.
     // Start-up is the one place a torn final event is set aside: nothing else is appending to this ledger yet.
     await replayLedger(mvp.db, config.memoryDir, config.ledgerRelPath, { setTornTailAside: true });
+    mvp.dreamer?.start();
     // The notes of a folder that moved were removed from the index with their old paths: they are indexed at their
     // current paths before the service listens, so the first answer has them. The mark is cleared only by a pass with no
     // failed file. A file whose embedding the provider still refuses after its retries counts as failed: it keeps its

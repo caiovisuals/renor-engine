@@ -1,9 +1,9 @@
 {
   "schema": 1,
   "benchmark": "renorbench-v1-product",
-  "reason": "evaluator source src/eval/indexSnapshots.ts changed (its default snapshot directory no longer names the private benchmark directory, so the public tree passes check-public); no metric moved",
-  "recordedAt": "2026-10-24T09:05:02.451Z",
-  "gitSha": "b5c2b8f53103948305fc8ca998772cd529af81ef",
+  "reason": "Evaluator identity refresh after classifying rankingTrace as read-path-only; measured metrics unchanged",
+  "recordedAt": "2026-10-24T23:36:28.342Z",
+  "gitSha": "fab46d8dd237928767aa6c9d99307749561303f7",
   "manifest": {
     "benchmark": "renorbench-v1-product",
     "casesSha256": "dcefabf571d40270f780281f08ecd09be90d5403207c816d0aeaac2d3a0d4060",
@@ -15,7 +15,7 @@
       "qualityEligible": false
     },
     "qualityEligible": false,
-    "evaluatorSha256": "2cfea5578931a8850bba92b48fbf66d4e704a0b51c823a6d8e2c67ea39edc706",
+    "evaluatorSha256": "00f911fb7bb961c8b932b004c9d0e99b099ad3c7ae667008b692b7fde65773bf",
     "chunking": {
       "maxTokens": 400,
       "overlapTokens": 0

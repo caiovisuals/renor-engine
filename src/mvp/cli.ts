@@ -14,6 +14,8 @@ import { shutdownPosthogMcp } from './posthogMcp';
 import { createLogger } from './log';
 
 const log = createLogger('engine');
+import { startSharingLoop } from '../sharing/loop';
+import { effectiveLevel } from '../sharing/state';
 
 /**
  * CLI entry for the single-user ChatGPT MVP service.
@@ -48,7 +50,15 @@ async function main() {
   console.log(`[mvp] DCR allowlist     : ${config.allowedCallbackUris.length} exact callback URI(s)${config.allowedCallbackUris.length ? '' : ' — DENY BY DEFAULT: no client may register until MVP_ALLOWED_CALLBACK_URIS names exact callbacks'}`);
   console.log(`[mvp] Exposure boundary : loopback-bound; any public use REQUIRES TLS termination in front (no public mode is shipped).`);
   console.log(`[mvp] Embeddings         : ${config.embeddingProvider}${config.embeddingDims ? ` (${config.embeddingDims}-d)` : ''}`);
+  log.info('learning_log', config.learning?.enabled
+    ? { enabled: true, retention_days: config.learning.retentionDays, raw_queries: config.learning.rawQueries, db_path: config.learning.dbPath }
+    : { enabled: false });
+  // Sharing (src/sharing): the owner's choice to share signals or data with Renor, off until they choose. At off the timer reads one
+  // small file and does nothing; nothing leaves this process unless the record says so.
+  const sharingLoop = config.sharingDir === undefined ? null : startSharingLoop({ dir: config.sharingDir, memoryDir: config.memoryDir, hosted: Boolean(config.gatewaySecret), log: console.log });
+  if (config.sharingDir !== undefined) console.log(`[mvp] Sharing           : ${effectiveLevel(config.sharingDir)} (the owner's choice; off is the default and sends nothing)`);
   const shutdown = async () => {
+    sharingLoop?.stop();
     try {
       await mvp.close();
     } finally {

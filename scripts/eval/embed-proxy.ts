@@ -111,6 +111,34 @@ export interface EmbedProxy {
   readonly stats: EmbedProxyStats;
 }
 
+/** Live-call guard: a live call needs H10_VERTEX_LIVE=1, and the proxy stops at H10_VERTEX_CALL_CAP (default 2,500) live calls. */
+export const LIVE_CALL_CAP_DEFAULT = 2500;
+export function liveCallCap(env: NodeJS.ProcessEnv = process.env): number {
+  const raw = (env.H10_VERTEX_CALL_CAP ?? '').trim();
+  if (raw === '') return LIVE_CALL_CAP_DEFAULT;
+  if (!/^\d+$/.test(raw)) throw new Error(`embed-proxy: H10_VERTEX_CALL_CAP must be a whole number, got ${JSON.stringify(raw)}`);
+  return Number(raw);
+}
+export function liveCallsAllowed(env: NodeJS.ProcessEnv = process.env): boolean {
+  return (env.H10_VERTEX_LIVE ?? '').trim() === '1';
+}
+export function guardedUpstream(inner: EmbeddingProvider, isStub: boolean, env: NodeJS.ProcessEnv = process.env): EmbeddingProvider {
+  if (isStub) return inner; // tests: a stub makes no billed call
+  const cap = liveCallCap(env);
+  let calls = 0;
+  const admit = (): void => {
+    if (!liveCallsAllowed(env)) throw new Error('embed-proxy: cache-only (H10_VERTEX_LIVE is not 1): a cache miss is refused, nothing is billed');
+    if (calls >= cap) throw new Error(`embed-proxy: live call cap reached (${calls} >= ${cap}); refusing further billed calls`);
+    calls += 1;
+  };
+  return {
+    dimensions: inner.dimensions,
+    identity: inner.identity,
+    embed: async (texts, options) => { admit(); return inner.embed(texts, options); },
+    embedQuery: inner.embedQuery ? async (text, options) => { admit(); return inner.embedQuery!(text, options); } : undefined,
+  } as EmbeddingProvider;
+}
+
 /**
  * Build the proxy. `options.upstream` is injectable so tests can exercise the
  * translation/caching/stats layers without touching Vertex; production uses
@@ -145,9 +173,12 @@ export function createEmbedProxy(options: EmbedProxyOptions): EmbedProxy {
   function cacheLayer(dims: number): CachingEmbeddingProvider {
     const existing = layers.get(dims);
     if (existing) return existing;
-    const layerUpstream: EmbeddingProvider = stubUpstream
+    const liveUpstream: EmbeddingProvider = stubUpstream
       ? stubUpstream
       : new VertexEmbeddingProvider({ model: PROXY_MODEL, dimensions: dims });
+    // H10 guard (firstmate inbox 044): every live call is refused unless H10_VERTEX_LIVE=1, and the proxy itself
+    // stops at H10_VERTEX_CALL_CAP live calls (default 2,500). A cache miss in cache-only mode is an error, not a bill.
+    const layerUpstream: EmbeddingProvider = guardedUpstream(liveUpstream, stubUpstream !== null);
     upstreamInstances.add(layerUpstream);
     const resolvedCachePath = options.cachePath !== undefined ? options.cachePath : resolveEmbeddingCachePath();
     if (!resolvedCachePath) throw new Error('embed-proxy: embedding cache is disabled (RENOR_EVAL_EMBED_CACHE=off); refusing to serve without a cache');
@@ -183,6 +214,9 @@ export function createEmbedProxy(options: EmbedProxyOptions): EmbedProxy {
   function refreshUpstreamCounters(): void {
     stats.upstreamTexts = 0;
     stats.upstreamCalls = 0;
+    // Recorded for the manifest: whether live (billed) calls were allowed for this proxy, and its cap.
+    (stats as unknown as Record<string, unknown>).vertexLive = liveCallsAllowed();
+    (stats as unknown as Record<string, unknown>).liveCallCap = liveCallCap();
     for (const layer of layers.values()) {
       stats.upstreamTexts += layer.sent.texts;
       stats.upstreamCalls += layer.sent.calls;

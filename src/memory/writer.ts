@@ -4,6 +4,7 @@ import { isBlankOrInvisible } from './invisibleText';
 import { engineDailyHeader, formatEntry, isDailyNotePath } from './dailyNote';
 import { cleanSource, headerSource } from './sourceName';
 import { assertStorable, secretGuardEnabled } from '../extraction/secretGuard';
+import { saveDecisionModel } from '../extraction/jevDecisionModel';
 import { refusal } from '../toolRefusal';
 import { assertNoUnstorableControls } from './controls';
 import { appendConfined } from './confinedWrite';
@@ -166,8 +167,8 @@ export async function appendDailyEntry(
   if (secretGuardEnabled()) {
     await assertStorable([
       { field: 'note text', text },
-      ...sourceFormsForGuard(entry.source).map(form => ({ field: 'note source', text: form })),
-    ]);
+      ...sourceFormsForGuard(entry.source).map(form => ({ field: 'note source', text: form, nameOnly: true })),
+    ], 'save', saveDecisionModel());
   }
 
   const dir = path.join(vaultPath, memoryDir);

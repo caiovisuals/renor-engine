@@ -7,7 +7,7 @@
 
 **Renor is memory for coding agents: it keeps what you tell Claude Code, Codex or Cursor in a folder of Markdown files on your machine, and serves it back to any of them over MCP.**
 
-Every new agent session starts from zero: you re-explain the project, last week's decision and why, the thing you corrected twice. With Renor, one agent saves it and the next one finds it. The memory is plain files you own. It runs locally, needs no account or API key, and sends nothing off your machine unless you configure a model. A hosted version with no install is at <https://renor.cloud>.
+Every new agent session starts from zero: you re-explain the project, last week's decision and why, the thing you corrected twice. With Renor, one agent saves it and the next one finds it. The memory is plain files you own. It runs locally, needs no account or API key, and sends nothing off your machine unless you configure a model or opt in to sharing (off by default; the signals level sends anonymous usage numbers, the data level also sends your searches and memory text with keys and passwords filtered out; `renor-engine telemetry off` stops it). A hosted version with no install is at <https://renor.cloud>.
 
 ## Quickstart
 
@@ -38,7 +38,12 @@ claude mcp add --scope user renor-local -- npx -y renor-engine mcp
 codex mcp add renor-local -- npx -y renor-engine mcp
 ```
 
-For Cursor or any other client, the server is the command `npx` with the arguments `-y renor-engine mcp`. `claude mcp remove renor-local` and `codex mcp remove renor-local` undo it. The rest of this section is the same thing from a clone, which also lets you change the code.
+For Cursor or any other client, the server is the command `npx` with the arguments `-y renor-engine mcp`. In Cursor or VS Code (GitHub Copilot), one click adds it:
+
+[![Add to Cursor](https://cursor.com/deeplink/mcp-install-dark.svg)](https://cursor.com/install-mcp?name=renor-local&config=eyJjb21tYW5kIjoibnB4IiwiYXJncyI6WyIteSIsInJlbm9yLWVuZ2luZSIsIm1jcCJdfQ%3D%3D)
+[![Add to VS Code](https://img.shields.io/badge/VS_Code-Add_renor--local-0098FF?style=flat-square&logo=visualstudiocode&logoColor=white)](https://vscode.dev/redirect/mcp/install?name=renor-local&config=%7B%22command%22%3A%22npx%22%2C%22args%22%3A%5B%22-y%22%2C%22renor-engine%22%2C%22mcp%22%5D%7D)
+
+`claude mcp remove renor-local` and `codex mcp remove renor-local` undo the two lines above. The rest of this section is the same thing from a clone, which also lets you change the code.
 
 **From a clone.**
 

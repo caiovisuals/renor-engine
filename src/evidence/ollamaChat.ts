@@ -20,6 +20,8 @@ export interface OllamaChatOptions {
    * so a retried 429 or 5xx counts as the request it is.
    */
   beforeAttempt?: () => void;
+  /** Extra request headers (a provider that routes by a session id). Absent: the request is the same bytes as before. */
+  headers?: Record<string, string>;
 }
 
 /** The endpoint called when no base URL is given: Ollama Cloud. */
@@ -58,7 +60,7 @@ export function createOllamaChat(opts: OllamaChatOptions): EvidenceChat {
       try {
         const resp = await fetch(`${baseUrl}/chat/completions`, {
           method: 'POST',
-          headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
+          headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json', ...opts.headers },
           body,
           signal: controller.signal,
         });

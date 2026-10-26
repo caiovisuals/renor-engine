@@ -194,7 +194,7 @@ function plainSegments(v: string): boolean {
 /** camelCase or PascalCase made of humps that can be said: "refreshToken", "getUserProfile". A hump with no vowel ("Gpv", "Stx") is not a word. */
 function camelWord(x: string): boolean {
   if (x.length < 4 || !/^\p{Ll}*(?:\p{Lu}\p{Ll}+)+$/u.test(x)) return false;
-  return (x.match(/\p{Lu}\p{Ll}+/gu) ?? []).every(h => !/^\p{Script=Latin}+$/u.test(h) || /[aeiouy]/i.test(h.normalize('NFD')));
+  return (x.match(/\p{Lu}\p{Ll}+/gu) ?? ([] as string[])).every(h => !/^\p{Script=Latin}+$/u.test(h) || /[aeiouy]/i.test(h.normalize('NFD')));
 }
 
 const classCount = (s: string) => (/\p{Ll}/u.test(s) ? 1 : 0) + (/\p{Lu}/u.test(s) ? 1 : 0) + (/\p{Nd}/u.test(s) ? 1 : 0);
@@ -266,8 +266,8 @@ function isPlainCall(w: string, pwCue = false): boolean {
   if (!CALL_CHAIN.test(w)) return false;
   // After a password cue the parent refused every call ("Gdwo(ibeld)" is a password): a call is code there only when its function is one a config or a
   // script really uses to fetch or derive a secret, never a word-shaped name made of letters.
-  if (pwCue && !(w.match(/[A-Za-z_][\w.]*(?=\()/g) ?? []).every(c => KNOWN_CALLEE.test(c.split('.').pop() ?? ''))) return false;
-  const calleesPlain = (w.match(/[A-Za-z_][\w.]*(?=\()/g) ?? []).every(c => c.split('.').every(n => { const b = n.replace(/\d+/g, ''); return b.length < 3 || wordish(b); }));
+  if (pwCue && !(w.match(/[A-Za-z_][\w.]*(?=\()/g) ?? ([] as string[])).every(c => KNOWN_CALLEE.test(c.split('.').pop() ?? ''))) return false;
+  const calleesPlain = (w.match(/[A-Za-z_][\w.]*(?=\()/g) ?? ([] as string[])).every(c => c.split('.').every(n => { const b = n.replace(/\d+/g, ''); return b.length < 3 || wordish(b); }));
   const args = (w.match(/\(([^()]*)\)/g) ?? []).join(' ');
   return calleesPlain && !/[A-Za-z]\d|\d[A-Za-z]/.test(args.replace(/'[^']*'|"[^"]*"/g, '')) && !/[!@#$%^&*+=~?\\|]/.test(args);
 }

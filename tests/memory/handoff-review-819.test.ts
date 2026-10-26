@@ -172,7 +172,7 @@ describe('819-3: with the switch off, export_memory\'s manifest is unchanged', (
       const manifest = JSON.parse((res.content as Array<{ text: string }>)[0].text);
       // The kinds main lists (tests/mvp/export-everything.test.ts), and nothing more.
       expect(manifest.notExported.map((e: { kind: string }) => e.kind)).toEqual(
-        ['agentRequests', 'importReceipts', 'activity', 'agentState', 'searchHistory', 'searchIndex', 'otherFiles']);
+        ['agentRequests', 'importReceipts', 'activity', 'agentState', 'searchHistory', 'searchIndex', 'sharingStore', 'otherFiles']);
       expect(manifest.notExported).toEqual(NOT_EXPORTED);
       await client.close();
     } finally { await ws.close(); }

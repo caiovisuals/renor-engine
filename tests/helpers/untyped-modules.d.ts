@@ -31,6 +31,8 @@ declare module '*/scripts/release/lib/report.mjs';
 declare module '*/scripts/release/lib/runtime.mjs';
 declare module '*/scripts/release/lib/state.mjs';
 declare module '*/scripts/release/lib/steps-post.mjs';
+// The preflight's Edge Function secrets check (names only), imported by its own tests.
+declare module '*/scripts/release/lib/function-secrets.mjs';
 // The Claude Code plugin's standing-rules hook (claude-code-plugin/hooks/standing-rules): plain ESM JavaScript the plugin runs with node, imported by their tests.
 declare module '*/claude-code-plugin/hooks/standing-rules/standing-rules.mjs';
 declare module '*/claude-code-plugin/hooks/standing-rules/session-start.mjs';

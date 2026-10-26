@@ -35,6 +35,7 @@ import type { EmbeddingProvider } from "./embeddings/types";
 import { parseConversation, resolveJSONLPath } from "./conversation/parser";
 import { writeConversation } from "./conversation/writer";
 import { resolveSessionRouterOptions, routeSearch, summarizeForRouter, type SessionRouterOptions } from "./router/sessionRouter";
+import { runTelemetry } from "./sharing/cli";
 import { DIGEST_HIT_PATH, attachDigest, digestIndexedNotes, resolveDigestOptions, type DigestOptions } from "./digests/digests";
 import { ENGINE_VERSION } from "./buildIdentity";
 
@@ -503,6 +504,31 @@ program
       process.stderr.write(`renor-engine mcp: ${(err as Error).message}\n`);
       process.exit(1);
     }
+  });
+
+program
+  .command("telemetry <action> [argument]")
+  .description("Choose whether to share anonymous signals or training data with Renor (off by default): status | signals | data | off | delete | preview [level] | send | fields [level]")
+  .option("--yes", "do not ask: you have read the words shown and confirm you are 18 or older")
+  .option("--local", "delete: also empty the local learning log")
+  .option("--dir <path>", "the sharing folder (default: RENOR_SHARING_DIR, else ~/.config/renor)")
+  .option("--memory-dir <path>", "the memory folder whose learning log is read (default: MVP_MEMORY_DIR)")
+  .action(async (action: string, argument: string | undefined, opts: { yes?: boolean; local?: boolean; dir?: string; memoryDir?: string }) => {
+    const readline = await import("node:readline");
+    const code = await runTelemetry(action, argument, opts, {
+      out: (line) => process.stdout.write(`${line}\n`),
+      err: (line) => process.stderr.write(`${line}\n`),
+      env: process.env,
+      ask: (question) => {
+        if (!process.stdin.isTTY) return Promise.resolve(null);
+        const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+        return new Promise((resolve) => rl.question(question, (answer) => {
+          rl.close();
+          resolve(/^y(es)?$/i.test(answer.trim()));
+        }));
+      },
+    });
+    process.exit(code);
   });
 
 program

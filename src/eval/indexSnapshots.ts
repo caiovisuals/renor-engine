@@ -122,6 +122,7 @@ export const READ_PATH_ONLY: readonly string[] = [
   'src/retrieval/ledgerLiveness.ts',
   'src/retrieval/ledgerPresentation.ts',
   'src/retrieval/plainWording.ts',
+  'src/retrieval/rankingTrace.ts', // orchestrator records search-time learning diagnostics; tracing is inert while index runs
   'src/retrieval/semantic.ts',
 ];
 

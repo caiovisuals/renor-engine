@@ -7,6 +7,8 @@ import { dailyEntriesForExport, retiredForExport, type MemoryMapContext } from '
 import { parseNote } from '../indexer/parser';
 import { handoffNoteEnabled } from '../memory/handoff';
 import { allReplacementRecords, replacementIndex, type ReplacementIndex, type ReplacementRecord } from '../memorymap/replacements';
+import { learningDbPath, learningRetentionDays } from '../learning/settings';
+import { LearningLog, type LearningExport } from '../learning/store';
 
 // ---------------------------------------------------------------------------
 // export_memory: everything one workspace holds, in one documented Markdown format ("renor-export/v1").
@@ -38,6 +40,7 @@ export const NOT_EXPORTED: ReadonlyArray<{ kind: string; what: string; reason: s
   { kind: 'agentState', what: 'connected agent names, read cursors and live leases (known_agents, agent_cursors, agent_leases)', reason: 'connection state, not memory' },
   { kind: 'searchHistory', what: 'the promoted history directory that search_history reads (MVP_HISTORY_DIR)', reason: 'configured outside the memory folder' },
   { kind: 'searchIndex', what: 'the search index and embeddings', reason: 'derived: index_memory rebuilds them from the exported files' },
+  { kind: 'sharingStore', what: 'the sharing choice, sender state and optional text examples in .memory-index/sharing/', reason: 'consent state and sender credentials are local controls, not portable memory; the learningLog manifest field separately exports learning.sqlite' },
   { kind: 'otherFiles', what: 'files in the memory folder that are not Markdown (.md), dot-folders other than the retired area, and symbolic links', reason: 'the export carries Markdown notes only' },
 ];
 
@@ -287,6 +290,18 @@ async function buildSections(ctx: MemoryMapContext & { db: Database.Database }, 
 
 export interface ExportReply { manifest: Record<string, unknown>; document: string }
 
+/** The portable contents of learning.sqlite, when that optional log exists. */
+function exportLearningLog(memoryDir: string): { file: string; data: LearningExport } | null {
+  const file = learningDbPath(memoryDir);
+  const log = LearningLog.open(file, { retentionDays: learningRetentionDays(), rawQueries: false, create: false });
+  if (log === null) return null;
+  try {
+    return { file: '.memory-index/learning.sqlite', data: log.exportLog() };
+  } finally {
+    log.close();
+  }
+}
+
 function sectionHeader(name: ExportSection, count: number, from: number): string {
   return `\n# ${EXPORT_FORMAT_VERSION} · ${name} (${count} item${count === 1 ? '' : 's'}${from > 0 ? `, continuing from item ${from}` : ''})\n\n`;
 }
@@ -321,6 +336,9 @@ export async function exportEverything(
     counts,
     sections,
     notExported: notExported(),
+    // learning.sqlite is user-owned workspace data, not a rebuildable search index. Export its
+    // portable rows (never its private HMAC secret) alongside the Markdown memory document.
+    learningLog: exportLearningLog(ctx.memoryDir),
   };
 
   let document = '';

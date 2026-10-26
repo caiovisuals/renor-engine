@@ -3,6 +3,7 @@ import Database from '../db/sqlite';
 import { encodeTokens } from '../indexer/tokenizer';
 import { escapeInvisibleControls } from './sanitize';
 import { labelMemoryText } from './hiddenSpans';
+import { currentRankingTrace } from '../retrieval/rankingTrace';
 import { engineSearchMemory, engineSearchText, type Engine } from './engine';
 import { leadingSummaryHits } from '../digests/digests';
 import { normalizeScope, savedScopeMatches } from './scope';
@@ -1967,6 +1968,8 @@ export async function buildAgentContext(
     body = assemble(kept);
   }
   const reply = honestyLane ? withLane(kept, body) : body;
+  // The budget's final decision, for the learning log (rankingTrace.ts): which of the candidates it considered it kept.
+  currentRankingTrace()?.budgeted(candidateMemories, kept.memories);
   if (rankedBy === 'session_date') {
     // Selection is finished, including the honesty lane's extra statements. Render those statements with their
     // session: appending a newest update after an older match contradicts the order the reply promises. Summary

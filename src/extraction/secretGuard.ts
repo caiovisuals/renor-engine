@@ -116,6 +116,8 @@ export interface WriteText {
   /** What the caller calls this text; shown in the refusal. */
   field: string;
   text: string | undefined;
+  /** A name or a label, not content: only the scanner judges it, and no model ever sees it. */
+  nameOnly?: boolean;
 }
 
 /**
@@ -142,17 +144,25 @@ export function refuseUnchecked(field: string, action: GuardAction): never {
 /**
  * Throws SecretRefusedError when the guard is on and any of `texts` is sensitive; resolves otherwise.
  * It fails closed: if the check itself throws, the save is refused. Call it before the first write.
+ * `contentModel`, when a save path passes one, only adds a second opinion on the texts that are not `nameOnly`.
  * With the guard off it returns at once, so callers that must not add a step to the unguarded path
  * check `secretGuardEnabled()` first and skip the call.
  */
-export async function assertStorable(texts: readonly WriteText[], action: GuardAction = 'save'): Promise<void> {
+export async function assertStorable(
+  texts: readonly WriteText[],
+  action: GuardAction = 'save',
+  contentModel: DecisionModel | null = null,
+): Promise<void> {
   if (!secretGuardEnabled()) return;
   const model = new SecretGuardDecisionModel();
-  for (const { field, text } of texts) {
+  // A second opinion on content only (jevDecisionModel.ts, one opted-in workspace's saves): the scanner still answers first
+  // and a scanner `sensitive` is final, because SecretGuardDecisionModel asks the inner model only about text it did not flag.
+  const withContentModel = contentModel ? new SecretGuardDecisionModel(contentModel) : model;
+  for (const { field, text, nameOnly } of texts) {
     if (text === undefined || text === '') continue;
     let verdict: DecisionResult;
     try {
-      verdict = await model.decide({ task: 'capture_gate', text });
+      verdict = await (nameOnly ? model : withContentModel).decide({ task: 'capture_gate', text });
     } catch (cause) {
       refuse(field, 'unavailable', action, cause);
     }

@@ -7,6 +7,8 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { loadMvpConfig } from '../../src/mvp/config';
 import { createMvpApp } from '../../src/mvp/server';
+import { learningDbPath } from '../../src/learning/settings';
+import { LearningLog } from '../../src/learning/store';
 
 /**
  * Portability, graded by an outside evaluation: "If I use Renor for a year and then decide to leave, can I
@@ -513,7 +515,7 @@ describe('export_memory names what it leaves out', () => {
 
     const whole = await ws.exportMemory();
     expect(whole.manifest.notExported.map((e: { kind: string }) => e.kind)).toEqual([
-      'agentRequests', 'importReceipts', 'activity', 'agentState', 'searchHistory', 'searchIndex', 'otherFiles',
+      'agentRequests', 'importReceipts', 'activity', 'agentState', 'searchHistory', 'searchIndex', 'sharingStore', 'otherFiles',
     ]);
     for (const entry of whole.manifest.notExported as Array<{ what: string; reason: string }>) {
       expect(entry.what.length).toBeGreaterThan(0);
@@ -524,6 +526,16 @@ describe('export_memory names what it leaves out', () => {
 
     const page = await ws.exportMemory({ section: 'notes' });
     expect(page.manifest.notExported).toEqual(whole.manifest.notExported);
+  }, HOOK_TIMEOUT_MS);
+
+  it('names both workspace-owned SQLite stores and whether each one is exported', async () => {
+    LearningLog.open(learningDbPath(ws.memoryDir), { retentionDays: 30, rawQueries: false, create: true })!.close();
+    const whole = await ws.exportMemory();
+    expect(whole.manifest.learningLog).toHaveProperty('file', '.memory-index/learning.sqlite');
+    expect(whole.manifest.notExported).toContainEqual(expect.objectContaining({
+      kind: 'sharingStore',
+      what: expect.stringContaining('.memory-index/sharing/'),
+    }));
   }, HOOK_TIMEOUT_MS);
 });
 

@@ -16,6 +16,8 @@ import { displacementsAfter, hasOpenDisplacementBy, writerOf, type ClosedFact, t
 import { syncDirectory, withAppendLock } from './durableAppend';
 import { withDailyFileLock } from './writer';
 import { assertStorable, secretGuardEnabled, SecretRefusedError } from '../extraction/secretGuard';
+import { saveDecisionModel } from '../extraction/jevDecisionModel';
+import type { DecisionModel } from '../extraction/decision-model';
 import { markErrorReason, refusalReason, type ToolErrorReason } from '../toolRefusal';
 import type { IndexOptions } from '../indexer/pipeline';
 import { createLogger } from '../mvp/log';
@@ -198,6 +200,23 @@ export class LifecycleInputError extends Error {
     this.name = 'LifecycleInputError';
     this.field = field;
     if (reason !== undefined) markErrorReason(this, reason);
+  }
+}
+
+/**
+ * A write that named the event it expected to close found a different current fact (or none). Nothing was written.
+ * Only a caller that asks for the check (`expectCurrentEvent`) can get it: the dreamer, which decides on one reading of
+ * the facts and must not overwrite what an agent saved meanwhile.
+ */
+export class StaleExpectationError extends Error {
+  readonly expected: string | null;
+  readonly found: string | null;
+
+  constructor(expected: string | null, found: string | null) {
+    super(`lifecycle write refused without publishing: the current fact is no longer the one the caller judged (expected event ${expected ?? 'none'}, found ${found ?? 'none'}). The ledger was not modified`);
+    this.name = 'StaleExpectationError';
+    this.expected = expected;
+    this.found = found;
   }
 }
 
@@ -1580,6 +1599,11 @@ export async function remember(db: Database.Database, vaultPath: string, ledgerR
   subject: string; predicate: string; object: string; source?: string; scope?: string; statement?: string;
   /** The authenticated writer of the save (mvp/server.ts `agentOf`); absent, the writer is the source. */
   writer?: string;
+  /**
+   * Write only if the current fact of this subject, predicate and scope was written by this event (null: only if there
+   * is none). Otherwise nothing is written and StaleExpectationError is thrown. Absent: no check, as every caller does.
+   */
+  expectCurrentEvent?: string | null;
 }): Promise<MemoryReceipt> {
   return serializeLifecycleWrite(() => rememberCritical(db, vaultPath, ledgerRelPath, args));
 }
@@ -1677,13 +1701,16 @@ async function repeatsCurrentEvent(
  * because a credential is usually stated across them (predicate wifi_password, object the password) and
  * neither field carries the cue on its own.
  */
-async function refuseSecrets(args: { subject: string; predicate: string; object: string; source?: string; statement?: string }): Promise<void> {
+async function refuseSecrets(
+  args: { subject: string; predicate: string; object: string; source?: string; statement?: string },
+  contentModel: DecisionModel | null = null,
+): Promise<void> {
   try {
     await assertStorable([
       { field: 'statement', text: args.statement },
       { field: 'subject, predicate and object', text: `${args.subject} ${args.predicate}: ${args.object}` },
-      { field: 'source', text: args.source },
-    ]);
+      { field: 'source', text: args.source, nameOnly: true },
+    ], 'save', contentModel);
   } catch (err) {
     // A refusal is the caller's input, like every rejection above it, so it leaves as a LifecycleInputError (4xx).
     // A guard that could not decide is not: it stays the plain Error it is.
@@ -1694,6 +1721,7 @@ async function refuseSecrets(args: { subject: string; predicate: string; object:
 
 async function rememberCritical(db: Database.Database, vaultPath: string, ledgerRelPath: string, sent: {
   subject: string; predicate: string; object: string; source?: string; scope?: string; statement?: string; writer?: string;
+  expectCurrentEvent?: string | null;
 }): Promise<MemoryReceipt> {
   // What is stored is the source's name, not what was sent (sourceName.ts): a path or a URL is cut down to what it ends in,
   // a long name is cut and control characters are dropped, before anything is judged, so the checks below and the secret
@@ -1703,7 +1731,8 @@ async function rememberCritical(db: Database.Database, vaultPath: string, ledger
   const args = typeof sent.source === 'string' ? { ...sent, source: savedSource(sent.source) } : sent;
   validateLifecycleInput(args);
   refuseUnstorableFields(args);
-  if (secretGuardEnabled()) await refuseSecrets(args);
+  // Only a save sends text to the opted-in workspace's second opinion (jevDecisionModel.ts); a restore re-checks text already stored.
+  if (secretGuardEnabled()) await refuseSecrets(args, saveDecisionModel());
   const at = new Date().toISOString();
   const scope = normalizeScope(args.scope);
   // The source the event stores, and the writer the save is recorded under: the authenticated identity when the caller
@@ -1718,6 +1747,10 @@ async function rememberCritical(db: Database.Database, vaultPath: string, ledger
   const entityId = resolveLifecycleEntity(db, args.subject, at, false, { strict: true });
   // The current value of the scope's stream, whatever spelling of the scope it was saved with (streamCurrentFacts).
   const currents = entityId ? streamCurrentFacts(db, entityId, args.predicate, scope) : [];
+  if (args.expectCurrentEvent !== undefined) {
+    const held = currents.find(c => c.scope === scope) ?? currents[0];
+    if ((held?.event_id ?? null) !== args.expectCurrentEvent) throw new StaleExpectationError(args.expectCurrentEvent, held?.event_id ?? null);
+  }
 
   // nochange only when nothing the caller said is new: the scope holds this value and no other AND, when they
   // supply the user's words, the same subject spelling and statement as the current event (see repeatsCurrentEvent).

@@ -60,7 +60,7 @@ interface Row extends DriftValue {
 }
 
 /** A subject name as relatedness reads it: its words (null when it contains nothing) and, once asked, its identity key. */
-interface Name {
+export interface Name {
   subject: string;
   words: string[] | null;
   key?: string;
@@ -93,7 +93,7 @@ function wordsOf(subject: string): string[] | null {
   return words;
 }
 
-function nameOf(subject: string, names: Map<string, Name>): Name {
+export function nameOf(subject: string, names: Map<string, Name>): Name {
   let name = names.get(subject);
   if (!name) {
     name = { subject, words: wordsOf(subject) };
@@ -109,7 +109,7 @@ function oneWordLonger(longer: string[], shorter: string[]): boolean {
   return same(0) || same(1);
 }
 
-function related(a: Name, b: Name): boolean {
+export function related(a: Name, b: Name): boolean {
   if ((a.key ??= identityKey(a.subject)) === (b.key ??= identityKey(b.subject))) return true;
   if (!a.words || !b.words) return false;
   return oneWordLonger(a.words, b.words) || oneWordLonger(b.words, a.words);

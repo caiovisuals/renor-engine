@@ -707,6 +707,8 @@ describe('product-path contract: product SQLite is only opened through openDb()'
       'src/eval/evalCache.ts', // eval cache DB
       'src/router/routerCache.ts', // session-router cache DB (note summaries + routing answers), not the product schema
       'src/digests/digestCache.ts', // write-time digest cache DB (note digests + item vectors), not the product schema
+      'src/learning/store.ts', // optional learning-log DB, a separate user-owned activity log, not the product schema
+      'src/sharing/examples.ts', // the shared-example texts' own DB (only at the data level), not the product schema
       'scripts/eval/benchmark-embed-inventory.ts', // eval helper: reads the embedding cache files read-only, never the product schema
     ]);
     const offenders: string[] = [];
