@@ -11,6 +11,7 @@ import fs from 'node:fs';
  *   RENOR_MCP_INSTRUCTIONS_FILE  a UTF-8 file: its text replaces the server instructions an agent is given;
  *   RENOR_MCP_RESPONSE           `lines`: get_context, search_memory and search_text answer one line per fact or memory
  *                                (`date | text`) instead of JSON. structuredContent, where a reply carries it, is unchanged.
+ *                                `toon`: successful search_memory replies use fixed TOON; all other tools stay JSON.
  *
  * Read when each MCP server is built. A file that cannot be read or parsed, or a tool name the server does not have,
  * fails that build: an arm must never run with a lever silently off.
@@ -19,7 +20,7 @@ export interface ContextProfile {
   tools?: Set<string>;
   descriptions?: Record<string, string>;
   instructions?: string;
-  response?: 'lines';
+  response?: 'lines' | 'toon';
 }
 
 export function contextProfileFromEnv(env: NodeJS.ProcessEnv = process.env): ContextProfile {
@@ -42,8 +43,8 @@ export function contextProfileFromEnv(env: NodeJS.ProcessEnv = process.env): Con
   }
   const response = env.RENOR_MCP_RESPONSE?.trim();
   if (response) {
-    if (response !== 'lines') throw new Error(`RENOR_MCP_RESPONSE takes lines, not ${response}`);
-    profile.response = 'lines';
+    if (response !== 'lines' && response !== 'toon') throw new Error(`RENOR_MCP_RESPONSE takes lines or toon, not ${response}`);
+    profile.response = response;
   }
   return profile;
 }

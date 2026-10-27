@@ -5,7 +5,8 @@ import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { applyRelativeMtimes, hashFixture, sha256Buffer } from '../../scripts/eval/renorbench-common';
 import { HASH_RELEVANCE_BAR } from '../../src/eval/renorbenchProduct';
-import { PRODUCT_ARM, checkAgainstBaseline, loadRunDir, readBaseline } from '../../src/eval/renorbenchBaseline';
+import { buildBaseline, checkAgainstBaseline, loadRunDir } from '../../src/eval/renorbenchBaseline';
+import { encodeTokens } from '../../src/indexer/tokenizer';
 
 /**
  * The product arm of RenorBench runs the shipped `search_memory` tool in process. What this pins is what makes it fit to
@@ -80,6 +81,24 @@ beforeAll(async () => {
 afterAll(() => fs.rmSync(workDir, { recursive: true, force: true }));
 
 describe('the run at the shipped defaults', () => {
+  it('captures fixed TOON replies after the erasure restart and counts their final text', async () => {
+    const toon = await run(['--capture-replies', '--env', 'RENOR_MCP_RESPONSE=toon']);
+    expect(toon.status, toon.stderr).toBe(0);
+    const raw = fs.readFileSync(path.join(toon.dir, 'replies.jsonl'), 'utf8');
+    expect(sha256Buffer(raw)).toBe(toon.manifest.repliesSha256);
+    const searches = raw.trim().split('\n').map(line => JSON.parse(line)).filter(row => row.tool === 'search_memory');
+    expect(searches).toHaveLength(toon.manifest.caseCount);
+    expect(searches.length).toBeGreaterThan(0);
+    for (const [i, row] of searches.entries()) {
+      const text = row.result.content[0].text;
+      expect(text).toMatch(/^Format: TOON\n/);
+      expect(encodeTokens(text)).toBe(toon.results[i].replyTokens);
+    }
+    const contentOnly = (rows: Run['results']) => rows.map(({ latencyMs: _latency, replyTokens: _tokens, ...rest }) => rest);
+    expect(contentOnly(toon.results)).toEqual(contentOnly(defaults.results));
+    expect(defaults.files).not.toContain('replies.jsonl');
+  }, PER_RUN_TIMEOUT_MS);
+
   it('hash defaults produce the same replies as the explicit operator off setting', async () => {
     const off = await run(['--env', 'RENOR_SEARCH_HIT_FLOOR=0']);
     expect(off.status, off.stderr.slice(0, 600)).toBe(0);
@@ -245,7 +264,9 @@ describe('a flag armed on purpose is recorded, and moves the identity of the run
   });
 
   it('is not held to the baseline of the defaults: the check says it was not made the same way', () => {
-    const baseline = readBaseline(path.join(ENGINE_ROOT, PRODUCT_ARM.baselineRelativePath), PRODUCT_ARM);
+    // Isolate the flag identity from changes to the evaluator itself (such as adding reply capture).
+    const baseline = buildBaseline({ run: loadRunDir(defaults.dir), reason: 'test defaults', recordedAt: '2026-10-27' });
+    expect(checkAgainstBaseline(baseline, loadRunDir(defaults.dir)).ok).toBe(true);
     const check = checkAgainstBaseline(baseline, loadRunDir(armed.dir));
     expect(check).toMatchObject({ ok: false, verdict: 'INCOMPARABLE' });
     expect(check.problem).toContain('the run was not made the way the baseline was');
