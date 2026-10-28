@@ -7,7 +7,6 @@ Semantic memory for Obsidian — local-first indexing, semantic retrieval, FTS, 
 [![License: ISC](https://img.shields.io/badge/license-ISC-blue.svg)](./LICENSE)
 
 **[Русская версия → README.ru.md](README.ru.md)**
-**[Versão em português (Brasil) → README.pt-BR.md](README.pt-BR.md)**
 
 ## What it is
 

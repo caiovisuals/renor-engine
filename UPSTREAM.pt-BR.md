@@ -1,5 +1,7 @@
 # Projeto de origem
 
+*Esse arquivo foi traduzido. Em caso de diferença, vale a versão em inglês!*
+
 O mecanismo de memória do Renor teve origem em um projeto de código aberto:
 
 - Projeto de origem: [https://github.com/sterben-enec/obsidian-semantic-memory](https://github.com/sterben-enec/obsidian-semantic-memory)

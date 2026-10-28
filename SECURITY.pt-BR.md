@@ -1,5 +1,7 @@
 # Política de segurança
 
+*Esse arquivo foi traduzido. Em caso de diferença, vale a versão em inglês!*
+
 ## Como relatar uma vulnerabilidade
 
 Relate problemas de segurança de forma privada por meio do sistema de comunicação privada de vulnerabilidades do GitHub:
