@@ -7,6 +7,7 @@
 [![License: ISC](https://img.shields.io/badge/license-ISC-blue.svg)](./LICENSE)
 
 **[English version → README.md](README.md)**
+**[Versão em português (Brasil) → README.pt-BR.md](README.pt-BR.md)**
 
 ## Что это
 
