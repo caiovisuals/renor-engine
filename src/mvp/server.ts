@@ -97,6 +97,7 @@ import { markErrorReason, markToolRefusal, refusal, refusalReason, toolRefusalOf
 import { CallPhases, isPhasedTool, markRetrieved } from '../callPhases';
 import { createLogger } from './log';
 import { checkProfileTools, contextProfileFromEnv, LINE_TOOLS, renderLines, type ContextProfile } from './contextProfile';
+import { renderToon } from './toonResponse';
 
 const log = createLogger('engine');
 
@@ -2016,6 +2017,23 @@ function buildMcpServer(db: Database.Database, config: MvpConfig, engine: Engine
       const name = (request as { params?: { name?: unknown } }).params?.name;
       if (typeof name !== 'string' || !LINE_TOOLS.has(name) || result?.isError || !Array.isArray(result?.content)) return result;
       return { ...result, content: result.content.map((c, i) => (i === 0 && c.type === 'text' ? { ...c, text: renderLines(c.text) } : c)) };
+    });
+  } else if (profile.response === 'toon') {
+    const callTool = listHandlers.get('tools/call');
+    if (!callTool) throw new Error('tools/call handler missing');
+    listHandlers.set('tools/call', async (request, extra) => {
+      const result = await callTool(request, extra) as CallToolResult;
+      const name = (request as { params?: { name?: unknown } }).params?.name;
+      if (name !== 'search_memory' || result?.isError || result.content?.[0]?.type !== 'text') return result;
+      try {
+        const text = await renderToon(result.content[0].text);
+        return { ...result, content: [{ ...result.content[0], text }, ...result.content.slice(1)] };
+      } catch {
+        return refusalResult({
+          ok: false, error: 'toon-encoding-unsupported',
+          note: 'This reply cannot be safely encoded as TOON. Use the default JSON response profile.',
+        });
+      }
     });
   }
   return server;
