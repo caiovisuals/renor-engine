@@ -54,6 +54,18 @@ export class CallPhases {
     this.embedAtRetrieved = this.total('embed');
   }
 
+  private queryCache: 'hit' | 'miss' | undefined;
+
+  /** Whether the query's vector came from the query cache for this call (see noteQueryCache). */
+  noteQueryCache(hit: boolean): void {
+    this.queryCache = hit ? 'hit' : 'miss';
+  }
+
+  /** The query cache's answer for this call, when the call asked it. */
+  queryCacheStatus(): 'hit' | 'miss' | undefined {
+    return this.queryCache;
+  }
+
   /** What the call recorded, rounded to a tenth of a millisecond; `retrieve` and `reply` only for a call that reached the mark. */
   report(): PhaseReport {
     const out: PhaseReport = {};
@@ -70,6 +82,11 @@ export class CallPhases {
 /** Adds to the current call's phase, if a call is being recorded. */
 export function recordPhase(phase: PhaseName, ms: number): void {
   scope.getStore()?.add(phase, ms);
+}
+
+/** Whether the current call's query vector came from the query cache (true) or was sent to the service (false). */
+export function noteQueryCache(hit: boolean): void {
+  scope.getStore()?.noteQueryCache(hit);
 }
 
 /** What the current call has recorded so far for a phase (0 when no call is being recorded). */

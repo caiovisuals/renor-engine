@@ -1,18 +1,18 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
-import net from 'net';
 import crypto from 'crypto';
 import request from 'supertest';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { loadMvpConfig, type MvpConfig } from '../../src/mvp/config';
-import { startMvpService, MVP_MCP_PATH, type MvpApp } from '../../src/mvp/server';
+import { MVP_MCP_PATH, type MvpApp } from '../../src/mvp/server';
 import { engineSearchMemory, engineSearchText } from '../../src/mvp/engine';
 import { EvalHashEmbeddingProvider } from '../../src/eval/hashEmbedding';
 import type { EmbeddingProvider } from '../../src/embeddings/types';
 import { seedNewerFacts } from '../helpers/seedFacts';
+import { startMvpServiceOnFreePort } from '../helpers/mvpPort';
 import type { Express } from 'express';
 
 /**
@@ -24,6 +24,10 @@ import type { Express } from 'express';
  * (`index.stale`) while the semantic index is behind. Every call below is a real MCP call over
  * HTTP, with the deterministic eval-hash embeddings (no model, no network).
  */
+
+// Each test boots a whole service (OAuth, MCP connect) and makes a dozen or more real calls; the first in a worker also pays
+// the cold start. On a loaded 4-vCPU gate that alone can pass vitest's 5 s default, which bounds no product promise.
+vi.setConfig({ testTimeout: 60_000 });
 
 const OWNER_EMAIL = 'owner@example.test';
 const OWNER_PASSWORD = 'synthetic-owner-secret-123';
@@ -40,17 +44,6 @@ afterEach(async () => {
   for (const d of tmpDirs.splice(0)) fs.rmSync(d, { recursive: true, force: true });
   for (const name of ['MVP_EMBEDDING_PROVIDER', 'EMBEDDING_PROVIDER', 'RENOR_SEARCH_EVIDENCE', 'RENOR_READ_HONESTY']) delete process.env[name];
 });
-
-function freePort(): Promise<number> {
-  return new Promise((resolve, reject) => {
-    const srv = net.createServer();
-    srv.listen(0, '127.0.0.1', () => {
-      const port = (srv.address() as net.AddressInfo).port;
-      srv.close(() => resolve(port));
-    });
-    srv.on('error', reject);
-  });
-}
 
 function makeConfig(memoryDir: string, port: number): MvpConfig {
   const authRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'mvp-authroot-'));
@@ -113,8 +106,12 @@ function workspace(): string {
 
 /** Starts the service on `memoryDir` (a restart is a second call on the same directory). */
 async function boot(memoryDir: string, provider: EmbeddingProvider | null = new EvalHashEmbeddingProvider()): Promise<Session> {
-  const config = makeConfig(memoryDir, await freePort());
-  const service = await startMvpService(config, provider);
+  // A probed port is only a hint: another process can bind it before the service does, so a taken port is probed again.
+  const { started: service, config } = await startMvpServiceOnFreePort(port => makeConfig(memoryDir, port), provider);
+  // A test that seeds thousands of facts in this process blocks the server's event loop for seconds. Node then runs the
+  // server's 5 s keep-alive timer only after the client has written its next request on the idle socket, closes that
+  // socket under it, and the call fails with ECONNRESET. No idle timeout here: stop() closes every connection itself.
+  service.httpServer.keepAliveTimeout = 0;
   const client = new Client({ name: 'fact-visibility', version: '0' });
   await client.connect(new StreamableHTTPClientTransport(
     new URL(MVP_MCP_PATH, `http://127.0.0.1:${config.port}`),

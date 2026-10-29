@@ -44,6 +44,7 @@ Small, real problems found by following the README from a clean clone. Each one 
 - Say so in the description if the change loosens security (who can sign in, what a token can reach, what a tool returns) or changes retrieval results. Those get a closer review.
 - Never commit credentials, real notes or personal paths. Test fixtures that look like secrets must be obviously synthetic and are allowlisted by exact path in `.gitleaks.toml`.
 - Dependency updates come from Dependabot. `@modelcontextprotocol/sdk` minor and major bumps are held until `tests/mvp/schema-rejected-calls.test.ts` is reviewed against the new SDK.
+- Please write issues, pull requests and reviews in English, so anyone can follow along; translated docs are welcome.
 
 ## Security
 

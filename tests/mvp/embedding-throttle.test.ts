@@ -3,7 +3,7 @@ import path from 'path';
 import { describe, it, expect, beforeEach, afterEach, vi, beforeAll, afterAll } from 'vitest';
 import { chunksWithoutVectors } from '../../src/embeddings/rebuild';
 import type { EmbeddingProvider } from '../../src/embeddings/types';
-import { createEmbeddingProvider, runningBackgroundIndex, UNFINISHED_FILES } from '../../src/mvp/engine';
+import { createEmbeddingProvider, DEFAULT_EMBED_BUDGETS, engineFinishIndexInBackground, runningBackgroundIndex, UNFINISHED_FILES } from '../../src/mvp/engine';
 import { startVertexStub, type VertexStub } from '../helpers/vertexStub';
 import { startWorkspace, vertexConfigFor, restoreWorkspaceEnv, type Workspace } from '../helpers/mvpWorkspace';
 
@@ -75,11 +75,11 @@ async function start(options: { fastRetry?: boolean } = {}): Promise<{ ws: Works
 const NOTE = 'The quarterly access review is due on November 15.';
 const QUESTION = 'When is the quarterly access review due?';
 
-/** Wait until `done()` holds, polling; a background job is what is being waited for. */
-async function until(done: () => boolean, ms = 20_000): Promise<void> {
+/** Wait until `done()` holds, polling; a background job (or what `what` names) is what is being waited for. */
+async function until(done: () => boolean, ms = 20_000, what = 'the background index'): Promise<void> {
   const deadline = Date.now() + ms;
   while (!done()) {
-    if (Date.now() > deadline) throw new Error('timed out waiting for the background index');
+    if (Date.now() > deadline) throw new Error(`timed out waiting for ${what}`);
     await new Promise(resolve => setTimeout(resolve, 50));
   }
 }
@@ -95,6 +95,12 @@ describe('while the embedding service refuses (429)', () => {
     const { ws, stub } = await start();
     await ws.call('remember', { statement: 'Kestrel uses Expo Router for navigation.' });
     expect(chunksWithoutVectors(ws.service.db)).toBe(0);
+    // Hold the background job still, so the requests counted below are the calls', not its. A failed save queues a job
+    // that asks the service, patiently, 1 s later (BACKGROUND_INDEX_FIRST_DELAY_MS), and a later failed save starts it
+    // again once it is aborted, so on a slow machine it asks between the calls. Started here with a first delay longer
+    // than the test, it is the job every failed save finds running, and it asks nothing.
+    const held = engineFinishIndexInBackground(ws.service.db, ws.config, ws.service.engine, { firstDelayMs: TEST_TIMEOUT_MS });
+    expect(held).not.toBeNull();
 
     stub.mode = 'throttle';
     const note = await ws.timed('remember', { statement: NOTE });
@@ -103,8 +109,7 @@ describe('while the embedding service refuses (429)', () => {
     expect(note.ms).toBeLessThan(PROMPT_MS);
     expect(note.body).toMatchObject({ ok: true, mode: 'note', indexed: false, warning: 'memory-saved-but-index-refresh-failed' });
     expect(note.body.detail).toMatch(/HTTP 429/);
-    // Hold the background job still, so the requests counted below are the calls', not its.
-    runningBackgroundIndex(ws.service.db)?.abort();
+    expect(runningBackgroundIndex(ws.service.db)).toBe(held);
     const requestsAfterFirstFailure = stub.counts.requests;
     expect(requestsAfterFirstFailure).toBeGreaterThan(0);
 
@@ -137,6 +142,7 @@ describe('while the embedding service refuses (429)', () => {
 
     // After the first failure the service was not asked again: every later call was answered without a request.
     expect(stub.counts.requests).toBe(requestsAfterFirstFailure);
+    expect(runningBackgroundIndex(ws.service.db)).toBe(held);
   }, TEST_TIMEOUT_MS);
 
   it('what was saved is embedded in the background once the service answers, and is then found by meaning', async () => {
@@ -227,8 +233,13 @@ describe('while the embedding service does not answer at all', () => {
     expect(context.body).toMatchObject({ ok: true, retrieval: 'keyword' });
     expect(context.body.memories.map((m: { text: string }) => m.text).join('\n')).toContain(NOTE);
 
-    // It comes back, and the note is embedded.
+    // It comes back, and the note is embedded. The save queued a job that asks 1 s after it failed; on a slow machine that
+    // is before this line, and its patient request (no budget) would wait on the stall for minutes, so the stub answers it now.
+    // The budgets above are cut short for the stall; with the service back, the calls get the shipped ones, so a loaded
+    // machine's round trip past 300 ms is not taken for a service that is down.
+    ws.service.engine.embedBudgets = DEFAULT_EMBED_BUDGETS;
     stub.mode = 'ok';
+    stub.answerHanging();
     await until(() => chunksWithoutVectors(ws.service.db) === 0);
     expect((await ws.call('search_memory', { query: 'quarterly access review' })).body.hits.length).toBeGreaterThan(0);
   }, TEST_TIMEOUT_MS);
@@ -242,8 +253,10 @@ describe('while the embedding service does not answer at all', () => {
     await ws.call('get_context', { query: QUESTION });
 
     stub.mode = 'hang';
+    const asked = stub.counts.requests;
     const stuck = ws.timed('remember', { statement: NOTE }); // holds the daily note's lock while its embedding hangs
-    await new Promise(resolve => setTimeout(resolve, 250));
+    // Its request reaching the service is what says it holds the lock now; a fixed pause says it only on a fast machine.
+    await until(() => stub.counts.requests > asked, 20_000, 'the stuck save to ask the service');
     const read = await ws.timed('get_context', { query: QUESTION });
     // Before the budgets, the read's own pass over the unfinished note waited for that lock for as long as the save did.
     expect(read.ms).toBeLessThan(2_000);

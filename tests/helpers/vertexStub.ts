@@ -44,6 +44,11 @@ export interface VertexStub {
   resetNext(count?: number): void;
   /** Close the connections that have no request on them now, as Google's front end does when its idle timeout runs out. */
   closeIdleConnections(): void;
+  /**
+   * Answer, as `mode` now says, the requests held unanswered while it was `hang`: a stalled service that comes back answers
+   * what it was sent, so a request that was sent during the stall ends when it does, not at the caller's own timeout.
+   */
+  answerHanging(): void;
   close(): Promise<void>;
 }
 
@@ -66,7 +71,7 @@ export async function startVertexStub(options: { keepAliveHint?: boolean; tokenL
   const hash = new Hash768();
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vertex-stub-'));
   const sockets = new Set<import('net').Socket>();
-  const hanging = new Set<http.ServerResponse>();
+  const hanging = new Map<http.ServerResponse, () => Promise<void>>();
   const stub = {
     mode: 'ok' as VertexStubMode,
     delayMs: 0,
@@ -127,7 +132,7 @@ export async function startVertexStub(options: { keepAliveHint?: boolean; tokenL
         res.end(JSON.stringify({ predictions: vectors.map(values => ({ embeddings: { values, statistics: { token_count: 8 } } })) }));
       };
       if (stub.mode === 'hang') {
-        hanging.add(res);
+        hanging.set(res, answer);
         res.on('close', () => hanging.delete(res));
         return;
       }
@@ -159,8 +164,14 @@ export async function startVertexStub(options: { keepAliveHint?: boolean; tokenL
       return stub.tokens.requests >= count ? Promise.resolve() : new Promise<void>(resolve => { tokenWaiters.push({ count, resolve }); });
     },
     closeIdleConnections() { server.closeIdleConnections(); },
+    answerHanging() {
+      for (const [res, answer] of [...hanging]) {
+        hanging.delete(res);
+        void answer();
+      }
+    },
     async close() {
-      for (const res of hanging) res.destroy();
+      for (const res of hanging.keys()) res.destroy();
       for (const socket of sockets) socket.destroy();
       await new Promise<void>(resolve => server.close(() => resolve()));
       fs.rmSync(dir, { recursive: true, force: true });

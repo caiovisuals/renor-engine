@@ -201,6 +201,16 @@ export class VertexEmbeddingProvider implements EmbeddingProvider {
   }
 
   /**
+   * Starts the first access-token exchange now, in the background, so the first call after a start does not wait for it. The
+   * renewal (armRenewal) keeps the token fresh from then on. A failure is not reported here: the next call tries the exchange
+   * again, as it always did, and a call that finds an exchange in flight waits only for what is left of it.
+   */
+  warmToken(): void {
+    if (this.accessToken || this.exchange) return;
+    this.fetchToken().catch(() => undefined);
+  }
+
+  /**
    * The token is renewed at RENEW_AHEAD_SHARE of its life left, whether or not a call is waiting for it, and the renewal
    * arms the next one. A timer that cannot wait that long (setTimeout's limit) wakes early and waits again. The timer is
    * unref'd: it never keeps a process alive. A provider that is no longer used goes on renewing while its process lives,

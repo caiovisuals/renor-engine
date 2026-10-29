@@ -5,8 +5,8 @@ import { fieldsAtLevel } from './fields';
 import {
   chooseLevel, debugOn, deleteAllShared, settlePendingDelete, shareNow, sharingEndpoint, type Post,
 } from './send';
-import { effectiveLevel, envOverride, hostedEngine, readConsent, readState, sharingDirFor } from './state';
-import { ADULT_LINE, CLI_WORDING_VERSION, wordingFor } from './wording';
+import { defaultInForce, defaultLevel, effectiveLevel, envOverride, hasChosen, hostedEngine, readConsent, readState, sharingDirFor } from './state';
+import { ADULT_LINE, CLI_WORDING_VERSION, defaultWording, wordingFor } from './wording';
 
 /**
  * `renor-engine telemetry <status | signals | data | off | delete | preview | send | fields>`: the user's choice to share.
@@ -61,9 +61,15 @@ export async function runTelemetry(action: string, argument: string | undefined,
         const state = readState(dir);
         const override = envOverride(env);
         const level = effectiveLevel(dir, env);
-        io.out(`sharing: ${level}${override !== null && level !== (record?.level ?? 'off') ? ` (lowered by the environment from ${record?.level ?? 'off'})` : ''}`);
-        if (record === null) io.out('choice: none made (the default is off; nothing is recorded for sharing or sent)');
-        else {
+        const fallback = defaultLevel(env);
+        const byDefault = defaultInForce(dir, env);
+        io.out(`sharing: ${level}${override !== null && level !== (record?.level ?? fallback) ? ` (lowered by the environment from ${record?.level ?? fallback})` : ''}${byDefault ? ' (the default: you have not chosen)' : ''}`);
+        if (record === null && hasChosen(dir)) io.out('choice: a record is there but cannot be read, so it counts as off');
+        else if (record === null && fallback === 'off') io.out('choice: none made (the default is off; nothing is recorded for sharing or sent)');
+        else if (record === null) {
+          io.out('choice: none made (the default is usage numbers, on until you turn them off)');
+          io.out(defaultWording());
+        } else {
           io.out(`choice: ${record.level}, chosen ${record.changedAt} via ${record.source}, wording ${record.wording}, 18 or older: ${record.adult ? 'yes' : 'no'}`);
         }
         io.out(`folder: ${dir}`);
@@ -125,8 +131,9 @@ export async function runTelemetry(action: string, argument: string | undefined,
       }
       case 'off': {
         const result = await chooseLevel({ ...common, level: 'off', wording: CLI_WORDING_VERSION, adult: true, source: 'cli' });
-        if (!result.changed && result.record === null) io.out('Sharing was already off, and no choice had ever been made. Nothing was written.');
+        if (!result.changed) io.out('Sharing was already off.');
         else io.out('Sharing is now: off. Recording for sharing has stopped.');
+        io.out('Off is recorded as your choice, so a later change of the default does not turn it back on.');
         if (result.remoteDeleted === true) io.out('Renor was asked to delete what it holds, and has.');
         else if (result.deleteOwedUnderDoNotTrack) io.out('DO_NOT_TRACK=1 forbids any request, so Renor has not been asked yet to delete what it holds. The deletion is recorded here and sent the first time the engine runs without DO_NOT_TRACK=1.');
         else if (result.remoteDeleted === false) io.out(`Renor could not be reached to delete what it holds (${result.reason ?? 'unknown'}). The deletion is kept and retried when the service next runs.`);

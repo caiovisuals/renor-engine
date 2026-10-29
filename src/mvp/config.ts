@@ -1,3 +1,4 @@
+import net from 'net';
 import path from 'path';
 import { learningSettings, type LearningSettings } from '../learning/settings';
 import { sharingDirFor } from '../sharing/state';
@@ -25,6 +26,17 @@ export interface MvpConfig {
   baseUrl: URL;
   /** HTTP port to listen on. */
   port: number;
+  /**
+   * Address to listen on (MVP_HOST). Loopback unless the operator names another IP literal, e.g. `0.0.0.0`
+   * inside a container whose platform proxy is the only way in. Optional so hand-built test configs keep loopback.
+   */
+  host?: string;
+  /**
+   * Reverse proxies between the internet and this server (MVP_TRUST_PROXY_HOPS, default 0). At 0 a client is its socket
+   * peer and every X-Forwarded-* header is dropped. At N the address the Nth proxy appended to X-Forwarded-For is the
+   * client, so each remote client gets its own login and OAuth rate-limit bucket instead of all sharing the proxy's.
+   */
+  trustProxyHops?: number;
   /** The single owner identity that may authorize (login email). */
   ownerEmail: string;
   /** Owner login secret. Env-only; never stored in Git or the memory dir. */
@@ -186,6 +198,10 @@ export function loadMvpConfig(): MvpConfig {
   if (!Number.isInteger(port) || port <= 0 || port > 65535) {
     throw new Error('MVP_PORT must be an integer between 1 and 65535');
   }
+  const host = (process.env.MVP_HOST ?? '').trim() || '127.0.0.1';
+  if (net.isIP(host) === 0) {
+    throw new Error(`MVP_HOST must be an IP address such as 127.0.0.1 or 0.0.0.0, not ${host}`);
+  }
   const baseUrlRaw = requiredEnv(
     'MVP_BASE_URL',
     'the externally reachable base URL of this service, e.g. http://localhost:3471 for local tests or your public https URL for ChatGPT',
@@ -198,6 +214,29 @@ export function loadMvpConfig(): MvpConfig {
   }
   if (baseUrl.hash || baseUrl.search) {
     throw new Error('MVP_BASE_URL must not contain a query or fragment');
+  }
+  // A public bind serves the owner's password and tokens to whoever can reach it, so it needs https in front. A base
+  // URL that names this machine (http://localhost:3471 for a published container port) is not reachable from outside.
+  const loopbackHost = host === '::1' || host.startsWith('127.');
+  const loopbackBase = baseUrl.hostname === 'localhost' || baseUrl.hostname === '[::1]' || /^127\./.test(baseUrl.hostname);
+  if (!loopbackHost && baseUrl.protocol !== 'https:' && !loopbackBase) {
+    throw new Error(
+      `MVP_HOST=${host} listens beyond this machine, so MVP_BASE_URL must be an https:// URL (got ${baseUrl.origin}). `
+      + 'Put a TLS proxy in front and set MVP_BASE_URL to its address, or leave MVP_HOST on 127.0.0.1.',
+    );
+  }
+  const trustProxyHops = Number((process.env.MVP_TRUST_PROXY_HOPS ?? '0').trim() || 0);
+  if (!Number.isInteger(trustProxyHops) || trustProxyHops < 0 || trustProxyHops > 5) {
+    throw new Error('MVP_TRUST_PROXY_HOPS must be an integer between 0 and 5');
+  }
+  // Trusting a hop makes the Nth address from the right the client. On a public bind with fewer real proxies than
+  // claimed (a client reaching the port directly, or a misconfigured platform), the client writes that address and walks
+  // around the per-client login limit; above 1 the same is true even behind one proxy. Either is a deliberate act.
+  if (trustProxyHops > 0 && (!loopbackHost || trustProxyHops > 1) && process.env.MVP_TRUST_PROXY_HOPS_ACK_SPOOFING !== '1') {
+    throw new Error(
+      `MVP_TRUST_PROXY_HOPS=${trustProxyHops} on ${loopbackHost ? 'a loopback' : 'a public'} bind lets a client choose its own address if fewer proxies are really in front, and so evade the login limit. `
+      + 'Set it only to the real number of proxies in front, and set MVP_TRUST_PROXY_HOPS_ACK_SPOOFING=1 to confirm.',
+    );
   }
   // Owner identity: the ONLY account that can complete authorization.
   const ownerEmail = requiredEnv(
@@ -399,6 +438,8 @@ export function loadMvpConfig(): MvpConfig {
     ledgerRelPath: process.env.MVP_LEDGER_REL ?? DEFAULT_LEDGER_REL,
     baseUrl,
     port,
+    host,
+    trustProxyHops,
     ownerEmail,
     ownerPassword,
     accessTokenTtlSeconds,

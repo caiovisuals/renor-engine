@@ -157,6 +157,8 @@ describe('engine tools on authenticated MCP (ADR-0003)', () => {
     const status = parse(await client.callTool({ name: 'memory_status', arguments: {} }));
     expect(status.notes).toBeGreaterThanOrEqual(1);
     expect(status.semantic).toBe(false);
+    // No embedding provider: no vectors and no mirror, but the ledger's size is still reported.
+    expect(status.storage).toEqual({ vectors: 0, ledgerBytes: expect.any(Number) });
     await client.close();
   });
 
@@ -182,6 +184,10 @@ describe('engine tools on authenticated MCP (ADR-0003)', () => {
     expect(typeof sem.hits[0].session_date).toBe('string');
     expect(sem.hits[0].session_date.length).toBeGreaterThan(0);
     expect(sem.hits[0].text).not.toMatch(/^\[Session date:/);
+    // The per-tenant storage figures: the vectors stored, and the copy searches read (the f32 copy unless RENOR_VECTOR_INT8 is on).
+    const withVectors = parse(await client.callTool({ name: 'memory_status', arguments: {} }));
+    expect(withVectors.storage.vectors).toBeGreaterThan(0);
+    expect(withVectors.storage.vectorMirror).toEqual(expect.objectContaining({ copy: 'f32', rows: withVectors.storage.vectors }));
     await client.close();
   });
 

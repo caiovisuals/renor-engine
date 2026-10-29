@@ -1,9 +1,9 @@
 {
   "schema": 1,
   "benchmark": "renorbench-v1-product",
-  "reason": "Evaluator identity refresh after classifying rankingTrace as read-path-only; measured metrics unchanged",
-  "recordedAt": "2026-10-24T23:36:28.342Z",
-  "gitSha": "fab46d8dd237928767aa6c9d99307749561303f7",
+  "reason": "evaluator: reply capture and TOON decode in the product runner (renorai/renor-engine#6); numbers unchanged",
+  "recordedAt": "2026-10-28T22:35:32.545Z",
+  "gitSha": "ba2045c78dcd27366ff95ae62bc95a3c99160c6f",
   "manifest": {
     "benchmark": "renorbench-v1-product",
     "casesSha256": "dcefabf571d40270f780281f08ecd09be90d5403207c816d0aeaac2d3a0d4060",
@@ -15,7 +15,7 @@
       "qualityEligible": false
     },
     "qualityEligible": false,
-    "evaluatorSha256": "00f911fb7bb961c8b932b004c9d0e99b099ad3c7ae667008b692b7fde65773bf",
+    "evaluatorSha256": "0f9d471c7cdc39f6123b959eb2ad401dbfb0cb0904ae2b7fa9ea1f8cef1d7523",
     "chunking": {
       "maxTokens": 400,
       "overlapTokens": 0

@@ -15,7 +15,7 @@ import { createLogger } from './log';
 
 const log = createLogger('engine');
 import { startSharingLoop } from '../sharing/loop';
-import { effectiveLevel } from '../sharing/state';
+import { defaultInForce, effectiveLevel } from '../sharing/state';
 
 /**
  * CLI entry for the single-user ChatGPT MVP service.
@@ -27,7 +27,7 @@ import { effectiveLevel } from '../sharing/state';
  *   MVP_OWNER_EMAIL  the single owner login email
  *   MVP_OWNER_PASSWORD  owner login secret (env-only, never in Git)
  * Optional:
- *   MVP_PORT (default 3471), MVP_LEDGER_REL, MVP_ACCESS_TOKEN_TTL_SECONDS
+ *   MVP_PORT (default 3471), MVP_HOST (default 127.0.0.1), MVP_LEDGER_REL, MVP_ACCESS_TOKEN_TTL_SECONDS
  */
 
 async function main() {
@@ -37,7 +37,7 @@ async function main() {
   console.log(`[mvp] Memory directory : ${config.memoryDir}`);
   console.log(`[mvp] Ledger (source)  : ${config.ledgerRelPath}`);
   console.log(`[mvp] Derived index     : ${config.dbPath} (rebuildable from the ledger)`);
-  console.log(`[mvp] Listening         : http://127.0.0.1:${config.port}`);
+  console.log(`[mvp] Listening         : http://${config.host ?? '127.0.0.1'}:${config.port}`);
   console.log(`[mvp] MCP endpoint      : ${new URL(MVP_MCP_PATH, config.baseUrl).href}`);
   console.log(`[mvp] OAuth discovery   : ${new URL('/.well-known/oauth-authorization-server', config.baseUrl).href}`);
   console.log(`[mvp] Owner             : ${config.ownerEmail} (the only identity that can authorize)`);
@@ -48,7 +48,7 @@ async function main() {
   }
   console.log(`[mvp] Local proof       : run the MCP client tests in tests/mvp/`);
   console.log(`[mvp] DCR allowlist     : ${config.allowedCallbackUris.length} exact callback URI(s)${config.allowedCallbackUris.length ? '' : ' — DENY BY DEFAULT: no client may register until MVP_ALLOWED_CALLBACK_URIS names exact callbacks'}`);
-  console.log(`[mvp] Exposure boundary : loopback-bound; any public use REQUIRES TLS termination in front (no public mode is shipped).`);
+  console.log(`[mvp] Exposure boundary : ${(config.host ?? '127.0.0.1') === '127.0.0.1' ? 'loopback-bound' : `bound to ${config.host} (MVP_HOST)`}; any public use REQUIRES TLS termination in front.`);
   console.log(`[mvp] Embeddings         : ${config.embeddingProvider}${config.embeddingDims ? ` (${config.embeddingDims}-d)` : ''}`);
   log.info('learning_log', config.learning?.enabled
     ? { enabled: true, retention_days: config.learning.retentionDays, raw_queries: config.learning.rawQueries, db_path: config.learning.dbPath }
@@ -56,7 +56,10 @@ async function main() {
   // Sharing (src/sharing): the owner's choice to share signals or data with Renor, off until they choose. At off the timer reads one
   // small file and does nothing; nothing leaves this process unless the record says so.
   const sharingLoop = config.sharingDir === undefined ? null : startSharingLoop({ dir: config.sharingDir, memoryDir: config.memoryDir, hosted: Boolean(config.gatewaySecret), log: console.log });
-  if (config.sharingDir !== undefined) console.log(`[mvp] Sharing           : ${effectiveLevel(config.sharingDir)} (the owner's choice; off is the default and sends nothing)`);
+  if (config.sharingDir !== undefined) {
+    const byDefault = defaultInForce(config.sharingDir);
+    console.log(`[mvp] Sharing           : ${effectiveLevel(config.sharingDir)} (${byDefault ? 'the default: nobody has chosen. Turn it off with `renor-engine telemetry off`' : "the owner's choice; off sends nothing"})`);
+  }
   const shutdown = async () => {
     sharingLoop?.stop();
     try {
@@ -66,6 +69,8 @@ async function main() {
     }
     process.exit(0);
   };
+  // Operator recovery from a lockout: a signal reaches only someone who can already control the process.
+  process.on('SIGUSR2', () => { mvp.provider.operatorUnlock(); log.info('login_unlocked_by_signal', { detail: 'lockouts cleared by SIGUSR2; failure counts kept' }); });
   process.on('SIGINT', shutdown);
   process.on('SIGTERM', shutdown);
   if (mvp.idleExit) {

@@ -33,7 +33,7 @@ import { isLedgerPreamble, keywordLedgerHits, ledgerNoteMatcher, presentLedgerEv
 import type { EmbeddingProvider } from '../embeddings/types';
 import type { MvpConfig } from './config';
 import { dailyDirForScope, normalizeScope } from './scope';
-import { DEFAULT_LEDGER_REL, scopeFilterFor } from '../memory/lifecycle';
+import { DEFAULT_LEDGER_REL, resolveLedgerPath, scopeFilterFor } from '../memory/lifecycle';
 import { countEntities, countInventory, type InventoryVault } from '../memory/inventory';
 import { createReadScope } from './readScope';
 import {
@@ -192,7 +192,7 @@ export function createEmbeddingProvider(
     // that must go to the service meets the interactive budget and the failure memory in front of it.
     // Document embeddings from concurrent index passes share requests (coalescing.ts): below the budget, so each caller's
     // budget still ends its own call, and above the service, so a request holds at most the usual four in flight.
-    return withQueryCache(new InteractiveEmbeddingProvider(new CoalescingEmbeddingProvider(new VertexEmbeddingProvider({
+    const vertex = new VertexEmbeddingProvider({
       keyFile: config.vertexKeyFile,
       project: config.vertexProject,
       location: config.vertexLocation,
@@ -202,7 +202,11 @@ export function createEmbeddingProvider(
       // An embedding is a pure function of its text, so a request whose idle connection the service closed meanwhile is sent again.
       // A connection it has to open for a read is told to that read's log line (callPhases.ts `connect`).
       ...(pooled ? { request: poolFetch({ retryOnReset: true, onConnect: ms => recordPhase('connect', ms) }) } : {}),
-    }))), config, `p-${served}`);
+    });
+    // The engine's own process fetches its first access token when it starts, in the background, so the first call after a
+    // start (or after an idle exit) does not wait on Google's token exchange (vertex.ts warmToken).
+    if (pooled) vertex.warmToken();
+    return withQueryCache(new InteractiveEmbeddingProvider(new CoalescingEmbeddingProvider(vertex)), config, `p-${served}`);
   }
   const keys = (config.embeddingApiKey ?? '').split(',').map(k => k.trim()).filter(Boolean);
   return new OpenAIEmbeddingProvider(
@@ -237,6 +241,8 @@ export function attachEngine(
   const vectorIndex = new VectorIndex(db, provider.dimensions);
   vectorIndex.initTable();
   claimEmbeddingSpace(db, vectorIndex, provider);
+  // A raised RENOR_VECTOR_MIRROR_MIB: the copy is read after startup, and no reply waits for it (see warmMirror).
+  vectorIndex.warmMirrorInBackground();
   const modelKey = override === undefined
     ? embeddingModelKey(config.embeddingProvider, config.embeddingModel, config.embeddingDims)
     : injectedModelKey(provider);
@@ -779,6 +785,15 @@ export function engineLookupEntity(db: Database.Database, vault: InventoryVault,
   };
 }
 
+/** The bytes of the workspace's events ledger, the file every remembered statement is written to; 0 while there is none. */
+function ledgerBytes(vault: InventoryVault): number {
+  try {
+    return fs.statSync(resolveLedgerPath(vault.memoryDir, vault.ledgerRelPath)).size;
+  } catch {
+    return 0;
+  }
+}
+
 export function engineStatus(db: Database.Database, engine: Engine, vault: InventoryVault) {
   const counts = countInventory(db, vault);
   // What cannot answer right now, said rather than left for the agent to infer from empty results. Absent when healthy.
@@ -790,6 +805,13 @@ export function engineStatus(db: Database.Database, engine: Engine, vault: Inven
   return {
     ...counts,
     embeddingDims: engine.dims,
+    // What the workspace stores, per tenant: its vectors, the bytes of its ledger, and the copy its searches read with the cap
+    // that copy holds (vectorIndex.ts mirrorStats). A tenant near the cap is the one whose searches are about to leave the mirror.
+    storage: {
+      vectors: engine.vectorIndex ? engine.vectorIndex.storedCount() : 0,
+      ledgerBytes: ledgerBytes(vault),
+      ...(engine.vectorIndex ? { vectorMirror: engine.vectorIndex.mirrorStats() } : {}),
+    },
     // Whether semantic search can answer now: false with no provider, and false until the embeddings are whole.
     semantic: semanticReady(engine),
     ...(engine.provider && engine.vectorIndex && !semanticReady(engine)

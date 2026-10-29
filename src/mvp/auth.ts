@@ -1,4 +1,7 @@
 import crypto from 'crypto';
+import fs from 'fs';
+import net from 'net';
+import path from 'path';
 import express, { Response } from 'express';
 import type {
   AuthorizationParams,
@@ -11,6 +14,9 @@ import { InvalidClientMetadataError, InvalidGrantError, ServerError } from '@mod
 import { ClientRegistry } from './client-store.js';
 import type { MvpConfig } from './config'
 import { emitTelemetry } from './telemetry';
+import { createLogger } from './log';
+
+const log = createLogger('auth');
 import { hiveIdentity } from '../memory/sourceName';
 
 /**
@@ -39,7 +45,7 @@ import { hiveIdentity } from '../memory/sourceName';
  *    the configured base URL when the browser supplies them).
  *  - handleOwnerLogin re-validates redirect_uri membership against the
  *    client's registered list before minting a code (defense in depth).
- *  - A global single-owner failed-login limiter applies bounded backoff and
+ *  - A failed-login limiter, one bucket per client address, applies bounded backoff and
  *    lockout (AUTH-B3); audit events are metadata-only (never credentials,
  *    tokens, headers, or private content).
  *  - Refresh tokens expire (AUTH-H1) and rotate single-use; access tokens
@@ -78,6 +84,48 @@ interface StoredToken {
   refreshExpiresAt: number;
 }
 
+interface LoginBucket { failures: number; lockedUntil: number; lastFailureAt: number }
+
+/** Key for every value that is not an IP address: one shared bucket, in the keyspace no address maps into. */
+const LOGIN_INVALID_KEY = 'invalid';
+
+/** The 8 sixteen-bit groups of a valid IPv6 address (any `::` spelling, optional dotted IPv4 tail). */
+function ipv6Groups(addr: string): number[] {
+  let text = addr;
+  const dotted = /^(.*:)(\d+\.\d+\.\d+\.\d+)$/.exec(text);
+  if (dotted) {
+    const [a, b, c, d] = dotted[2].split('.').map(Number);
+    text = `${dotted[1]}${((a << 8) | b).toString(16)}:${((c << 8) | d).toString(16)}`;
+  }
+  const [head, tail = ''] = text.split('::');
+  const groups = head ? head.split(':') : [];
+  if (text.includes('::')) {
+    const rest = tail ? tail.split(':') : [];
+    while (groups.length + rest.length < 8) groups.push('0');
+    groups.push(...rest);
+  }
+  return groups.map(g => parseInt(g, 16));
+}
+
+/**
+ * The network a login attempt is counted against: the IPv4 address, or the first 64 bits of an IPv6 address (one /64 is
+ * one subscriber's whole range, so rotating inside it gains nothing). IPv4-mapped IPv6 reads as the IPv4 address in
+ * every spelling (dotted or hex). Anything that is not an IP address shares one `invalid` key, never a key a real client
+ * can have and never the overflow bucket's.
+ */
+export function loginNetworkKey(address: string): string {
+  const addr = address.split('%')[0].toLowerCase();
+  if (net.isIPv4(addr)) return addr;
+  if (net.isIPv6(addr)) {
+    const g = ipv6Groups(addr);
+    if (g.slice(0, 5).every(x => x === 0) && g[5] === 0xffff) {
+      return `${g[6] >> 8}.${g[6] & 255}.${g[7] >> 8}.${g[7] & 255}`;
+    }
+    return `${g.slice(0, 4).map(x => x.toString(16)).join(':')}::/64`;
+  }
+  return LOGIN_INVALID_KEY;
+}
+
 interface StoredAuthTicket {
   clientId: string;
   redirectUri: string;
@@ -96,6 +144,8 @@ const MAX_REGISTERED_CLIENTS = 100;         // bounded DCR store (AUTH-H2)
 const MAX_REDIRECT_URIS_PER_CLIENT = 8;
 const REFRESH_TOKEN_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const LOCKOUT_MAX_MS = 15 * 60 * 1000;
+const LOGIN_BUCKET_LIMIT = 10_000;           // client networks tracked at once; past this, new ones share one overflow bucket
+const LOGIN_OVERFLOW_KEY = 'overflow:shared'; // a ':' with no '::/64' suffix and no dots: loginNetworkKey never returns it
 const FAILURE_MEMORY_MS = 60 * 60 * 1000;   // a failed login is forgotten after an hour without another
 const TOKEN_SWEEP_EVERY = 512;              // sweep expired tokens every N issues
 const MAX_USED_CODES = 1000;                // redeemed authorization codes remembered, to recognise a replay
@@ -176,12 +226,16 @@ export class OwnerOAuthProvider implements OAuthServerProvider {
   private authTickets = new Map<string, StoredAuthTicket>();
   private usedCodes = new Map<string, TokenFamily>();
   private config: MvpConfig;
-  // Global single-owner login limiter (AUTH-B3): one owner secret => one
-  // global failure counter; peer/client identifiers are not rate-limit keys
-  // (they are unauthenticated input and spoofable).
-  private loginFailures = 0;
-  private loginLockedUntil = 0;
-  private lastFailureAt = 0;
+  // Failed-login limiter (AUTH-B3). A client (an IPv4 address or an IPv6 /64) locks out after fewer failures than the
+  // global ceiling, so one client does not lock out the others; the global ceiling still holds the total to
+  // MVP_LOGIN_MAX_FAILURES per window. If several clients together reach it, everyone, the owner included, is locked
+  // until it expires or the operator sends the process SIGUSR2 (operatorUnlock; no request can). The key is the address Express
+  // resolves (the socket peer, or the proxy-appended hop when MVP_TRUST_PROXY_HOPS names the proxies in front); a
+  // client-supplied X-Forwarded-For entry is never a key.
+  private loginBuckets = new Map<string, LoginBucket>();
+  // Global ceiling: every failed login from any client also counts here, with the limit and backoff the single global
+  // counter had, so spreading guesses over many addresses cannot raise the total rate above what it always was.
+  private globalLogin: LoginBucket = { failures: 0, lockedUntil: 0, lastFailureAt: 0 };
   private issuedSinceSweep = 0;
 
   constructor(config: MvpConfig) {
@@ -343,13 +397,20 @@ export class OwnerOAuthProvider implements OAuthServerProvider {
     email: string,
     password: string,
     approved: boolean,
+    clientKey = 'local',
   ): { ok: true; redirect: URL; state?: string } | { ok: false; error: string; status: number; retryAfterSeconds?: number } {
     // Global single-owner limiter first (AUTH-B3): while locked out, even
     // correct credentials are refused; the response stays metadata-only.
     const now = Date.now();
-    if (now < this.loginLockedUntil) {
-      audit('login_locked', { retry_after_ms: this.loginLockedUntil - now });
-      return { ok: false, error: 'Too many failed login attempts. Try again later.', status: 429, retryAfterSeconds: Math.ceil((this.loginLockedUntil - now) / 1000) };
+    clientKey = loginNetworkKey(clientKey);
+    if (now < this.globalLogin.lockedUntil) {
+      audit('login_locked', { retry_after_ms: this.globalLogin.lockedUntil - now, scope: 'global' });
+      return { ok: false, error: 'Too many failed login attempts. Try again later.', status: 429, retryAfterSeconds: Math.ceil((this.globalLogin.lockedUntil - now) / 1000) };
+    }
+    const bucket = this.loginBucket(clientKey, now);
+    if (now < bucket.lockedUntil) {
+      audit('login_locked', { retry_after_ms: bucket.lockedUntil - now });
+      return { ok: false, error: 'Too many failed login attempts. Try again later.', status: 429, retryAfterSeconds: Math.ceil((bucket.lockedUntil - now) / 1000) };
     }
     const ticket = ticketId ? this.authTickets.get(ticketId) : undefined;
     // Consume the ticket on FIRST use attempt (single-use, anti-replay):
@@ -377,19 +438,25 @@ export class OwnerOAuthProvider implements OAuthServerProvider {
     const emailOk = constantTimeEqual(email.trim().toLowerCase(), this.config.ownerEmail);
     const passwordOk = constantTimeEqual(password, this.config.ownerPassword);
     if (!emailOk || !passwordOk) {
-      if (now - this.lastFailureAt > FAILURE_MEMORY_MS) this.loginFailures = 0;
-      this.lastFailureAt = now;
-      this.loginFailures += 1;
       const max = this.config.loginMaxFailures;
-      if (this.loginFailures >= max) {
-        const exponent = Math.min(this.loginFailures - max, 8);
-        this.loginLockedUntil = now + Math.min(this.config.loginLockoutMs * Math.pow(2, exponent), LOCKOUT_MAX_MS);
+      const global = this.globalLogin;
+      const clientFailures = this.recordFailure(bucket, now);
+      const globalFailures = this.recordFailure(global, now);
+      const clientLocked = clientFailures >= Math.max(1, Math.ceil(max / 2));
+      const globalLocked = globalFailures >= max;
+      if (clientLocked) bucket.lockedUntil = now + this.lockoutMs(clientFailures - Math.max(1, Math.ceil(max / 2)));
+      if (globalLocked) {
+        global.lockedUntil = now + this.lockoutMs(globalFailures - max);
+        log.warn('login_locked_globally', { failures: globalFailures, detail: 'To unlock now, send the server process SIGUSR2 (docker kill -s USR2 <container>).' });
+      }
+      if (clientLocked || globalLocked) {
+        const until = Math.max(bucket.lockedUntil, global.lockedUntil);
         emitTelemetry({ event: 'auth', kind: 'login_fail' });
-      audit('login_failed', { failures: this.loginFailures, locked: true });
-        return { ok: false, error: 'Owner credentials rejected. Too many failed attempts; login is temporarily locked.', status: 429, retryAfterSeconds: Math.ceil((this.loginLockedUntil - now) / 1000) };
+        audit('login_failed', { failures: clientFailures, locked: true, scope: globalLocked ? 'global' : 'client' });
+        return { ok: false, error: 'Owner credentials rejected. Too many failed attempts; login is temporarily locked.', status: 429, retryAfterSeconds: Math.ceil((until - now) / 1000) };
       }
       emitTelemetry({ event: 'auth', kind: 'login_fail' });
-      audit('login_failed', { failures: this.loginFailures });
+      audit('login_failed', { failures: clientFailures });
       return { ok: false, error: 'Owner credentials rejected. Only the configured owner can authorize this service.', status: 403 };
     }
     // Approval claims the client's hive name, so it is refused while an approved client holds that name, and it is
@@ -409,9 +476,9 @@ export class OwnerOAuthProvider implements OAuthServerProvider {
       audit('login_rejected', { reason: 'approval-persist-failed' });
       return { ok: false, error: 'Could not record the approval; nothing was authorized. Retry once the client store is writable.', status: 500 };
     }
-    // Success resets the limiter and mints a code bound to the ticket values.
-    this.loginFailures = 0;
-    this.loginLockedUntil = 0;
+    // Success resets this client's bucket and the global count, and mints a code bound to the ticket values.
+    this.loginBuckets.delete(clientKey);
+    this.globalLogin = { failures: 0, lockedUntil: 0, lastFailureAt: 0 };
     const code = randomToken();
     this.authorizationCodes.set(code, {
       clientId: ticket.clientId,
@@ -566,9 +633,52 @@ export class OwnerOAuthProvider implements OAuthServerProvider {
     return { tokens, family };
   }
 
+  /** The bucket for one client network, created on first use. Locked or recently failed buckets are never evicted: once
+   *  the map is full of them, new networks share one overflow bucket, so cycling addresses cannot reset a lockout. */
+  private loginBucket(clientKey: string, now: number): LoginBucket {
+    const existing = this.loginBuckets.get(clientKey);
+    if (existing) return existing;
+    if (this.loginBuckets.size >= LOGIN_BUCKET_LIMIT) {
+      for (const [key, b] of this.loginBuckets) {
+        if (now >= b.lockedUntil && now - b.lastFailureAt > FAILURE_MEMORY_MS) this.loginBuckets.delete(key);
+      }
+    }
+    const key = this.loginBuckets.size >= LOGIN_BUCKET_LIMIT ? LOGIN_OVERFLOW_KEY : clientKey;
+    let bucket = this.loginBuckets.get(key);
+    if (!bucket) {
+      bucket = { failures: 0, lockedUntil: 0, lastFailureAt: 0 };
+      this.loginBuckets.set(key, bucket);
+    }
+    return bucket;
+  }
+
+  private recordFailure(bucket: LoginBucket, now: number): number {
+    if (now - bucket.lastFailureAt > FAILURE_MEMORY_MS) bucket.failures = 0;
+    bucket.lastFailureAt = now;
+    bucket.failures += 1;
+    return bucket.failures;
+  }
+
+  private lockoutMs(exponent: number): number {
+    return Math.min(this.config.loginLockoutMs * Math.pow(2, Math.min(exponent, 8)), LOCKOUT_MAX_MS);
+  }
+
+  /**
+   * Operator recovery, called only from a local path (the SIGUSR2 handler in cli.ts), never from request handling:
+   * ends every lockout now. Failure counts are kept, so the ceiling is unchanged: the next failed login in the window
+   * locks again, and the total of failures held to MVP_LOGIN_MAX_FAILURES per window is the same as before.
+   */
+  operatorUnlock(): void {
+    const now = Date.now();
+    for (const b of this.loginBuckets.values()) b.lockedUntil = 0;
+    this.globalLogin.lockedUntil = 0;
+    audit('login_unlocked', { by: 'operator', at: now });
+  }
+
   /** Test/operations helper: limiter is bounded and recoverable by design. */
-  limiterState(): { failures: number; lockedUntil: number } {
-    return { failures: this.loginFailures, lockedUntil: this.loginLockedUntil };
+  limiterState(clientKey = 'local'): { failures: number; lockedUntil: number } {
+    const bucket = this.loginBuckets.get(loginNetworkKey(clientKey));
+    return { failures: bucket?.failures ?? 0, lockedUntil: bucket?.lockedUntil ?? 0 };
   }
 }
 
@@ -609,7 +719,7 @@ export function ownerLoginRouter(provider: OwnerOAuthProvider, config: MvpConfig
       res.status(400).send('Invalid authorization request: missing one-time ticket. Restart the authorization from the application.').end();
       return;
     }
-    const result = provider.handleOwnerLogin(ticket, email ?? '', password ?? '', approve === 'on');
+    const result = provider.handleOwnerLogin(ticket, email ?? '', password ?? '', approve === 'on', req.ip ?? req.socket.remoteAddress ?? 'unknown');
     if (!result.ok) {
       // Privacy-safe: no detail beyond the rejection, no code, no redirect.
       if (result.status === 429) res.setHeader('Retry-After', String(result.retryAfterSeconds ?? 1));

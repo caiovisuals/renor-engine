@@ -5,7 +5,7 @@
  * 100 / 1,000 / 10,000 notes plus facts.
  *
  *   npx tsx scripts/bench/mcp-latency.ts [--sizes 100,1000,10000] [--runs 7] [--out result.json] [--label before]
- *       [--embeddings hash|vertex|cache-only|none] [--dims 768] [--evidence default|off] [--dir <fixtures>] [--profile] [--per-call]
+ *       [--embeddings hash|dense|vertex|cache-only|none] [--dims 768] [--evidence default|off] [--dir <fixtures>] [--profile] [--per-call] [--narrow-ledger-check] [--learning-log] [--mirror-cap-mib N]
  *       [--shape live | --pad-sections N --facts N --fact-subjects N] [--queries wide] [--tools get_context,search_memory]
  *       [--calls '<regex over tool:label>'] [--cpu-profile out.cpuprofile]
  *   npx tsx scripts/bench/mcp-latency.ts --embeddings vertex --probe-hop 20 [--embed-cache <path>]
@@ -15,6 +15,9 @@
  * values, so a tier is chosen by what it can honestly claim:
  *   hash    the repo's deterministic eval-hash stub (src/eval/hashEmbedding.ts) at --dims (default 768,
  *           the Vertex default). No model, no network: the tier CI and reviewers can rerun anywhere.
+ *   dense   synthetic dense unit vectors, 768 Gaussian coordinates seeded by each text's sha-256 (dense-hash.ts): no model, no
+ *           network. The hash stub's vectors are sparse and tie at the edge of most searches; this tier has the distances a
+ *           dense workspace has, so the vector path it measures is the one a hosted workspace runs.
  *   vertex  Vertex AI gemini-embedding-001 through the repo's persistent content-addressed cache
  *           (src/embeddings/caching.ts). Corpus and query vectors are paid for once, so reruns are free
  *           and byte-stable. Needs RENOR_EVAL_VERTEX_* (or GOOGLE_APPLICATION_CREDENTIALS) in the
@@ -50,6 +53,7 @@ import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { loadMvpConfig, type MvpConfig } from '../../src/mvp/config';
 import { createMvpApp } from '../../src/mvp/server';
 import { EvalHashEmbeddingProvider } from '../../src/eval/hashEmbedding';
+import { DenseHashEmbeddingProvider } from './dense-hash';
 import { VertexEmbeddingProvider } from '../../src/embeddings/vertex';
 import { collectOllamaKeys } from '../../src/evidence/keyPool';
 import { CachingEmbeddingProvider, CacheOnlyVertex, resolveEmbeddingCachePath } from '../../src/embeddings/caching';
@@ -65,7 +69,7 @@ export const SEED = 20260930;
 /** Spend guard for a Vertex fixture: a 10,000-note corpus is ~4M tokens. */
 const VERTEX_TOKEN_CAP = 12_000_000;
 
-export type Embeddings = 'hash' | 'vertex' | 'cache-only' | 'none';
+export type Embeddings = 'hash' | 'dense' | 'vertex' | 'cache-only' | 'none';
 
 export interface BenchOptions {
   sizes: number[];
@@ -80,6 +84,12 @@ export interface BenchOptions {
    * Either way the benchmark never has an extractor, so it never makes a model call.
    */
   evidence?: 'default' | 'off';
+  /** Sets RENOR_NARROW_LEDGER_CHECK for this run. The bench scrubs RENOR_ variables, so the switch is set after the scrub. */
+  narrowLedgerCheck?: boolean;
+  /** Sets RENOR_LEARNING_LOG=1 for this run (a hosted workspace's setting): the learning log records every call. The bench scrubs RENOR_ variables, so the switch is set after the scrub. */
+  learningLog?: boolean;
+  /** Sets RENOR_VECTOR_MIRROR_MIB for this run: the copy's cap in whole MiB, 1 or more. The bench scrubs RENOR_ variables, so the value is set after the scrub. */
+  mirrorCapMib?: number;
   profile?: boolean;
   perCall?: boolean;
   /** Fixture shape beyond the note count: extra body sections per note, fact saves, distinct fact subjects. */
@@ -158,7 +168,7 @@ function sentence(rnd: () => number, n: number): string {
   return s.charAt(0).toUpperCase() + s.slice(1) + '.';
 }
 
-export interface Fixture { notes: number; facts: number; seed: number; dims: number; vectors: 'hash' | 'vertex' | 'cache-only'; padSections?: number; factSubjects?: number }
+export interface Fixture { notes: number; facts: number; seed: number; dims: number; vectors: 'hash' | 'dense' | 'vertex' | 'cache-only'; padSections?: number; factSubjects?: number }
 
 export function writeNotes(memoryDir: string, p: Fixture): void {
   const rnd = mulberry32(p.seed);
@@ -263,6 +273,7 @@ interface Vectors { provider: EmbeddingProvider | null; close(): void }
 
 function openVectors(kind: Embeddings, o: Pick<BenchOptions, 'dims' | 'embedCache'>): Vectors {
   if (kind === 'none') return { provider: null, close() {} };
+  if (kind === 'dense') return { provider: new DenseHashEmbeddingProvider(o.dims), close() {} };
   if (kind === 'hash') {
     return { provider: Object.assign(new EvalHashEmbeddingProvider(), { dimensions: o.dims }), close() {} };
   }
@@ -304,7 +315,7 @@ export async function openWorkspace(memoryDir: string, provider: EmbeddingProvid
 export function fixtureFor(o: BenchOptions, notes: number): { memoryDir: string; fixture: Fixture } {
   const fixture: Fixture = {
     notes, facts: o.facts ?? Math.max(20, Math.floor(notes / 5)), seed: SEED, dims: o.dims,
-    vectors: o.embeddings === 'vertex' || o.embeddings === 'cache-only' ? o.embeddings : 'hash', // `none` measures the hash fixture with the provider detached
+    vectors: o.embeddings === 'vertex' || o.embeddings === 'cache-only' || o.embeddings === 'dense' ? o.embeddings : 'hash', // `none` measures the hash fixture with the provider detached
     ...(o.padSections ? { padSections: o.padSections } : {}),
     ...(o.factSubjects ? { factSubjects: o.factSubjects } : {}),
   };
@@ -652,7 +663,7 @@ async function probeHop(o: BenchOptions, n: number): Promise<Stat> {
 // ---- run + compare ---------------------------------------------------------------------------
 
 export interface BenchResult {
-  meta: { label: string; node: string; commit: string; embeddings: Embeddings; dims: number; runs: number; evidence: 'default' | 'off'; sqlite: string; cpu: string };
+  meta: { label: string; node: string; commit: string; embeddings: Embeddings; dims: number; runs: number; evidence: 'default' | 'off'; narrowLedgerCheck?: boolean; learningLog?: boolean; mirrorCapMib?: number; sqlite: string; cpu: string };
   hop?: Stat;
   sizes: Record<string, SizeResult>;
 }
@@ -692,13 +703,16 @@ export async function runBench(o: BenchOptions): Promise<BenchResult> {
   const log = o.log ?? (() => {});
   fs.mkdirSync(o.dir, { recursive: true });
   return withBenchEnv(o.embeddings === 'vertex', o.evidence ?? 'default', async () => {
+    if (o.narrowLedgerCheck) process.env.RENOR_NARROW_LEDGER_CHECK = '1';
+    if (o.learningLog) process.env.RENOR_LEARNING_LOG = '1';
+    if (o.mirrorCapMib) process.env.RENOR_VECTOR_MIRROR_MIB = String(o.mirrorCapMib);
     const authDir = fs.mkdtempSync(path.join(os.tmpdir(), 'bench-auth-'));
     const consoleLog = console.log;
     console.log = () => {}; // the server's tool_use telemetry lines
     try {
       const result: BenchResult = {
         meta: {
-          label: o.label ?? 'run', node: process.version, commit: commitId(), embeddings: o.embeddings, dims: o.dims, runs: o.runs, evidence: o.evidence ?? 'default',
+          label: o.label ?? 'run', node: process.version, commit: commitId(), embeddings: o.embeddings, dims: o.dims, runs: o.runs, evidence: o.evidence ?? 'default', narrowLedgerCheck: o.narrowLedgerCheck === true, learningLog: o.learningLog === true, mirrorCapMib: o.mirrorCapMib,
           sqlite: (() => { const db = new Database(':memory:'); try { return String((db.prepare('SELECT sqlite_version() AS v').get() as { v: string }).v); } finally { db.close(); } })(),
           cpu: `${os.cpus()[0]?.model ?? 'unknown'} x${os.cpus().length}`,
         },
@@ -778,12 +792,14 @@ export function benchOptionsFromArgs(argv: string[]): { options: BenchOptions; o
   };
   const flag = (name: string): boolean => argv.includes(`--${name}`);
   const embeddings = (arg('embeddings') ?? 'hash') as Embeddings;
-  if (!['hash', 'vertex', 'cache-only', 'none'].includes(embeddings)) throw new Error('--embeddings must be hash, vertex, cache-only or none');
+  if (!['hash', 'dense', 'vertex', 'cache-only', 'none'].includes(embeddings)) throw new Error('--embeddings must be hash, dense, vertex, cache-only or none');
   // `--shape live` (LIVE_SHAPE). Individual flags override the preset.
   const live = arg('shape') === 'live';
   const num = (name: string, fallback?: number) => (arg(name) !== undefined ? Number(arg(name)) : fallback);
   const shape = { padSections: num('pad-sections', live ? LIVE_SHAPE.padSections : undefined), facts: num('facts', live ? LIVE_SHAPE.facts : undefined), factSubjects: num('fact-subjects', live ? LIVE_SHAPE.factSubjects : undefined) };
   if (flag('profile') && arg('cpu-profile')) throw new Error('--profile and --cpu-profile both slow every call: run them separately');
+  const mirrorCap = arg('mirror-cap-mib');
+  if (mirrorCap !== undefined && !(/^[0-9]+$/.test(mirrorCap) && Number(mirrorCap) >= 1)) throw new Error('--mirror-cap-mib must be a whole number of MiB, 1 or more');
   return {
     out: arg('out'),
     options: {
@@ -796,6 +812,9 @@ export function benchOptionsFromArgs(argv: string[]): { options: BenchOptions; o
       evidence: arg('evidence') === 'off' ? 'off' : 'default',
       profile: flag('profile'),
       perCall: flag('per-call'),
+      narrowLedgerCheck: flag('narrow-ledger-check'),
+      learningLog: flag('learning-log'),
+      mirrorCapMib: mirrorCap === undefined ? undefined : Number(mirrorCap),
       padSections: shape.padSections, facts: shape.facts, factSubjects: shape.factSubjects,
       queries: arg('queries') === 'wide' ? 'wide' : 'default',
       tools: arg('tools')?.split(','),

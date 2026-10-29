@@ -2,14 +2,14 @@ import { describe, it, expect, afterAll, afterEach } from 'vitest';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
-import net from 'net';
 import crypto from 'crypto';
 import request from 'supertest';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { loadMvpConfig, type MvpConfig } from '../../src/mvp/config';
-import { startMvpService, MVP_MCP_PATH } from '../../src/mvp/server';
+import { MVP_MCP_PATH } from '../../src/mvp/server';
 import { hiveNameHeader } from '../../src/memory/hiveNameHeader.cjs';
+import { startMvpServiceOnFreePort } from '../helpers/mvpPort';
 
 /**
  * The origin of an entry over the real hosted tools. A Renor user found entries saved with file-path garbage in their
@@ -30,6 +30,11 @@ const ENV_KEYS = [
   'MVP_ALLOWED_CALLBACK_URIS', 'MVP_HISTORY_DIR', 'MVP_LEDGER_REL', 'MVP_EMBEDDING_PROVIDER', 'EMBEDDING_PROVIDER', 'RENOR_SECRET_GUARD',
 ];
 const savedEnv = Object.fromEntries(ENV_KEYS.map(key => [key, process.env[key]]));
+/**
+ * The deadline of a test that makes one tool call per reserved spelling and write tool: 92 calls in sequence, ~1.5 s on an
+ * idle machine and past vitest's default 5 s on a loaded 4-vCPU gate. It is a backstop for a hang, not a speed bound.
+ */
+const LONG_LOOP_TIMEOUT_MS = 30_000;
 const open: Array<{ close(): Promise<void> }> = [];
 
 afterEach(async () => {
@@ -41,17 +46,6 @@ afterAll(() => {
     else process.env[key] = savedEnv[key];
   }
 });
-
-function freePort(): Promise<number> {
-  return new Promise((resolve, reject) => {
-    const srv = net.createServer();
-    srv.listen(0, '127.0.0.1', () => {
-      const port = (srv.address() as net.AddressInfo).port;
-      srv.close(() => resolve(port));
-    });
-    srv.on('error', reject);
-  });
-}
 
 function makeConfig(memoryDir: string, authRoot: string, port: number): MvpConfig {
   process.env.MVP_MEMORY_DIR = memoryDir;
@@ -100,8 +94,9 @@ async function startWorkspace(opts: { files?: Record<string, string>; userAgent?
     fs.mkdirSync(path.dirname(path.join(memoryDir, rel)), { recursive: true });
     fs.writeFileSync(path.join(memoryDir, rel), content);
   }
-  const config = makeConfig(memoryDir, authRoot, await freePort());
-  const service = await startMvpService(config);
+  // A probed port is free only until the probe closes it, and the service binds it after its boot (the database, a ledger
+  // replay): another worker's socket can take it in between. A bind that loses that race starts again on a fresh port.
+  const { started: service, config } = await startMvpServiceOnFreePort((port) => makeConfig(memoryDir, authRoot, port));
   const client = new Client({ name: 'source-clean', version: '0.1.0' });
   await client.connect(new StreamableHTTPClientTransport(
     new URL(MVP_MCP_PATH, `http://127.0.0.1:${config.port}`),
@@ -293,7 +288,7 @@ describe('a caller-supplied source cannot impersonate a reserved identity', () =
     }
     expect(fs.existsSync(path.join(ws.memoryDir, LEDGER))).toBe(false);
     expect((await ws.call('memory_map')).body.memories).toEqual([]);
-  });
+  }, LONG_LOOP_TIMEOUT_MS);
 
   it('accepts ordinary names with their existing cleanup, and leaves a non-ASCII gateway identity unchanged', async () => {
     const ordinary = await startWorkspace({ userAgent: CLAUDE_CODE });

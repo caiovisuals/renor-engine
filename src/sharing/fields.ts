@@ -17,7 +17,14 @@ export type SharingLevel = (typeof SHARING_LEVELS)[number];
 export const SHARING_PROTOCOL = 1;
 
 /** The version of the words the CLI shows before a user picks signals or data. A dashboard sends its own wording id. */
-export const CLI_WORDING_VERSION = 'engine-cli-2026-10-21';
+export const CLI_WORDING_VERSION = 'engine-cli-2026-10-28';
+
+/**
+ * The id of the words that describe the default (anonymous usage numbers on until the person turns them off): the words
+ * `renor-engine telemetry status` and the service's start-up line show, and the wording a default batch names. A default is not
+ * a choice, so it is stored as nothing more than this id. Change the words, change the id.
+ */
+export const DEFAULT_WORDING_VERSION = 'engine-default-2026-10-26';
 
 /** The order of strength: off < signals < data. */
 export function levelRank(level: SharingLevel): number {
@@ -138,6 +145,8 @@ export const KINDS_WITH_CANDIDATES: readonly RowKind[] = ['retrieval-labelled/1'
 /** Fields of the batch envelope the engine sends (not rows). */
 export const BATCH_FIELDS = ['protocol', 'action', 'batch_id', 'level', 'wording', 'rows'] as const;
 export const DELETE_FIELDS = ['protocol', 'action'] as const;
+/** An install asks Renor for its credential: nothing but the protocol and the action (no data, no identifier). */
+export const REGISTER_FIELDS = ['protocol', 'action'] as const;
 /**
  * A self-hosted install's batch also carries its consent record, the evidence of the choice it sends under: the version of the
  * record, the level chosen (at least the batch's), when it was chosen, the wording seen, and the 18-or-older confirmation.
@@ -146,6 +155,13 @@ export const DELETE_FIELDS = ['protocol', 'action'] as const;
 export const CONSENT_FIELD = 'consent';
 export const CONSENT_FIELDS = ['version', 'level', 'changed_at', 'wording', 'adult'] as const;
 export const SELF_HOSTED_BATCH_FIELDS = [...BATCH_FIELDS, CONSENT_FIELD] as const;
+/**
+ * A batch sent under the default carries `default: true` instead of a consent record: the person has not chosen, so there is no
+ * record to carry, and the level is always `signals`. It is a third shape, never combined with `consent`, so a batch of an
+ * explicit choice is exactly what it was before the default existed.
+ */
+export const DEFAULT_FIELD = 'default';
+export const DEFAULT_BATCH_FIELDS = [...BATCH_FIELDS, DEFAULT_FIELD] as const;
 /** The endpoint's refusals after which the same rows must never be sent again (send.ts stops instead of retrying). */
 export const TERMINAL_REFUSALS = ['sharing_closed', 'consent_off', 'consent_required'] as const;
 

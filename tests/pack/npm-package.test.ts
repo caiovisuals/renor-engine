@@ -9,10 +9,11 @@ import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 
 /**
  * `npx -y renor-engine mcp` is the one line a directory listing or a README gives a stranger. These tests pack the engine
- * the way `npm publish` would, read the file list, unpack the tarball somewhere that is not this repository and run the
- * server from it, as the package's own `bin`, with an empty home directory and no setting: it must remember a fact and
- * recall it. The dependencies are this checkout's own (a registry install is the one thing a unit test cannot do offline;
- * the publish runbook repeats the whole thing against the registry).
+ * the way it is published (scripts/npm/pack.mjs: one bundled dist/cli.js), read the file list, unpack the tarball somewhere
+ * that is not this repository and run the server from it, as the package's own `bin`, with an empty home directory and no
+ * setting: it must remember a fact and recall it. Beside it sit ONLY the package's declared dependencies (this checkout's
+ * copies), so a module the bundle forgot fails here rather than for a stranger. A registry install is the one thing a unit
+ * test cannot do offline; the publish runbook repeats the whole thing against the registry.
  */
 
 const ENGINE = path.resolve(__dirname, '../..');
@@ -41,20 +42,27 @@ beforeAll(() => {
   work = scratch('renor-pack-');
   const destination = path.join(work, 'tarball');
   fs.mkdirSync(destination);
-  // --ignore-scripts: packing must not rebuild; it packs the dist the suite just compiled.
-  const pack = spawnSync('npm', ['pack', '--json', '--ignore-scripts', '--pack-destination', destination], {
+  // The script does not rebuild: it bundles the dist the suite just compiled.
+  const pack = spawnSync(process.execPath, ['scripts/npm/pack.mjs', '--out', destination], {
     cwd: ENGINE, encoding: 'utf8', timeout: 120_000,
   });
   expect(pack.status, pack.stderr).toBe(0);
-  packed = JSON.parse(pack.stdout)[0];
+  const tarball = fs.readdirSync(destination).find(file => file.endsWith('.tgz'))!;
+  const list = spawnSync('tar', ['-tzf', path.join(destination, tarball)], { encoding: 'utf8' });
+  expect(list.status, list.stderr).toBe(0);
   const extract = path.join(work, 'extract');
   fs.mkdirSync(extract);
-  const untar = spawnSync('tar', ['-xzf', path.join(destination, fs.readdirSync(destination)[0]), '-C', extract], { encoding: 'utf8' });
+  const untar = spawnSync('tar', ['-xzf', path.join(destination, tarball), '-C', extract], { encoding: 'utf8' });
   expect(untar.status, untar.stderr).toBe(0);
   unpacked = path.join(extract, 'package');
   manifest = JSON.parse(fs.readFileSync(path.join(unpacked, 'package.json'), 'utf8'));
-  // What `npm install` leaves next to the package: its dependencies, here this checkout's own.
-  fs.symlinkSync(path.join(ENGINE, 'node_modules'), path.join(extract, 'node_modules'));
+  packed = { name: manifest.name, version: manifest.version, files: list.stdout.trim().split('\n').map(file => ({ path: file.replace(/^package\//, '') })) };
+  // What `npm install` leaves next to the package: its declared dependencies and nothing else, here this checkout's copies
+  // (their own dependencies resolve from where the links point).
+  fs.mkdirSync(path.join(extract, 'node_modules'));
+  for (const name of Object.keys(manifest.dependencies)) {
+    fs.symlinkSync(path.join(ENGINE, 'node_modules', name), path.join(extract, 'node_modules', name));
+  }
 }, BUDGET);
 
 afterAll(() => {
@@ -84,17 +92,9 @@ describe('the npm package', () => {
     expect(cmp, `package ${manifest.version} is below NOTICE's Apache-2.0 boundary ${notice}`).toBeGreaterThanOrEqual(0);
   });
 
-  it('packs the built output and the legal files, and nothing else', () => {
+  it('packs the bundle, its data, the legal files and nothing else', () => {
     const files = packed.files.map(file => file.path).sort();
-    // npm adds every README* by itself; README.public.md exists only in the private tree (the public export renames it README.md).
-    const stray = files.filter(file => !(file.startsWith('dist/') || ['LICENSE', 'NOTICE', 'README.md', 'README.public.md', 'package.json'].includes(file)));
-    expect(stray, 'files outside the whitelist in the tarball').toEqual([]);
-    for (const needed of ['dist/cli.js', 'dist/mcp/server.js', 'dist/memory/hiveNameHeader.cjs', 'LICENSE', 'NOTICE', 'README.md']) {
-      expect(files, needed).toContain(needed);
-    }
-    // Compiled sources only: no tests, fixtures, maps, databases, environment files or dependency folders.
-    const unwanted = files.filter(file => /(^|\/)(tests?|fixtures|node_modules|\.git)(\/|$)|\.(map|db|sqlite|log|env)$|(^|\/)\.env/.test(file));
-    expect(unwanted).toEqual([]);
+    expect(files).toEqual(['LICENSE', 'NOTICE', 'README.md', 'THIRD-PARTY-NOTICES', 'dist/BUILD.json', 'dist/cli.js', 'dist/o200k.json', 'package.json']);
   });
 
   it('carries no private path or key-shaped text', () => {
@@ -109,25 +109,21 @@ describe('the npm package', () => {
     expect(problems).toEqual([]);
   });
 
-  it('names every runtime dependency its compiled code needs, so a registry install finds them', () => {
-    // The unpacked package resolves its modules from this checkout's node_modules; a dependency missing from
-    // "dependencies" would pass that and fail for a stranger. Every bare import in dist/ must be declared or built in.
-    // An optional peer dependency (the local embedding model) is declared on purpose and imported only when asked for.
+  it('depends on the native modules alone; everything else is bundled or an optional peer', () => {
+    expect(Object.keys(manifest.dependencies).sort()).toEqual(['sqlite-vec']);
     const optionalPeers = Object.keys(manifest.peerDependencies ?? {}).filter(name => manifest.peerDependenciesMeta?.[name]?.optional);
-    const declared = new Set([...Object.keys(manifest.dependencies), ...optionalPeers]);
+    expect(optionalPeers.sort()).toEqual(['@posthog/mcp', '@xenova/transformers', 'posthog-node']);
+    // Every bare module the bundle still loads must be declared or built in. The rest are probes the bundled packages make
+    // inside a try (chokidar's fsevents on macOS, debug's supports-color, js-yaml's esprima) and ajv's and ajv-formats' generated-code
+    // strings, which are text, not loads.
+    const declared = new Set([...Object.keys(manifest.dependencies), ...optionalPeers, 'fsevents', 'supports-color', 'esprima', 'ajv', 'ajv-formats']);
     const builtins = new Set(builtinModules);
     const missing = new Set<string>();
-    // tsc emits CommonJS: every import is a require("x") or a dynamic import("x"); `from "x"` also appears in prose strings.
     const importRe = /(?:require|import)\(\s*["']([^."'\/][^"']*)["']\s*\)/g;
-    for (const file of walk(path.join(unpacked, 'dist')).filter(f => f.endsWith('.js') || f.endsWith('.cjs'))) {
-      // Only the compiled code that `mcp` can reach is the product; eval tooling imports dev dependencies on purpose.
-      if (file.includes(`${path.sep}dist${path.sep}eval${path.sep}`)) continue;
-      for (const match of fs.readFileSync(file, 'utf8').matchAll(importRe)) {
-        const spec = match[1];
-        const name = spec.startsWith('@') ? spec.split('/').slice(0, 2).join('/') : spec.split('/')[0];
-        if (name.startsWith('node:') || builtins.has(name) || declared.has(name)) continue;
-        missing.add(`${name} (${path.relative(unpacked, file)})`);
-      }
+    for (const match of fs.readFileSync(path.join(unpacked, 'dist', 'cli.js'), 'utf8').matchAll(importRe)) {
+      const spec = match[1];
+      const name = spec.startsWith('@') ? spec.split('/').slice(0, 2).join('/') : spec.split('/')[0];
+      if (!(name.startsWith('node:') || builtins.has(name) || declared.has(name))) missing.add(name);
     }
     expect([...missing].sort()).toEqual([]);
   });
@@ -136,14 +132,21 @@ describe('the npm package', () => {
 describe('the optional local embedding model', () => {
   it('is left out of the install, and asking for it says what to add', () => {
     expect(manifest.dependencies['@xenova/transformers'], 'hundreds of megabytes would slow the first npx start past a client\'s connect timeout').toBeUndefined();
-    // The compiled provider alone in a folder with no node_modules above it, as in an install without the peer.
-    const bare = path.join(work, 'bare');
-    fs.mkdirSync(bare);
-    fs.copyFileSync(path.join(unpacked, 'dist/embeddings/local.js'), path.join(bare, 'local.js'));
-    const run = spawnSync(process.execPath, ['-e',
-      "new (require('./local.js').LocalEmbeddingProvider)().embed(['x']).then(() => console.log('NO ERROR'), e => console.log(e.message))"],
-    { cwd: bare, encoding: 'utf8', timeout: 60_000 });
-    expect(run.stdout).toMatch(/EMBEDDING_PROVIDER=local needs the optional package @xenova\/transformers/);
+    // The unpacked package has only its declared dependencies beside it, as in an install without the peer: indexing one
+    // note with the local model must fail on that note and name the package to add.
+    const home = scratch('renor-pack-local-');
+    const vault = path.join(home, 'notes');
+    fs.mkdirSync(vault);
+    fs.writeFileSync(path.join(vault, 'a.md'), '# A\n\nhello\n');
+    try {
+      const run = spawnSync(process.execPath, [path.join(unpacked, manifest.bin['renor-engine']), 'index'], {
+        cwd: home, encoding: 'utf8', timeout: 60_000,
+        env: { HOME: home, USERPROFILE: home, VAULT_PATH: vault, EMBEDDING_PROVIDER: 'local' },
+      });
+      expect(run.stdout + run.stderr).toMatch(/EMBEDDING_PROVIDER=local needs the optional package @xenova\/transformers/);
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true, maxRetries: 3 });
+    }
   });
 });
 

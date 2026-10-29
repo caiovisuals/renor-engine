@@ -199,6 +199,19 @@ export function withFactHits<T extends { text: string; headingPath?: string; rea
   return [...indexHits.slice(0, lead), ...facts, ...indexHits.slice(lead)];
 }
 
+/** The check as a join: one full-text match for every chunk of the ledger note. RENOR_NARROW_LEDGER_CHECK=0 keeps it. */
+const LEDGER_CHECK_JOIN = `SELECT 1 FROM chunks_fts JOIN chunks c ON c.id = chunks_fts.rowid
+     WHERE chunks_fts MATCH ? AND c.note_path = ? LIMIT 1`;
+
+/**
+ * The same check with the full-text match evaluated once: the chunks of the ledger note whose id is a match. The join
+ * above evaluates the match once for every chunk of the note. This is the default.
+ */
+const LEDGER_CHECK_NARROW = `SELECT 1 FROM chunks WHERE note_path = ? AND id IN (SELECT rowid FROM chunks_fts WHERE chunks_fts MATCH ?) LIMIT 1`;
+
+/** The RENOR_NARROW_LEDGER_CHECK values that select the join. Unset, empty and any other value keep the narrow form. */
+const LEDGER_CHECK_JOIN_VALUE = /^(0|off|false|no)$/i;
+
 /**
  * Whether the newest saved fact is missing from the chunk index.
  *
@@ -215,11 +228,10 @@ export function indexBehindLedger(db: Database.Database, ledgerPath: string, sco
   const newest = newestFactEvent(db, scope);
   if (!newest) return false;
   const phrase = `"${newest.replace(/"/g, '""').replace(/_/g, ' ')}"`;
-  const indexed = prepareOnce(
-    db,
-    `SELECT 1 FROM chunks_fts JOIN chunks c ON c.id = chunks_fts.rowid
-     WHERE chunks_fts MATCH ? AND c.note_path = ? LIMIT 1`,
-  ).get(phrase, ledgerPath);
+  const join = LEDGER_CHECK_JOIN_VALUE.test(process.env.RENOR_NARROW_LEDGER_CHECK?.trim() ?? '');
+  const indexed = join
+    ? prepareOnce(db, LEDGER_CHECK_JOIN).get(phrase, ledgerPath)
+    : prepareOnce(db, LEDGER_CHECK_NARROW).get(ledgerPath, phrase);
   return !indexed;
 }
 

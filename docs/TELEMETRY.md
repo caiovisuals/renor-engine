@@ -16,8 +16,72 @@ owner's and a lawyer's to approve, and is not part of this file.
 | `data` | The signals, plus the **text of the examples**: the query behind a retrieval, the text of the memories it returned, and the statements you saved. Renor may use that text to train and evaluate its own models. | `renor-engine telemetry data` |
 
 A choice needs your confirmation that you are 18 or older. It is recorded in one small file with the level, the time, the id of the words
-you saw (`engine-cli-2026-10-21` for the command line; the dashboard sends its own) and who set it. One record per install (self-hosted),
+you saw (`engine-cli-2026-10-28` for the command line; the dashboard sends its own) and who set it. One record per install (self-hosted),
 or per workspace (hosted). Choosing a level never changes your plan, quota or features.
+
+## The default (built, and not on)
+
+The owner's decision (2026-10-25): anonymous usage numbers on by default, with a switch; text for training never on by default. This
+release holds the mechanism and ships it **dark**, so nothing in this page's first paragraph changes yet: the default is still off.
+
+- The engine's default is a constant, `off` (`src/sharing/state.ts`, `SHIPPED_DEFAULT_LEVEL`). It changes only with the owner's approved
+  wording, and even then nothing leaves until Renor's own switch for the default is open (below). `RENOR_SHARING_DEFAULT=off|signals`
+  replaces it for one process. `data` is never a default.
+- Where the default is `signals`, a memory folder in which nobody has chosen is at `signals` ("the default"), and `status` and the
+  service's start-up line say so. A **choice always wins**: any consent file, an explicit `off` included, is the choice, and a file that
+  cannot be read is a choice nobody can read, so it is `off`. `renor-engine telemetry off` records the off even when nothing was on, so a
+  later change of the default does not turn it back on. (An `off` typed on an install that had never chosen, before this release, left no
+  record and cannot be told from never having chosen.)
+- `DO_NOT_TRACK=1`, `RENOR_SHARING=off` and an install-level No (`renor setup`) lower the default like any other level.
+- Under the default the sender asks Renor's switch (`GET /sharing/default-status`, one bit) **before it reads a row and again before every
+  batch it posts**, and any error counts as closed. A run can post several batches, so once the switch answers closed no further batch is
+  posted; what was not sent stays unsent and goes out when it is open again. The gateway caches the answer for up to 30 seconds, so a
+  sender can still read "open" for up to 30 seconds after the operator closes it; the endpoint itself refuses a default batch from the
+  moment the database says closed. A batch under the default says `default: true`, carries no consent record (there was no choice), is
+  always `signals`, and is the same rows, field for field, as a chosen `signals`.
+- What an explicit choice sends from a self-hosted install is exactly what it sent before: no `default` field, the consent record kept (a test compares the keys).
+  A **hosted workspace** sends up to two streams whatever its owner chose (owner's final design, 2026-10-27): its usage numbers always as the default's shape (`default: true`,
+  signals, the install's own id, **never tied to the workspace**), unless the owner explicitly chose Off; and, only while the owner's switch for memory text is on, the text as a
+  second contributor (`data`, no `default` field) that Renor ties to the workspace so the switch can be held. Turning that switch off deletes what the second contributor sent
+  and the numbers carry on; an explicit Off stops both and deletes both. The two streams never carry the same row: **while the text switch is on the numbers pause**, the text stream
+  carries only rows created after the switch went on (its watermarks start at that time, never at 0), and the numbers resume from the switch-off time. The install secret is
+  **rotated** every time the switch goes on or off, so the numbers' id after a tied period cannot be matched to the one before it; the old secrets stay in the workspace's own
+  sharing state only, so that Renor can still be asked to delete what they sent (`off` / `delete` ask for every id the workspace ever used).
+- Turning it off is `renor-engine telemetry off` (or the dashboard's switch): it stops at once, deletes the example texts and asks Renor to
+  delete what it holds under this install's secret, as `off` always did.
+
+### What counts as anonymous
+
+The default sends the `signals` rows and nothing else. A row counts as anonymous only when **every** field in it is one of:
+
+1. a count, a number or a yes/no;
+2. a value from a closed list (`tool`, `kind`, a bucket, `retrieval`);
+3. a text of a fixed shape that cannot hold a name, a path, an address or a sentence: the hour (`2026-10-21T14`), the ranker's and the lane's
+   own labels, the build's commit, the embedding model's identity (`provider:model:dimensions`; a local model named by a path is sent as null).
+
+and **no** field is, or is made from, a workspace, a person, an account, an agent, a session, a memory, a note path, a heading, a subject, a
+title, a key, or any text of a memory or a query. `tests/sharing/default.test.ts` holds this: it lists the only open-ended fields, probes
+each one's pattern with the characters of a path, an address and a name, refuses a field named for any of those, and checks that the text
+fields exist at `data` only.
+
+What this does not claim. The rows are stored under one random install id (the SHA-256 of a secret kept in the sharing folder) and
+nothing else: Renor never ties it to a workspace or a person, whatever the owner chooses in the dashboard (an Off makes the engine stop and
+ask Renor to delete by this id, so the server cannot refuse an install it does not know to be the workspace's). The hour is the coarsest time sent, but a small number of installs with a known working pattern
+can still make one guessable by someone who already knows that pattern. That is why the default is a switch and not a rule, and why the
+words the owner approves, not this page, say what is anonymous to a reader.
+
+"Anonymous" here therefore means only that the fields hold nothing that names anyone. The install id is **stable** (it stays the same until
+sharing is turned off), so rows from one install can be recognised as the same install: by itself the data is pseudonymous, not anonymous,
+and Renor does not tie the id to a workspace, whatever the owner chooses. The
+dashboard's words therefore say "usage numbers", describe the identifier, and do not say "anonymous".
+
+### How an install proves itself to Renor
+
+Before it first sends, an install asks Renor for a credential: a request with no body but the protocol and the action (`register`), no identifier and no data. Renor signs a
+random id and answers with it; the install keeps it in the sharing folder and sends it as its bearer from then on, and the install id Renor keeps is the SHA-256 of it. Without
+a credential Renor issued (an invented or copied one), a send is refused before it is read. A request for a credential is made only by an install that is about to send: not at
+`off`, not under `DO_NOT_TRACK=1`, not in debug mode, not while Renor's switch for the default is closed, and never by a hosted workspace (it proves itself with a keyed proof
+derived from the fleet's gateway secret). A credential Renor refuses is dropped and asked for again. `docs/SHARING-INGEST.md`, "Authentication", says what this does and does not prove.
 
 ## Commands
 
@@ -147,8 +211,11 @@ no scanner is perfect, so choose `data` only if you accept that.
 ## What happens to what you send
 
 - The endpoint is a Renor function separate from product analytics, PostHog, Sentry and Langfuse; nothing here goes to any of them. It
-  authenticates each request with your install's secret, limits how often an install may post, and stores the rows apart from your account.
-- **Retention:** signal rows are kept up to 12 months; text examples up to 6 months. Then they are deleted.
+  authenticates each request (an install with the credential Renor issued it, a hosted workspace with a keyed proof), limits how often an install may post, and stores the rows apart from your account.
+- **Retention (the owner's decision, 2026-10-27):** what is shared is kept as long as it helps improve Renor, with no fixed period. The database's daily purge expires no rows
+  (it drops only request counters, kept two days). Shared data is deleted on request (`off` / `delete`, or an email to privacy@renor.cloud), when the owner switches the text for
+  training off (the text goes, the numbers stay), and, for a hosted workspace whose owner explicitly chose Off earlier, that Off holds: its numbers are never sent again, even if the
+  owner later toggles the text switch on and off.
 - **Withdrawal and deletion:** `off` and `delete` ask the endpoint to delete everything it holds for your install, at once. If `DO_NOT_TRACK=1`
   is set, nothing at all may be sent: `off` deletes the local example texts, records here that the deletion is owed (keeping the install's
   secret it needs), says so, and the first run without `DO_NOT_TRACK=1` sends it and then removes the rest. Otherwise,
@@ -156,6 +223,10 @@ no scanner is perfect, so choose `data` only if you accept that.
   closed, the sender sends nothing until Renor's status says it is open again; when it says the workspace's choice is off, off is applied here
   too; when it refuses the consent record, nothing is sent until you choose a level again. A deletion is never held back. Backups can hold a copy for up to 7 more days. A ranking setting already fitted from rows is not
   recalled; the next fit leaves yours out.
+- **The default's switch.** Renor's `learning_default` (an operator setting, closed until the owner approves the wording) is asked by the
+  sender before it sends under the default, and again by the endpoint, which refuses a default batch with `default_closed` while it is
+  closed. Closing it stops every default sender at its next question (before its next batch; the gateway's cache makes that up to 30
+  seconds), with no release.
 - **Hosted workspaces:** the owner chooses in the dashboard. Renor records the choice in the control plane and the workspace obeys it at the
   next call; the endpoint refuses rows from a workspace whose recorded choice does not allow them, so off holds even if the workspace has not yet
   been told.

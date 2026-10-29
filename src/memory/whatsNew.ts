@@ -4,6 +4,19 @@ import { listRequestsPage, REQUEST_PAGE_LIMIT } from './requests';
 
 /** How many items one call returns. A full page comes with a cursor for the rest. */
 export const WHATS_NEW_LIMIT = 50;
+
+/**
+ * The page a call returns when it names no `limit`: RENOR_WHATS_NEW_PAGE, 1 to 50. Unset, it is 50 (WHATS_NEW_LIMIT), so a
+ * workspace that does not set it reads exactly as before. A value that is not a whole number from 1 to 50 fails the call
+ * rather than quietly reading 50: an arm must never run with a lever silently off.
+ */
+export function whatsNewPageFromEnv(env: NodeJS.ProcessEnv = process.env): number {
+  const raw = (env.RENOR_WHATS_NEW_PAGE ?? '').trim();
+  if (raw === '') return WHATS_NEW_LIMIT;
+  const n = /^\d+$/.test(raw) ? Number(raw) : NaN;
+  if (!(n >= 1 && n <= WHATS_NEW_LIMIT)) throw new Error(`RENOR_WHATS_NEW_PAGE takes a whole number from 1 to ${WHATS_NEW_LIMIT}, not ${raw}`);
+  return n;
+}
 const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
 /**
  * At most this many open requests lead a reply (the newest); the rest are counted (`more_requests`). list_requests
