@@ -664,6 +664,18 @@ const migrations: Migration[] = [
       if (!cols.some(c => c.name === 'closed_at')) db.exec('ALTER TABLE erased_facts ADD COLUMN closed_at TEXT');
     },
   },
+  {
+    version: 29,
+    name: '29_facts_event_nocase_index',
+    up: (db: Database.Database) => {
+      // Additive only: the event lookup of search_memory (mvp/readUsefulness.ts) compares event ids without case through this
+      // index. No row is rewritten; the index holds one entry per fact, as the unique index on event_id does. A vault recorded
+      // at version 8 with the first facts table has no event_id, and migration 5 never runs for it again: the index waits for
+      // the column, as migration 5 does, so the engine boots on such a vault.
+      const cols = (db.prepare('PRAGMA table_info(facts)').all() as { name: string }[]).map((c) => c.name);
+      if (cols.includes('event_id')) db.exec('CREATE INDEX IF NOT EXISTS idx_facts_event_nocase ON facts(event_id COLLATE NOCASE)');
+    },
+  },
 
 ];
 

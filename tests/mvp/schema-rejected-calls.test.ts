@@ -40,6 +40,13 @@ const CLEARED_ENV = [
 ];
 const savedEnv: Record<string, string | undefined> = {};
 
+// A test on the real service starts it inside the test: the database and its migrations, the ledger replay, an OAuth login and an
+// MCP session, then its calls. The first such test in a worker also pays that worker's first run of every one of those paths. Idle,
+// that is under two seconds; on a gate slot sharing four CPUs with three other files it passed vitest's default 5 s, and the test
+// failed on a timeout while nothing in it was wrong. Every step is awaited, so this is only the deadline for a slow machine, as the
+// other real-service tests in tests/mvp/ have. The bare-server tests start nothing and keep the default.
+const REAL_SERVICE_TIMEOUT_MS = 30_000;
+
 // Remote sinks read the environment by name, so a machine that exports them would deliver these lines for real.
 beforeEach(() => {
   for (const name of CLEARED_ENV) {
@@ -67,7 +74,7 @@ afterEach(async () => {
   }
   for (const key of Object.keys(savedEnv)) delete savedEnv[key];
   resetPosthogMcpForTests();
-});
+}, REAL_SERVICE_TIMEOUT_MS); // closing a service waits for its background work, which a loaded machine slows the same way
 
 /** Every telemetry line the process writes, parsed; the stdout line is the canonical record. */
 function captureTelemetry() {
@@ -185,7 +192,6 @@ describe.each(MODES)('tool_rejected: the real service, %s', (_mode, mcpJson) => 
       { label: 'a statement over the bound', tool: 'remember', args: { statement: 'x'.repeat(MAX_STATEMENT_LENGTH + 1) }, arg: 'statement', kind: 'too_big' },
       { label: 'a number sent as a string', tool: 'memory_map', args: { limit: 'CANARY-limit-value' }, arg: 'limit', kind: 'wrong_type' },
       { label: 'two arguments wrong in one call', tool: 'remember', args: { statement: 5, scope: 5 }, arg: 'statement', kind: 'wrong_type' },
-      { label: 'no arguments at all, for a tool whose arguments are all optional', tool: 'get_context', kind: 'missing' },
       { label: 'an id that is not a UUID', tool: 'apply_import', args: { batchId: 'CANARY-not-a-uuid' }, arg: 'batchId', kind: 'invalid_format' },
       { label: 'a nested entry missing a field names the argument, not the entry or its index', tool: 'preview_import', args: { label: 'notes', files: [{ relativePath: 'a.md' }] }, arg: 'files', kind: 'missing' },
       {
@@ -196,6 +202,12 @@ describe.each(MODES)('tool_rejected: the real service, %s', (_mode, mcpJson) => 
         kind: 'too_big',
       },
     ];
+
+    // SDK 1.32 accepts a call that omits `arguments` when every argument is optional (1.31 refused it as `missing`): it reaches the handler.
+    const omitted = telemetry.events('tool_rejected').length;
+    const noArguments = await callTool(client, 'get_context');
+    expect(noArguments.isError, 'no arguments at all, for a tool whose arguments are all optional').toBe(false);
+    expect(telemetry.events('tool_rejected'), 'no arguments at all, for a tool whose arguments are all optional').toHaveLength(omitted);
 
     for (const c of cases) {
       const before = telemetry.events('tool_rejected').length;
@@ -220,10 +232,10 @@ describe.each(MODES)('tool_rejected: the real service, %s', (_mode, mcpJson) => 
       expect(everything, secret).not.toContain(secret);
     }
 
-    // A call refused by the schema never ran, so it is not a tool_use: the accepted figures cannot move.
-    expect(telemetry.events('tool_use')).toHaveLength(0);
+    // A call refused by the schema never ran, so it is not a tool_use: the only one is the call without arguments (accepted since SDK 1.32).
+    expect(telemetry.events('tool_use').map((e) => e.tool)).toEqual(['get_context']);
     await client.close();
-  });
+  }, REAL_SERVICE_TIMEOUT_MS);
 
   it('keeps the three outcomes apart: accepted is a tool_use, a handler refusal is a tool_use that failed, only a schema refusal is a tool_rejected', async () => {
     const telemetry = captureTelemetry();
@@ -244,7 +256,7 @@ describe.each(MODES)('tool_rejected: the real service, %s', (_mode, mcpJson) => 
     expect(telemetry.events('tool_rejected')).toHaveLength(1);
     expect(telemetry.events('tool_use')).toHaveLength(2);
     await client.close();
-  });
+  }, REAL_SERVICE_TIMEOUT_MS);
 
   it('does not count a call to a tool that does not exist, and never writes the name it was called by', async () => {
     const telemetry = captureTelemetry();
@@ -261,7 +273,7 @@ describe.each(MODES)('tool_rejected: the real service, %s', (_mode, mcpJson) => 
     await callTool(client, 'remember', {});
     expect(telemetry.events('tool_rejected')).toHaveLength(1);
     await client.close();
-  });
+  }, REAL_SERVICE_TIMEOUT_MS);
 
   it('an argument name the caller invents is never written: it is not in the schema, so it is not what failed', async () => {
     const telemetry = captureTelemetry();
@@ -272,7 +284,7 @@ describe.each(MODES)('tool_rejected: the real service, %s', (_mode, mcpJson) => 
     expect(event.arg).toBe('statement');
     expect(telemetry.raw.join('\n')).not.toContain('CANARY-invented-name');
     await client.close();
-  });
+  }, REAL_SERVICE_TIMEOUT_MS);
 });
 
 // A call on a session the engine lost (a restart, an idle sleep, the TTL sweep, the cap) is answered on a server built for that one
@@ -302,7 +314,7 @@ it('counts a call the schema refuses on a session the engine lost', async () => 
   expect(telemetry.events('tool_rejected')).toHaveLength(1);
   expect(telemetry.events('tool_rejected')[0]).toMatchObject({ tool: 'remember', arg: 'statement', kind: 'missing' });
   expect(telemetry.events('tool_use')).toHaveLength(0);
-});
+}, REAL_SERVICE_TIMEOUT_MS);
 
 describe('tool_rejected: the hook on a bare server', () => {
   const SHAPE = {

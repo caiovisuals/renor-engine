@@ -11,9 +11,29 @@ export const KNN_MAX_K = 4096;
 /**
  * Above this many bytes of vectors the process keeps asking sqlite-vec, instead of keeping a second copy of every
  * vector. 64 MiB is about 21,000 vectors at the 768 dimensions a hosted workspace uses, and the measured fixture
- * (about 10,000) fits under it.
+ * (about 10,000) fits under it. This is the hosted default; RENOR_VECTOR_MIRROR_MIB raises it (see mirrorCapBytes).
  */
 const MIRROR_MAX_BYTES = 64 * 1024 * 1024;
+
+/**
+ * The most a copy may hold, whatever RENOR_VECTOR_MIRROR_MIB says: 4 GiB, the largest linear memory a WebAssembly instance
+ * can have (the SIMD scan keeps its copy in one). A larger number is this ceiling, so a long run of digits never becomes
+ * Infinity bytes.
+ */
+const MIRROR_CEILING_MIB = 4096;
+
+/**
+ * The byte cap for `RENOR_VECTOR_MIRROR_MIB`: a whole number of MiB, from 1 to {@link MIRROR_CEILING_MIB} (a larger number
+ * is the ceiling). Unset, empty, not a whole number, or 0 keeps {@link MIRROR_MAX_BYTES}. A self-hosted process with spare
+ * RAM can raise it; each vector then costs 4 bytes per dimension in RAM (about 295 MiB for 100,000 chunks of 768 dimensions).
+ */
+export function mirrorCapBytes(raw: string | undefined): number {
+  const text = (raw ?? '').trim();
+  if (!/^[0-9]+$/.test(text)) return MIRROR_MAX_BYTES;
+  // Number() of a very long run of digits is Infinity; the minimum keeps the cap at the ceiling.
+  const mib = Math.min(Number(text), MIRROR_CEILING_MIB);
+  return mib >= 1 ? mib * 1024 * 1024 : MIRROR_MAX_BYTES;
+}
 
 /**
  * How far past the k-th scan distance a vector is still rescored exactly. The scan is ordinary f64 arithmetic and is
@@ -185,7 +205,7 @@ interface VecMirror {
   /** Whether a memory for the SIMD scan was asked for when the live vectors reached the minimum: it is asked once per mirror. */
   simdTried: boolean;
   count: number;
-  /** Slots `data` can hold. `count` of them are live. Never more than {@link MIRROR_MAX_BYTES}. */
+  /** Slots `data` can hold. `count` of them are live. Never more than the index's byte cap. */
   cap: number;
   /**
    * `PRAGMA data_version` when this copy was read. Another connection's commit changes it, including a
@@ -216,6 +236,9 @@ function storedAlready(err: unknown): boolean {
   return err instanceof Error && /UNIQUE constraint failed/.test(err.message);
 }
 
+/** Rows the background copy reads per turn of the event loop, and the vectors of one blob: a page of rows is one blob's worth. */
+const WARM_TURN_ROWS = 1024;
+
 export class VectorIndex {
   private db: Database.Database;
   private dimensions: number;
@@ -224,10 +247,22 @@ export class VectorIndex {
   private mirror: VecMirror | null = null;
   /** The scan's distances for one search, kept for the next so a search allocates nothing for them. */
   private scanned = new Float64Array(0);
+  /**
+   * The copy being read in the background (warmMirror). `changed` holds the chunks this index wrote or deleted meanwhile,
+   * taken from the table when the copy is installed; `dropped` is set by a rebuild, which the copy cannot follow.
+   */
+  private warming: { changed: Set<number>; dropped: boolean } | null = null;
+  /** The most bytes of vectors the copy may hold: {@link mirrorCapBytes} of RENOR_VECTOR_MIRROR_MIB, read when this index is made, unless a test passes its own (options.capBytes). */
+  private readonly capBytes: number;
+  /** Whether the last search found the index too large for the mirror's cap. */
+  private overCap = false;
+  /** Searches answered by sqlite-vec's scan because the index holds more vectors than the mirror's cap (this process). */
+  private overCapSearches = 0;
 
-  constructor(db: Database.Database, dimensions: number) {
+  constructor(db: Database.Database, dimensions: number, options: { capBytes?: number } = {}) {
     this.db = db;
     this.dimensions = dimensions;
+    this.capBytes = options.capBytes ?? mirrorCapBytes(process.env.RENOR_VECTOR_MIRROR_MIB);
     // Load sqlite-vec extension
     sqliteVec.load(db);
   }
@@ -284,6 +319,7 @@ export class VectorIndex {
    * for is one written from empty.
    */
   beginRebuild(space: string): void {
+    if (this.warming) this.warming.dropped = true;
     this.ensureMeta();
     this.db.transaction(() => {
       this.stmt('DELETE FROM chunk_embeddings').run();
@@ -319,6 +355,7 @@ export class VectorIndex {
   }
 
   upsert(chunkId: number, embedding: number[]): void {
+    this.noteWrite(chunkId);
     const floats = new Float32Array(this.normalize(embedding));
     const buf = Buffer.from(floats.buffer);
     this.stmt('DELETE FROM chunk_embeddings WHERE rowid = ?').run(BigInt(chunkId));
@@ -333,6 +370,7 @@ export class VectorIndex {
    * and the chunk is upserted, as it was before this method existed, so the rows are the same in every case.
    */
   insertNew(chunkId: number, embedding: number[]): void {
+    this.noteWrite(chunkId);
     const floats = new Float32Array(this.normalize(embedding));
     const buf = Buffer.from(floats.buffer);
     try {
@@ -350,6 +388,7 @@ export class VectorIndex {
    * Returns false (and leaves `toId` without a vector) when `fromId` has none.
    */
   copy(fromId: number, toId: number): boolean {
+    this.noteWrite(toId);
     if (fromId === toId) return this.get(fromId) !== null;
     const dims = this.dimensions;
     const src = this.mirror?.slot.get(fromId);
@@ -407,12 +446,127 @@ export class VectorIndex {
       const fast = this.searchMirror(qf, buf, topK, among);
       if (fast !== null) return fast;
     }
+    if (this.overCap) this.overCapSearches++;
     return this.searchStored(buf, topK, among);
   }
 
+  /** How many vectors the index stores. */
+  storedCount(): number {
+    return (this.stmt('SELECT COUNT(*) AS n FROM chunk_embeddings_rowids').get() as { n: number }).n;
+  }
+
+  /** The mirror as memory_status reports it: whether the copy is held, the vectors and bytes it holds, its cap, and the searches past it. */
+  mirrorStats(): { copy: 'f32' | 'none'; rows: number; bytes: number; capBytes: number; overCapSearches: number; simd: boolean } {
+    const rows = this.mirror?.count ?? 0;
+    return {
+      copy: this.mirror ? 'f32' : 'none', rows, bytes: rows * this.dimensions * 4, capBytes: this.capBytes,
+      overCapSearches: this.overCapSearches, simd: this.mirror?.rows != null,
+    };
+  }
+
   delete(chunkId: number): void {
+    this.noteWrite(chunkId);
     this.stmt('DELETE FROM chunk_embeddings WHERE rowid = ?').run(BigInt(chunkId));
     this.forget(chunkId);
+  }
+
+  /** A write of this index: a copy being read in the background takes this chunk's row from the table when it is installed. */
+  private noteWrite(chunkId: number): void {
+    this.warming?.changed.add(chunkId);
+  }
+
+  /**
+   * Builds the copy in the background, a page of rows, then one vector blob, per turn of the event loop, so no search waits for it: until it is
+   * ready, searches answer from sqlite-vec exactly as they do without it. A write by this index while the blobs are read is
+   * applied when the copy is installed. The copy is dropped only when another connection commits (`PRAGMA data_version`) or
+   * a rebuild starts, which it cannot follow. True when the copy is ready.
+   */
+  async warmMirror(): Promise<boolean> {
+    if (this.mirror !== null || this.warming !== null) return this.mirror !== null;
+    const token = { changed: new Set<number>(), dropped: false };
+    this.warming = token;
+    return this.readCopy(token);
+  }
+
+  /** Reads the copy for `token`, which is `warming` for as long as this runs (see warmMirror). */
+  private async readCopy(token: { changed: Set<number>; dropped: boolean }): Promise<boolean> {
+    try {
+      const n = (this.stmt('SELECT COUNT(*) AS n FROM chunk_embeddings_rowids').get() as { n: number }).n;
+      const version = this.dataVersion();
+      if (n === 0 || n * this.dimensions * 4 > this.capBytes || this.tableDims() !== this.dimensions) return false;
+      const dims = this.dimensions;
+      const wantsRows = this.wantsRows(n);
+      const simd = wantsRows ? SimdRows.create(dims, n) : null;
+      const data = simd ? simd.data : new Float32Array(n * dims);
+      const ids: number[] = [];
+      const slot = new Map<number, number>();
+      const offsetOf = new Uint32Array(n);
+      const byChunk = new Map<number, number[]>();
+      // The table's rows a page at a time, in rowid order: one read of all of them would hold the event loop for as long.
+      const page = this.stmt('SELECT rowid, chunk_id, chunk_offset FROM chunk_embeddings_rowids WHERE rowid > ? ORDER BY rowid LIMIT ?');
+      let after: bigint = -(2n ** 63n);
+      while (ids.length < n) {
+        const batch = page.all(after, BigInt(Math.min(WARM_TURN_ROWS, n - ids.length))) as Array<{
+          rowid: number | bigint; chunk_id: number | bigint; chunk_offset: number | bigint;
+        }>;
+        if (batch.length === 0) break;
+        for (const row of batch) {
+          const i = ids.length;
+          const id = Number(row.rowid);
+          ids.push(id);
+          slot.set(id, i);
+          offsetOf[i] = Number(row.chunk_offset);
+          const chunk = Number(row.chunk_id);
+          const list = byChunk.get(chunk);
+          if (list) list.push(i);
+          else byChunk.set(chunk, [i]);
+        }
+        after = BigInt(batch[batch.length - 1].rowid);
+        await new Promise<void>(resolve => setImmediate(resolve));
+        if (token.dropped) return false;
+      }
+      const chunks = [...byChunk.keys()];
+      const blobOf = this.stmt('SELECT vectors FROM chunk_embeddings_vector_chunks00 WHERE rowid = ?');
+      for (const chunk of chunks) {
+        if (token.dropped) return false;
+        const blob = (blobOf.get(BigInt(chunk)) as { vectors: Buffer } | undefined)?.vectors;
+        if (!blob) return false;
+        for (const i of byChunk.get(chunk)!) {
+          const off = offsetOf[i] * dims;
+          if ((blob.byteOffset + off * 4) % 4 !== 0 || off * 4 + dims * 4 > blob.length) return false;
+          data.set(new Float32Array(blob.buffer, blob.byteOffset + off * 4, dims), i * dims);
+        }
+        await new Promise<void>(resolve => setImmediate(resolve));
+      }
+      if (token.dropped || this.dataVersion() !== version) return false;
+      // The rows placed are the count: a row deleted while the pages were read is never placed, and one inserted is replayed below.
+      this.mirror = { ids, slot, data, rows: simd, simdTried: wantsRows, count: ids.length, cap: simd ? simd.capRows : n, version };
+      // A chunk written or deleted while the blobs were read may hold a row the copy does not: each is taken from the table now.
+      for (const chunk of token.changed) {
+        const vector = this.get(chunk);
+        if (vector) this.remember(chunk, Float32Array.from(vector));
+        else this.forget(chunk);
+      }
+      return this.mirror !== null;
+    } catch {
+      // A copy installed before a replay failed would miss that write: no copy is kept, and the next search reads the table.
+      this.mirror = null;
+      return false;
+    } finally {
+      if (this.warming === token) this.warming = null;
+    }
+  }
+
+  /**
+   * Starts {@link warmMirror} on a later turn of the event loop, but only when RENOR_VECTOR_MIRROR_MIB raised the cap above
+   * its default: at the default the copy is small and the first search builds it, as it always has. From this call on, a
+   * search answers from sqlite-vec until the copy is ready, including one that arrives before that turn.
+   */
+  warmMirrorInBackground(): void {
+    if (this.capBytes <= MIRROR_MAX_BYTES || this.mirror !== null || this.warming !== null) return;
+    const token = { changed: new Set<number>(), dropped: false };
+    this.warming = token;
+    setImmediate(() => { void this.readCopy(token); });
   }
 
   /** `PRAGMA data_version`. Another connection's commit changes it; this connection's own writes do not. */
@@ -433,7 +587,7 @@ export class VectorIndex {
    * The stored vectors, copied once from sqlite-vec's packed shadow blobs (one blob per chunk of vectors, not one row
    * per vector). The copy is dropped when the row count changes without this class writing it, or when another
    * connection commits (`PRAGMA data_version`): a replace there keeps the count and would otherwise stay invisible.
-   * Past {@link MIRROR_MAX_BYTES} there is no copy. A table declared at a different dimension is not copied, so the
+   * Past the index's byte cap there is no copy. A table declared at a different dimension is not copied, so the
    * sqlite-vec query throws its dimension error instead of this copy answering with a slice of the blob.
    */
   private mirrorReady(): boolean {
@@ -444,14 +598,18 @@ export class VectorIndex {
       version = this.dataVersion();
     } catch {
       this.mirror = null;
+      this.overCap = false;
       return false;
     }
+    this.overCap = n * this.dimensions * 4 > this.capBytes;
     if (this.mirror && this.mirror.count === n && this.mirror.version === version) return true;
     if (n === 0) {
       this.mirror = { ids: [], slot: new Map(), data: new Float32Array(0), rows: null, simdTried: false, count: 0, cap: 0, version };
       return true;
     }
-    if (n * this.dimensions * 4 > MIRROR_MAX_BYTES) {
+    // A background copy is being read: this search answers from sqlite-vec, as it does until the copy is ready.
+    if (this.warming) return false;
+    if (this.overCap) {
       this.mirror = null;
       return false;
     }
@@ -462,6 +620,19 @@ export class VectorIndex {
   private loadMirror(n: number, version: number): VecMirror | null {
     const declared = this.tableDims();
     if (declared !== null && declared !== this.dimensions) return null;
+    const dims = this.dimensions;
+    // A reload (another connection committed) replaces this mirror, so its linear memory is taken over, not reserved again,
+    // when the vectors it now holds still want one.
+    const wantsRows = this.wantsRows(n);
+    const held = this.mirror?.rows;
+    const simd = !wantsRows ? null : held && held.capRows >= n ? held : SimdRows.create(dims, n);
+    // The memory is asked for before the table is read, so a copy that cannot be had costs no read: searches read sqlite-vec.
+    let data: Float32Array;
+    try {
+      data = simd ? simd.data : new Float32Array(n * dims);
+    } catch {
+      return null;
+    }
     let chunks: Array<{ rowid: number | bigint; vectors: Buffer }>;
     let rows: Array<{ rowid: number | bigint; chunk_id: number | bigint; chunk_offset: number | bigint }>;
     try {
@@ -474,13 +645,6 @@ export class VectorIndex {
     if (rows.length !== n || this.dataVersion() !== version) return null;
     const blobs = new Map<number, Buffer>();
     for (const chunk of chunks) blobs.set(Number(chunk.rowid), chunk.vectors);
-    const dims = this.dimensions;
-    // A reload (another connection committed) replaces this mirror, so its linear memory is taken over, not reserved again,
-    // when the vectors it now holds still want one.
-    const wantsRows = this.wantsRows(n);
-    const held = this.mirror?.rows;
-    const simd = !wantsRows ? null : held && held.capRows >= n ? held : SimdRows.create(dims, n);
-    const data = simd ? simd.data : new Float32Array(n * dims);
     const ids = new Array<number>(n);
     const slot = new Map<number, number>();
     try {
@@ -527,13 +691,13 @@ export class VectorIndex {
       m.data.set(floats, have * dims);
       return;
     }
-    if ((m.count + 1) * dims * 4 > MIRROR_MAX_BYTES) {
+    if ((m.count + 1) * dims * 4 > this.capBytes) {
       this.mirror = null;
       return;
     }
     if (m.count === m.cap) {
       // Doubling can jump past the byte cap while the next single vector still fits (16,384 → 32,768 at 768 dims).
-      const maxCap = Math.floor(MIRROR_MAX_BYTES / (dims * 4));
+      const maxCap = Math.floor(this.capBytes / (dims * 4));
       let cap = Math.max(m.cap * 2, m.cap + 16, 16);
       if (cap > maxCap) cap = maxCap;
       if (cap < m.count + 1) {
@@ -547,7 +711,14 @@ export class VectorIndex {
         }
         m.data = m.rows.data;
       } else {
-        const data = new Float32Array(cap * dims);
+        let data: Float32Array;
+        try {
+          data = new Float32Array(cap * dims);
+        } catch {
+          // No memory for a larger copy: this copy is dropped, and searches read sqlite-vec until a search builds one again.
+          this.mirror = null;
+          return;
+        }
         data.set(m.data.subarray(0, m.count * dims));
         m.data = data;
       }

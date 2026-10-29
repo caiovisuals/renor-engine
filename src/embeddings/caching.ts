@@ -3,6 +3,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import Database from '../db/sqlite';
 import type { EmbedOptions, EmbeddingIdentity, EmbeddingProvider } from './types';
+import { noteQueryCache } from '../callPhases';
 
 /**
  * Content-addressed embedding cache around another provider.
@@ -246,8 +247,9 @@ export class CachingEmbeddingProvider implements EmbeddingProvider {
 
   async embedQuery(text: string, options?: EmbedOptions): Promise<number[]> {
     const cached = this.guard(() => this.read(text, TASK_QUERY), null);
-    if (cached) { this.stats.hits += 1; return cached; }
+    if (cached) { this.stats.hits += 1; noteQueryCache(true); return cached; }
     this.stats.misses += 1;
+    noteQueryCache(false);
     this.sent.calls += 1;
     this.sent.texts += 1;
     // Providers without a query task type (OpenAI-compatible, hash) are queried
@@ -378,4 +380,42 @@ export class CacheOnlyVertex implements EmbeddingProvider {
   async embed(texts: string[]): Promise<number[][]> { return texts.map(text => this.read(text, 'RETRIEVAL_DOCUMENT')); }
   async embedQuery(text: string): Promise<number[]> { return this.read(text, 'RETRIEVAL_QUERY'); }
   close(): void { this.db.close(); }
+}
+
+/**
+ * Writes the cache rows whose key is in `keys` to `outFile`, in the cache's own table, so one batch's rows can be copied off
+ * a machine on their own (scripts/eval/gcp/durable-batches.sh). By key, not by insertion order: a batch rerun after a crash
+ * finds its rows already cached and still exports all of them, never an empty file. Written to a temporary file and renamed,
+ * so a crash leaves the previous `outFile` whole. Returns how many rows.
+ */
+export function exportRowsByKey(cachePath: string, keys: readonly string[], outFile: string): number {
+  const tmp = `${outFile}.tmp-${process.pid}`;
+  fs.rmSync(tmp, { force: true });
+  const db = new Database(tmp);
+  let copied = 0;
+  try {
+    db.exec(
+      `CREATE TABLE embeddings (
+         key TEXT PRIMARY KEY,
+         dims INTEGER NOT NULL,
+         vec BLOB NOT NULL,
+         namespace TEXT NOT NULL,
+         created_at TEXT NOT NULL
+       )`,
+    );
+    if (fs.existsSync(cachePath) && keys.length > 0) {
+      db.prepare('ATTACH DATABASE ? AS src').run(cachePath);
+      const insert = db.prepare(
+        'INSERT OR IGNORE INTO embeddings (key, dims, vec, namespace, created_at) SELECT key, dims, vec, namespace, created_at FROM src.embeddings WHERE key = ?',
+      );
+      db.transaction(() => {
+        for (const key of keys) copied += insert.run(key).changes;
+      })();
+      db.exec('DETACH DATABASE src');
+    }
+  } finally {
+    db.close();
+  }
+  fs.renameSync(tmp, outFile);
+  return copied;
 }

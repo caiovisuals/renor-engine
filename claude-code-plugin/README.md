@@ -62,6 +62,12 @@ verbatim. The pre-action hook (`RENOR_ACTION_RECALL=1`) does the same with stand
 call (2026-10-22, under the owner's standing product authority) is to keep injecting the text, inside an explicit untrusted-data boundary; that hardening is
 its own change to `src/recall/autoRecall.ts`.
 
+**Receipt (`RENOR_RECALL_RECEIPT=1`, off by default).** When step 5 injected something, the hook also returns one line
+for the user in `systemMessage`, which Claude Code shows in the chat (the memories stay in `additionalContext`, which only
+the model reads): `Renor recalled 3: 2 notes (Oct 18, Oct 19), 1 fact`. It holds counts and dates only, never a word of a
+memory or a fact, because whatever the user saved would otherwise be on screen and in stream-json logs. No injection, no
+line (`src/recall/receipt.ts`).
+
 Settings are environment variables, which Claude Code passes to hooks from the `env` block of `~/.claude/settings.json`.
 They are listed in [docs/ENVIRONMENT-VARIABLES.md](../docs/ENVIRONMENT-VARIABLES.md#automatic-recall-claude-code-hook).
 
@@ -227,6 +233,10 @@ user sets its variable. `tests/claude-plugin/plugin.test.ts` packs it the same w
 No key is in `plugin.json`, `.mcp.json` or any other plugin file, and no hook writes one to a file. A line the secret
 scanner flags is never offered for saving, and the server refuses a secret in any save (`RENOR_SECRET_GUARD`, on by
 default) before writing anything.
+
+1. `cd engine && npm run build`, then copy `dist/recall/` (`autoRecall.js`, `actionRecall.js` and `receipt.js`) into the plugin as
+   `hooks/renor-recall/`.
+2. Copy `hooks/hooks.json` from this folder into the plugin. It is off until a user sets `RENOR_AUTO_RECALL=1`.
 
 ## What is not verified
 

@@ -7,6 +7,8 @@
 # this file, and the public suite writes the breaker report into it, so the
 # standalone tree needs the rule itself to stay clean after `npm test`.
 .gate/
+# .npm-pack/ holds the bundled npm tarball scripts/npm/pack.mjs stages.
+.npm-pack/
 # .smoke/ holds local smoke-run state, including client auth files.
 .smoke/
 

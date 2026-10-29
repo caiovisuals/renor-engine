@@ -1,3 +1,4 @@
+import fs from 'node:fs';
 import { closedLedgerEvents, ledgerEventIds, resolveLedgerHits } from './ledgerLiveness';
 import { dropLedgerPreamble, type IsLedgerNote } from './ledgerPresentation';
 import { createLedgerEventClock } from './ledgerEventTime';
@@ -622,7 +623,34 @@ export interface RankedExpansion {
   documentStatementTokens: number;
 }
 
-export function resolveRankedExpansion(env: NodeJS.ProcessEnv = process.env): RankedExpansion | null {
+/** The top-K a read asks for by default: the ranked expansion's budget in this file is the one measured for it. */
+export const PAGE_BASE_TOP_K = 20;
+
+/** What each match asked for beyond PAGE_BASE_TOP_K adds to the ranked expansion's budget when RENOR_TOPK_SCALES_BUDGET is armed. */
+export const RANKED_TOKENS_PER_EXTRA_MATCH = 90;
+
+/**
+ * RENOR_TOPK_SCALES_BUDGET (default off; `1`, `true`, `yes` or `on` arm it): a read that asks for more than PAGE_BASE_TOP_K matches gets a ranked
+ * expansion budget that grows with the ask, SESSION_EXPAND_RANKED_TOKENS plus RANKED_TOKENS_PER_EXTRA_MATCH for each match above 20 (4,000 tokens at
+ * 50), so the statements that go with a window of 50 matches are not squeezed into the 1,300 tokens that were sized for 20. RENOR_SESSION_EXPAND_TOKENS
+ * still decides when it is set. At a top-K of 20 or less nothing changes, armed or not; off, nothing changes at any top-K.
+ *
+ * Measured at one point, 50 (LEDGER section BM, results/top-score-20261026/): the page of `--top-k 50` with the 1,300-token budget completes the
+ * evidence of no more questions than the page of 20; the same page with a 4,000-token budget completes more of them. Other asks are interpolated.
+ */
+export function topKScalesBudget(env: NodeJS.ProcessEnv = process.env): boolean {
+  const v = (env.RENOR_TOPK_SCALES_BUDGET ?? '').trim().toLowerCase();
+  return v === '1' || v === 'true' || v === 'yes' || v === 'on';
+}
+
+/** The ranked expansion's token budget for a read of `topK` matches: SESSION_EXPAND_RANKED_TOKENS, grown with the ask when RENOR_TOPK_SCALES_BUDGET is armed. */
+export function rankedBudgetFor(topK: number | undefined, env: NodeJS.ProcessEnv = process.env): number {
+  return topKScalesBudget(env) && topK !== undefined && Number.isFinite(topK) && topK > PAGE_BASE_TOP_K
+    ? SESSION_EXPAND_RANKED_TOKENS + Math.round(RANKED_TOKENS_PER_EXTRA_MATCH * (topK - PAGE_BASE_TOP_K))
+    : SESSION_EXPAND_RANKED_TOKENS;
+}
+
+export function resolveRankedExpansion(env: NodeJS.ProcessEnv = process.env, topK?: number): RankedExpansion | null {
   if ((env.RENOR_SESSION_EXPAND_RANK ?? '').trim() === '0') return null;
   const legacy = resolveSessionExpand(env);
   if (!legacy) return null;
@@ -630,7 +658,7 @@ export function resolveRankedExpansion(env: NodeJS.ProcessEnv = process.env): Ra
   const rawBudget = (env.RENOR_SESSION_EXPAND_TOKENS ?? '').trim();
   return {
     notes: rawNotes === '' ? Number.POSITIVE_INFINITY : legacy.notes,
-    tokenBudget: rawBudget === '' ? SESSION_EXPAND_RANKED_TOKENS : legacy.tokenBudget,
+    tokenBudget: rawBudget === '' ? rankedBudgetFor(topK, env) : legacy.tokenBudget,
     statementTokens: rankedStatementTokens(env) ?? legacy.statementTokens,
     documentStatementTokens: legacy.documentStatementTokens,
   };
@@ -832,6 +860,137 @@ function getBestChunksForNotes(db: Database.Database, notePaths: string[], limit
   return keep ? chunks.filter(keep).slice(0, limit) : chunks;
 }
 
+/**
+ * RENOR_NOTE_FUSION (default off): H19 arm B, the semantic pool ranked by note. For the notes the pool holds:
+ * base = 0.5 * min-max(max chunk cosine) + 0.5 * min-max(BM25 over the note's file), with BM25 (k1 1.5, b 0.75)
+ * over the same notes and the rig's tokeniser (lower case, ASCII letters and digits, stop words out). The window
+ * ranks each chunk by its note's base in place of the chunk's cosine, and adds its usual boosts to that base as it
+ * does to a cosine. Chunks of one note share that base, so inside a note the boosts order them first and the cosine only
+ * where they tie (FUSION_WITHIN_NOTE); the shipped order weighs the cosine itself, so the two differ within a note.
+ * The formulas are the H19 rig's
+ * (data/renor-goal-better-oracle/h19/h19.ts), unchanged; the candidate notes are the pool's (see retrieveContext).
+ * The helpers live in this file, not in a module of their own: the index path reaches every module this file imports,
+ * and a module it reaches must be classified in src/eval/indexSnapshots.ts (an evaluator source). Off (unset), nothing
+ * here runs and the window is the one it was before this block existed.
+ */
+const FUSION_K1 = 1.5;
+const FUSION_B = 0.75;
+/** The weight of the cosine; BM25 gets the rest (H19 fixed it at one half, not fitted). */
+const FUSION_COSINE_WEIGHT = 0.5;
+/** The tie-break inside one note: its chunks share the note's base, so the cosine orders them only where their boosts tie. Far below any gap between two notes' bases. */
+const FUSION_WITHIN_NOTE = 1e-6;
+const FUSION_STOP = new Set('a an the and or of to in on at for with is are was were be been it this that i you he she we they my your me do did does what when where who how which about from by as'.split(' '));
+
+/** RENOR_NOTE_FUSION: 1, true, yes or on (any case, spaces trimmed) enables it. Unset, blank or anything else: off. */
+export function noteFusionEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  const v = (env.RENOR_NOTE_FUSION ?? '').trim().toLowerCase();
+  return v === '1' || v === 'true' || v === 'yes' || v === 'on';
+}
+
+/** The rig's tokeniser: lower case, runs of ASCII letters and digits, stop words removed. */
+export function noteTokens(text: string): string[] {
+  return (text.toLowerCase().match(/[a-z0-9]+/g) ?? []).filter(w => !FUSION_STOP.has(w));
+}
+
+/** BM25 of the query's distinct tokens against each document; IDF and average length over these documents. */
+export function bm25Scores(query: string, docs: string[]): number[] {
+  const tokens = docs.map(noteTokens);
+  const n = docs.length;
+  const avg = tokens.reduce((sum, d) => sum + d.length, 0) / Math.max(1, n);
+  const df = new Map<string, number>();
+  for (const d of tokens) for (const w of new Set(d)) df.set(w, (df.get(w) ?? 0) + 1);
+  const terms = [...new Set(noteTokens(query))];
+  return tokens.map(d => {
+    const tf = new Map<string, number>();
+    for (const w of d) tf.set(w, (tf.get(w) ?? 0) + 1);
+    let score = 0;
+    for (const w of terms) {
+      const f = tf.get(w) ?? 0;
+      if (!f) continue;
+      const dfw = df.get(w) ?? 0;
+      const idf = Math.log(1 + (n - dfw + 0.5) / (dfw + 0.5));
+      score += idf * (f * (FUSION_K1 + 1)) / (f + FUSION_K1 * (1 - FUSION_B + FUSION_B * d.length / Math.max(1e-9, avg)));
+    }
+    return score;
+  });
+}
+
+/** Min-max over the values, each in [0, 1]; all zero when they do not differ. */
+export function minMax(values: number[]): number[] {
+  const lo = Math.min(...values);
+  const hi = Math.max(...values);
+  return values.map(x => (hi === lo ? 0 : (x - lo) / (hi - lo)));
+}
+
+/** The fused note score: the cosine's min-max and BM25's min-max, weighted one half each. */
+export function fuseNoteScores(maxCosines: number[], bm25: number[]): number[] {
+  const cos = minMax(maxCosines);
+  const lex = minMax(bm25);
+  return cos.map((x, i) => FUSION_COSINE_WEIGHT * x + (1 - FUSION_COSINE_WEIGHT) * lex[i]);
+}
+
+/**
+ * The window's base score per chunk of a semantic pool, keyed by chunk id. A note's text is its file as it stands;
+ * the pool's own chunks stand in when the file cannot be read, and for the ledger, whose file holds every scope's
+ * events, so a scoped read is never scored on another scope's words.
+ */
+export function noteFusionBase(
+  hits: ReadonlyArray<{ chunkId: number; notePath: string; text: string; score: number }>,
+  query: string,
+  isLedgerNote?: (notePath: string) => boolean,
+): Map<number, number> {
+  const notes = new Map<string, { cosine: number; chunks: string[] }>();
+  for (const h of hits) {
+    const note = notes.get(h.notePath);
+    if (note) {
+      note.cosine = Math.max(note.cosine, h.score);
+      note.chunks.push(h.text);
+    } else {
+      notes.set(h.notePath, { cosine: h.score, chunks: [h.text] });
+    }
+  }
+  const paths = [...notes.keys()];
+  const docs = paths.map(p => fusionNoteText(p, notes.get(p)!.chunks, isLedgerNote?.(p) === true));
+  const fused = fuseNoteScores(paths.map(p => notes.get(p)!.cosine), bm25Scores(query, docs));
+  const at = new Map(paths.map((p, i) => [p, i] as const));
+  return new Map(hits.map(h => [h.chunkId, fused[at.get(h.notePath)!] + FUSION_WITHIN_NOTE * h.score] as const));
+}
+
+/** The most bytes of a note's file the fused score reads. A larger note is scored on the pool's chunks, as a missing file is. */
+const FUSION_MAX_NOTE_BYTES = 32 * 1024;
+
+/**
+ * A note's whole text, read only from a regular file of at most FUSION_MAX_NOTE_BYTES. A symlink, FIFO, device or directory
+ * is refused before it is opened (lstat). The open is non-blocking, so a path swapped for a FIFO between the two calls cannot
+ * block the event loop, and the opened descriptor is checked again (fstat) before any byte is read. Null when the text cannot
+ * be read this way.
+ */
+function readNoteFileCapped(notePath: string): string | null {
+  let fd: number | null = null;
+  try {
+    if (!fs.lstatSync(notePath).isFile()) return null;
+    fd = fs.openSync(notePath, fs.constants.O_RDONLY | fs.constants.O_NONBLOCK);
+    const st = fs.fstatSync(fd);
+    if (!st.isFile() || st.size > FUSION_MAX_NOTE_BYTES) return null;
+    const bytes = Buffer.alloc(st.size);
+    const n = fs.readSync(fd, bytes, 0, st.size, 0);
+    return bytes.subarray(0, n).toString('utf8');
+  } catch {
+    return null;
+  } finally {
+    if (fd !== null) fs.closeSync(fd);
+  }
+}
+
+function fusionNoteText(notePath: string, poolChunks: string[], ledger: boolean): string {
+  if (!ledger) {
+    const text = readNoteFileCapped(notePath);
+    if (text !== null) return text;
+  }
+  // Not a regular file on disk, larger than the cap, or the ledger: the pool's chunks stand in.
+  return poolChunks.join('\n');
+}
+
 interface RetrieveOptions {
   includeHistory?: boolean; probe?: RetrievalProbe; isLedgerNote?: IsLedgerNote;
   /**
@@ -875,13 +1034,15 @@ export async function retrieveContext(
           candidateLimit,
         );
       })();
+  // RENOR_NOTE_FUSION (default off): the pool's chunks ranked by their note's fused score (noteFusionBase). Absent when off.
+  const noteBase = vectorIndex && provider && noteFusionEnabled() ? noteFusionBase(semanticHits, query, opts.isLedgerNote) : undefined;
   // RENOR_ENTITY_LANE (default off): the chunks that carry the rare words the query names join the pool at their own cosine.
   const laneTerms = entityLaneEnabled() && vectorIndex && queryProbe.queryVector
     ? inReadSnapshot(db, () => entityLanePool(db, vectorIndex, queryProbe.queryVector!, query, topK, semanticHits, opts))
     : [];
   // The window is ranked without waiting for anything, so it is read in one transaction (inReadSnapshot).
-  const window = inReadSnapshot(db, () => rankWindow({ db, query, topK, priorityPaths, clock, opts, factHits, semanticHits, laneTerms, nearDupCap }));
-  return finishContext({ db, vectorIndex, provider, query, queryProbe, window, bestFirst: opts.bestFirst === true });
+  const window = inReadSnapshot(db, () => rankWindow({ db, query, topK, priorityPaths, clock, opts, factHits, semanticHits, laneTerms, nearDupCap, noteBase }));
+  return finishContext({ db, vectorIndex, provider, query, queryProbe, window, topK, bestFirst: opts.bestFirst === true });
 }
 
 type PoolHit = Omit<Awaited<ReturnType<typeof semanticSearch>>[number], 'startLine' | 'endLine'>;
@@ -944,8 +1105,10 @@ function rankWindow(read: {
   laneTerms: string[];
   /** RENOR_NEAR_DUP_CAP: at most this many near-copies in the window; 0 is off. */
   nearDupCap: number;
+  /** RENOR_NOTE_FUSION: each pool chunk's base score in place of its cosine, which stays the probe's (noteFusionBase). */
+  noteBase?: Map<number, number>;
 }) {
-  const { db, query, topK, priorityPaths, clock, opts, factHits, semanticHits, laneTerms, nearDupCap } = read;
+  const { db, query, topK, priorityPaths, clock, opts, factHits, semanticHits, laneTerms, nearDupCap, noteBase } = read;
   // Set only while the learning log collects the ranker's terms (rankingTrace.ts); otherwise every use below is skipped.
   const trace = currentRankingTrace();
   // Raw cosines, kept only for a caller that asked to see them (get_context's relevance signal).
@@ -971,7 +1134,7 @@ function rankWindow(read: {
   const ownFactRows = new Map<number, FactRow[]>();
 
   const scored = semanticHits.map(h => {
-    let score = h.score; let reason = 'semantic';
+    let score = noteBase?.get(h.chunkId) ?? h.score; let reason = 'semantic';
     const terms = trace ? newRankingTerms() : null;
     if (isSpeakerStub(h.text)) {
       score -= 0.5;
@@ -1250,9 +1413,11 @@ function rankWindow(read: {
 async function finishContext(read: {
   db: Database.Database; vectorIndex: VectorIndex | undefined; provider: ProviderLike | undefined; query: string; queryProbe: RetrievalProbe;
   window: ReturnType<typeof rankWindow>;
+  /** The matches the read asked for: the ranked expansion's budget may grow with it (RENOR_TOPK_SCALES_PAGE). */
+  topK: number;
   bestFirst: boolean;
 }): Promise<RetrievalResult> {
-  const { db, vectorIndex, provider, query, queryProbe, window, bestFirst } = read;
+  const { db, vectorIndex, provider, query, queryProbe, window, topK, bestFirst } = read;
   const { noteRow, temporal, pastIntent, asofPast } = window;
   let { hits } = window;
   // A hit that is a ledger event is dated by the event, and one that is an entry of a daily note by the entry: each
@@ -1275,7 +1440,7 @@ async function finishContext(read: {
   // Ranking by cosine is armed only for an embedding model the product has calibrated (CALIBRATED_BARS): the order
   // of cosines was measured for that model. Any other provider (the lexical eval stub, an unmeasured model) keeps the
   // former expansion, unless the operator declares that its endpoint serves a calibrated model (calibratedModelKey).
-  const rankedExpansion = calibratedModelKey(provider?.identity, provider?.dimensions) !== null ? resolveRankedExpansion() : null;
+  const rankedExpansion = calibratedModelKey(provider?.identity, provider?.dimensions) !== null ? resolveRankedExpansion(process.env, topK) : null;
   if (expansion) hits = [...hits, ...inReadSnapshot(db, () => sessionExpansionHits(db, hits, expansion, rankedExpansion && queryProbe.queryVector && vectorIndex ? { vectorIndex, queryVector: queryProbe.queryVector, ranked: rankedExpansion } : undefined))];
   // Default-on (S0 78.4%): lay the already-selected window out newest-session-first.
   // Does not replace scoring or change which chunks enter top-K. Opt out: RENOR_NEWEST_FIRST=0.

@@ -346,6 +346,92 @@ describe('indexBehindLedger', () => {
     expect(indexBehindLedger(db, ledgerPath, 'global')).toBe(true);
     expect(indexBehindLedger(db, ledgerPath, 'scope:alpha')).toBe(false); // its newest event is indexed
   });
+
+  /** Runs `fn` with RENOR_NARROW_LEDGER_CHECK set to `value`, or unset for undefined, then puts it back. */
+  const withNarrowCheck = <T>(value: string | undefined, fn: () => T): T => {
+    const saved = process.env.RENOR_NARROW_LEDGER_CHECK;
+    if (value === undefined) delete process.env.RENOR_NARROW_LEDGER_CHECK;
+    else process.env.RENOR_NARROW_LEDGER_CHECK = value;
+    try {
+      return fn();
+    } finally {
+      if (saved === undefined) delete process.env.RENOR_NARROW_LEDGER_CHECK;
+      else process.env.RENOR_NARROW_LEDGER_CHECK = saved;
+    }
+  };
+
+  it('answers the same in both forms of the check, in every state it can be in', async () => {
+    const { db, dir, put } = store();
+    const ledgerPath = resolveLedgerPath(dir, DEFAULT_LEDGER_REL);
+    const both = (scope?: Parameters<typeof indexBehindLedger>[2]): boolean => {
+      const joined = withNarrowCheck('0', () => indexBehindLedger(db, ledgerPath, scope));
+      const narrow = withNarrowCheck(undefined, () => indexBehindLedger(db, ledgerPath, scope));
+      expect(narrow, `${scope ?? 'no scope'}, narrow form`).toBe(joined);
+      return joined;
+    };
+
+    expect(both()).toBe(false); // nothing saved
+    const first = await put('a', 'p', '1');
+    expect(both()).toBe(true); // saved, never indexed
+    indexEvent(db, dir, first.eventId);
+    expect(both()).toBe(false);
+
+    const second = await put('a', 'p', '2');
+    indexEvent(db, dir, second.eventId, false, path.join(dir, 'Notes', 'quoting-the-ledger.md')); // indexed, but in another note
+    expect(both()).toBe(true);
+    indexEvent(db, dir, second.eventId, true); // ids are compared without case
+    expect(both()).toBe(false);
+
+    const alpha = await put('a', 'p', 'alpha value', 'scope:alpha');
+    expect(both('scope:alpha')).toBe(true);
+    expect(both('project:other')).toBe(false); // it has no event of its own
+    indexEvent(db, dir, alpha.eventId);
+    expect(both('scope:alpha')).toBe(false);
+  });
+
+  it('evaluates the full-text match once by default, and once per chunk when RENOR_NARROW_LEDGER_CHECK is 0', async () => {
+    const { db, dir, put } = store();
+    const ledgerPath = resolveLedgerPath(dir, DEFAULT_LEDGER_REL);
+    for (let i = 0; i < 300; i++) indexEvent(db, dir, `MEM_OLD${i}`);
+    const newest = await put('a', 'p', '1');
+    indexEvent(db, dir, newest.eventId);
+
+    const isNarrow = (sql: string) => sql.includes('id IN (SELECT rowid FROM chunks_fts WHERE chunks_fts MATCH ?)');
+    const joined = withNarrowCheck('0', () => traceStatements(db, () => indexBehindLedger(db, ledgerPath)));
+    const narrow = withNarrowCheck(undefined, () => traceStatements(db, () => indexBehindLedger(db, ledgerPath)));
+    expect(joined.result).toBe(false);
+    expect(narrow.result).toBe(false);
+    expect(joined.plans.some(({ sql }) => isNarrow(sql))).toBe(false);
+    expect(narrow.plans.some(({ sql }) => isNarrow(sql))).toBe(true);
+    for (const { sql, plan } of narrow.plans) {
+      expect(plan.join('\n'), sql).not.toContain('TEMP B-TREE');
+      expect(fullScans(plan).filter(line => !line.startsWith('SCAN chunks_fts VIRTUAL TABLE INDEX')), sql).toEqual([]);
+    }
+  });
+
+  it('reads RENOR_NARROW_LEDGER_CHECK as off only for 0, false, no and off, in any case and with spaces around them', async () => {
+    const { db, dir, put } = store();
+    const ledgerPath = resolveLedgerPath(dir, DEFAULT_LEDGER_REL);
+    for (let i = 0; i < 300; i++) indexEvent(db, dir, `MEM_OLD${i}`);
+    const newest = await put('a', 'p', '1');
+    indexEvent(db, dir, newest.eventId);
+
+    const isNarrow = (sql: string) => sql.includes('id IN (SELECT rowid FROM chunks_fts WHERE chunks_fts MATCH ?)');
+    const traced = (value: string | undefined) => withNarrowCheck(value, () => traceStatements(db, () => indexBehindLedger(db, ledgerPath)));
+
+    // Unset, empty and every other value: the narrow form.
+    for (const value of [undefined, '', '1', 'on', 'true', 'yes', 'ON', ' yes ', 'maybe']) {
+      const run = traced(value);
+      expect(run.result, `${value ?? 'unset'}`).toBe(false);
+      expect(run.plans.some(({ sql }) => isNarrow(sql)), `${value ?? 'unset'}`).toBe(true);
+    }
+    // 0, false, no and off in any case: the join.
+    for (const value of ['0', 'false', 'no', 'off', 'OFF', ' No ']) {
+      const run = traced(value);
+      expect(run.result, value).toBe(false);
+      expect(run.plans.some(({ sql }) => isNarrow(sql)), value).toBe(false);
+    }
+  });
 });
 
 describe('indexNotice', () => {

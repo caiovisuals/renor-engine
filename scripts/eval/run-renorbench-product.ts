@@ -9,6 +9,8 @@ import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { loadMvpConfig } from '../../src/mvp/config';
 import { createMvpApp, type MvpApp } from '../../src/mvp/server';
 import { replyTokens } from '../../src/mvp/agentMemory';
+import { encodeTokens } from '../../src/indexer/tokenizer';
+import { TOON_HEADER } from '../../src/mvp/toonResponse';
 import { SESSION_EXPAND_REASON } from '../../src/retrieval/orchestrator';
 import { EvalHashEmbeddingProvider } from '../../src/eval/hashEmbedding';
 import { VertexEmbeddingProvider } from '../../src/embeddings/vertex';
@@ -110,7 +112,7 @@ interface Workspace {
 }
 
 /** The real MCP server of the product, served to an MCP client over an in-memory transport. */
-async function openWorkspace(provider: EmbeddingProvider): Promise<Workspace> {
+async function openWorkspace(provider: EmbeddingProvider, capture?: (reply: unknown) => void): Promise<Workspace> {
   const app = createMvpApp(loadMvpConfig(), provider);
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
   const client = new Client({ name: 'renorbench-product', version: '0.1.0' });
@@ -121,6 +123,7 @@ async function openWorkspace(provider: EmbeddingProvider): Promise<Workspace> {
     client,
     async call(name, args = {}) {
       const res = await client.callTool({ name, arguments: args });
+      capture?.({ tool: name, arguments: args, result: res });
       const content = res.content as Array<{ type: string; text?: string }>;
       return { text: content[0]?.text ?? '', isError: res.isError === true };
     },
@@ -144,6 +147,7 @@ async function main(): Promise<void> {
     .option('--env <name=value>', 'arm a RENOR_ product flag for an ablation (repeatable); recorded, and the run is then not the defaults', collect, [] as string[])
     .option('--output <path>', 'artifact directory; default .eval-runs/<timestamp>')
     .option('--keep-workdir', 'preserve the isolated temporary vault/database')
+    .option('--capture-replies', 'write raw MCP results to replies.jsonl for offline format comparisons')
     .option('--allow-dirty', 'allow a dirty working tree; the run is recorded as non-promotable')
     .parse(process.argv);
 
@@ -157,6 +161,7 @@ async function main(): Promise<void> {
     env: string[];
     output?: string;
     keepWorkdir?: boolean;
+    captureReplies?: boolean;
     allowDirty?: boolean;
   }>();
 
@@ -246,10 +251,12 @@ async function main(): Promise<void> {
   console.info = () => {};
 
   const startedAt = new Date().toISOString();
+  const replies: unknown[] = [];
+  const captureReply = opts.captureReplies ? (reply: unknown) => replies.push(reply) : undefined;
   let workspace: Workspace | undefined;
   let completed = false;
   try {
-    workspace = await openWorkspace(provider);
+    workspace = await openWorkspace(provider, captureReply);
     const indexStarted = performance.now();
     let indexed = JSON.parse((await workspace.call('index_memory')).text) as { total: number; indexed: number; errors: number };
     let indexDurationMs = performance.now() - indexStarted;
@@ -272,7 +279,7 @@ async function main(): Promise<void> {
       workspace = undefined;
       for (const suffix of ['', '-wal', '-shm']) await fsp.rm(path.join(workDir, 'index.db') + suffix, { force: true });
       const rebuildStarted = performance.now();
-      workspace = await openWorkspace(provider);
+      workspace = await openWorkspace(provider, captureReply);
       indexed = JSON.parse((await workspace.call('index_memory')).text) as typeof indexed;
       if (indexed.errors > 0) throw new Error(`Indexing completed with ${indexed.errors} error(s)`);
       erasure = { deleted: deletedPaths, rebuildIndexMs: performance.now() - rebuildStarted };
@@ -291,7 +298,9 @@ async function main(): Promise<void> {
       const reply = await workspace.call('search_memory', { query: test.query, ...(topK === undefined ? {} : { top_k: topK }) });
       const latencyMs = performance.now() - started;
       if (reply.isError) throw new Error(`search_memory failed on ${test.id}: ${reply.text.slice(0, 240)}`);
-      const body = JSON.parse(reply.text) as {
+      const body = (reply.text.startsWith(TOON_HEADER)
+        ? (await import('@toon-format/toon')).decode(reply.text.slice(TOON_HEADER.length))
+        : JSON.parse(reply.text)) as {
         ok: boolean;
         hits: Array<{ notePath: string; headingPath?: string; text: string; score?: number; reason?: string; session_date?: string }>;
         relevance?: { relevant: boolean; similarity: number | null; bar: number; reason?: string };
@@ -313,7 +322,7 @@ async function main(): Promise<void> {
         ? { relevant: body.relevance.relevant, similarity: body.relevance.similarity, bar: body.relevance.bar, ...(body.relevance.reason === undefined ? {} : { reason: body.relevance.reason }) }
         : null;
       if (verdict) bars.add(verdict.bar);
-      const searched: ProductResult = { id: test.id, hits, verdict, replyTokens: replyTokens(reply.text), latencyMs };
+      const searched: ProductResult = { id: test.id, hits, verdict, replyTokens: encodeTokens(reply.text), latencyMs };
       if (!documents) {
         results.push(searched);
         continue;
@@ -401,6 +410,7 @@ async function main(): Promise<void> {
       casesPath: path.relative(repoRoot, casesPath).replaceAll(path.sep, '/'),
       casesSha256: casesHash,
       resultsSha256: sha256Buffer(jsonl(results)),
+      ...(opts.captureReplies ? { repliesSha256: sha256Buffer(jsonl(replies)) } : {}),
       caseSnapshotSha256: sha256Buffer(jsonl(cases)),
       fixturePath: path.relative(repoRoot, fixtureDir).replaceAll(path.sep, '/'),
       fixtureSha256: fixtureHash,
@@ -413,6 +423,7 @@ async function main(): Promise<void> {
     };
 
     await Promise.all([
+      ...(opts.captureReplies ? [fsp.writeFile(path.join(outputDir, 'replies.jsonl'), jsonl(replies), 'utf8')] : []),
       fsp.writeFile(path.join(outputDir, 'cases.jsonl'), jsonl(cases), 'utf8'),
       fsp.writeFile(path.join(outputDir, 'results.jsonl'), jsonl(results), 'utf8'),
       fsp.writeFile(path.join(outputDir, 'summary.json'), JSON.stringify(summaryWithProductPath, null, 2) + '\n', 'utf8'),

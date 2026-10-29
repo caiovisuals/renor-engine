@@ -1,9 +1,12 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import net from 'node:net';
+// Imported while the file loads, not inside the test that compares them: see 'the tokenizer is loaded on first use'.
+import { encode } from 'gpt-tokenizer';
+import { encodeTokens } from '../../src/indexer/tokenizer.js';
 
 /**
  * The per-workspace Node compile cache.
@@ -491,9 +494,13 @@ describe('a start refused for an overlapping cache directory', () => {
 });
 
 describe('the tokenizer is loaded on first use', () => {
-  afterEach(() => {
-    vi.resetModules();
-  });
+  // Both vocabularies are built while the file is collected, where vitest applies no per-test timeout: gpt-tokenizer's by the
+  // import at the top of the file, the counter's by this first count. Importing gpt-tokenizer parses its 8 MB o200k_base ranks
+  // module and builds a 200,000-entry Map, and the counter builds its tables on its first count; on a loaded 4-vCPU box that
+  // took from under a second to over 14 s, and inside the comparison test it ran under the default 5 s timeout, which bounds
+  // no product behaviour. That the counter builds on the first count and not at
+  // import is asserted by the next test, in a fresh child; the comparison test asserts the counts.
+  encodeTokens('warm');
 
   it('does not build the token vocabulary at import time, builds it on the first count, and never loads gpt-tokenizer', async () => {
     // The measurement this protects: the o200k_base table cost ~205 ms of a cold start (and ~45 MiB of resident memory for
@@ -535,10 +542,7 @@ describe('the tokenizer is loaded on first use', () => {
     expect(out.count).toBeGreaterThan(0);
   });
 
-  it('counts tokens identically to gpt-tokenizer called directly', async () => {
-    const { encodeTokens } = await import('../../src/indexer/tokenizer.js');
-    const { encode } = await import('gpt-tokenizer');
-
+  it('counts tokens identically to gpt-tokenizer called directly', () => {
     for (const sample of [
       'hello world',
       'A note with <|im_start|> special-token syntax inside it, which must count as plain text.',

@@ -1,0 +1,40 @@
+# Fly.io: Renor's HTTP server, built from ./Dockerfile, with the memory on a volume.
+#   fly launch --copy-config --no-deploy        # pick an app name; it is written into this file
+#   fly secrets set MVP_OWNER_EMAIL=you@example.com MVP_OWNER_PASSWORD="$(openssl rand -base64 18)"
+#   fly deploy --ha=false                       # one machine: the volume belongs to it
+# The entrypoint derives the public URL (https://<app>.fly.dev) from FLY_APP_NAME. Every setting: docs/self-hosting.md.
+primary_region = "iad"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  # Redirects an agent may register, comma-separated and exact. This one is Claude Code's with --callback-port 39472.
+  MVP_ALLOWED_CALLBACK_URIS = "http://localhost:39472/callback"
+  # none: no embedding model and no key; search matches words.
+  MVP_EMBEDDING_PROVIDER = "none"
+  PORT = "8080"
+  # The platform proxy reaches the server over the machine's network, so listen beyond loopback (the server then
+  # requires an https base URL, which the entrypoint derives from the app name), and count Fly's proxy as the one hop
+  # so each client gets its own rate-limit bucket.
+  MVP_HOST = "0.0.0.0"
+  # Keep it at 1: a higher number than the real proxy count lets a client choose its own address. The server refuses a
+  # trusted hop on a public bind unless the acknowledgement below confirms Fly's proxy is the only way in.
+  MVP_TRUST_PROXY_HOPS = "1"
+  MVP_TRUST_PROXY_HOPS_ACK_SPOOFING = "1"
+
+[mounts]
+  source = "renor_data"
+  destination = "/data"
+  initial_size = "1gb"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = "stop"
+  auto_start_machines = true
+  min_machines_running = 0
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"

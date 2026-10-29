@@ -24,6 +24,11 @@ export interface LearningObserver {
    * ranker's trace of this call, when the call was a read that collected one.
    */
   observe(tool: string, args: unknown, result: unknown, ok: boolean, ms: number, extra?: unknown, trace?: RankingTrace): void;
+  /**
+   * Whether a call made now would be recorded: the log is on, or the sharing choice is above off. The server collects the
+   * ranker's trace only when this is true, since nothing would be written with it. Read at each call, as `observe` reads it.
+   */
+  recordsNext(): boolean;
 }
 
 export interface ObserverContext {
@@ -414,6 +419,7 @@ export function learningObserver(settings: LearningSettings | undefined, ctx: Ob
   const sharing = ctx.sharing;
   let held: LearningLog | null = settings.enabled ? learningLogAt(settings) : null;
   return {
+    recordsNext: () => settings.enabled || (sharing !== undefined && sharing.level() !== 'off'),
     observe: (tool, args, result, ok, ms, extra, trace) => {
       // The sharing choice is read at each call: off records nothing and makes no file, anything above it records.
       if (!settings.enabled && (sharing === undefined || sharing.level() === 'off')) return;

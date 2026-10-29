@@ -5,7 +5,7 @@
 //
 //   node scripts/verify-npx.mjs                   the published package: npx -y renor-engine mcp
 //   node scripts/verify-npx.mjs renor-engine@1.0.1   a version or dist-tag
-//   node scripts/verify-npx.mjs ./renor-engine-1.0.0.tgz   a tarball from `npm pack`, before it is published
+//   node scripts/verify-npx.mjs .npm-pack/renor-engine-1.0.0.tgz   a tarball from `npm run pack:npm`, before it is published
 //
 // The install is the slow part and the only step that needs the network. Exit 0 and the line PASS mean it worked.
 import { spawn } from 'node:child_process';

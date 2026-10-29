@@ -1,0 +1,13 @@
+# Railway: Renor's HTTP server, built from ./Dockerfile. Railway cannot declare a volume in this file: attach one at
+# /data (service > Settings > Volumes) or the memory is lost on every deploy. Variables to set on the service:
+# MVP_OWNER_EMAIL, MVP_OWNER_PASSWORD (random, e.g. `openssl rand -base64 18`),
+# MVP_ALLOWED_CALLBACK_URIS=http://localhost:39472/callback, MVP_HOST=0.0.0.0 (Railway's proxy reaches the server over
+# the network; the server then requires an https base URL, which it takes from the generated domain) and
+# MVP_TRUST_PROXY_HOPS=1 with MVP_TRUST_PROXY_HOPS_ACK_SPOOFING=1 (the server refuses a trusted hop on a public bind without it; so each client gets its own login and OAuth rate-limit bucket; keep it at 1: more than the real proxy count lets a client choose its own address). Generate a public domain (Settings > Networking): the
+# entrypoint reads it from RAILWAY_PUBLIC_DOMAIN. Every setting: docs/self-hosting.md.
+[build]
+builder = "DOCKERFILE"
+dockerfilePath = "Dockerfile"
+
+[deploy]
+restartPolicyType = "ON_FAILURE"

@@ -106,6 +106,38 @@ codex mcp add renor-local-http --url "$MVP_BASE_URL/mcp"
 
 If the browser does not open, run `codex mcp login renor-local-http` in your own terminal, then restart Codex. Sign in as the owner email and password.
 
+## Docker and one-click hosts
+
+The image (`Dockerfile`) runs the HTTP server above as an unprivileged user, keeps everything on one volume at `/data`, and needs only the owner's email and password. It starts with no model, no key and no telemetry. The entrypoint (`docker/entrypoint.sh`) fills in what you leave unset; anything you set wins:
+
+- `RENOR_DATA_DIR=/data`, the one folder to keep on a volume; `MVP_MEMORY_DIR` is `$RENOR_DATA_DIR/memory`, `MVP_AUTH_STATE_PATH` is `$RENOR_DATA_DIR/auth/clients.json` (its folder made `0700`), and the stdio server's `VAULT_PATH` is `$RENOR_DATA_DIR/vault`.
+- `MVP_PORT` is `$PORT` (Render and Railway set it; `fly.toml` sets `8080`), else `3471`. `MVP_HOST` is `127.0.0.1`; set it to `0.0.0.0` only where a proxy must reach the server over the network (the three platform files below do). A bind beyond loopback is refused at start unless `MVP_BASE_URL` is `https://` (a `localhost` URL is accepted, for a port published on your own machine). `MVP_TRUST_PROXY_HOPS` is `0`; set it to the number of proxies in front (`1` on the platform files) so each client has its own login and OAuth rate-limit bucket. Too high a number lets a client choose its own address and evade the login limit, so any value above `0` on a public bind, and any value above `1`, is refused unless `MVP_TRUST_PROXY_HOPS_ACK_SPOOFING=1` confirms it (the three platform files set it).
+- Failed owner logins are counted per client (an IPv4 address or an IPv6 /64) and in total. One client is locked out after `ceil(MVP_LOGIN_MAX_FAILURES / 2)` failures, without affecting others; the total across all clients is held to `MVP_LOGIN_MAX_FAILURES` per window, so rotating addresses never raises the guess rate. If several clients reach the total, login is locked for everyone, you included: wait it out, or unlock at once with `docker kill -s USR2 <container>` (a signal to the server process; nothing remote can send it). That ends the lockouts but keeps the failure counts, so the next failure locks again and the total never exceeds the limit.
+- `MVP_BASE_URL` is `$RENDER_EXTERNAL_URL`, else `https://$RAILWAY_PUBLIC_DOMAIN`, else `https://$FLY_APP_NAME.fly.dev`, else `http://localhost:$MVP_PORT`. Set it yourself behind your own domain.
+- `MVP_EMBEDDING_PROVIDER` and `EMBEDDING_PROVIDER` are `none`. The image has no local model, so `local` does not work in it; `openai` and `vertex` do, with their keys. `RENOR_TELEMETRY_DISABLED=true`.
+
+```bash
+docker build -t renor-engine .        # or use ghcr.io/renorai/renor-engine once it is published
+docker run -d --name renor -p 127.0.0.1:3471:3471 -v renor-data:/data \
+  -e MVP_HOST=0.0.0.0 \
+  -e MVP_OWNER_EMAIL=you@example.com \
+  -e MVP_OWNER_PASSWORD="$(openssl rand -base64 18)" \
+  -e MVP_ALLOWED_CALLBACK_URIS=http://localhost:39472/callback \
+  renor-engine
+docker exec renor printenv MVP_OWNER_PASSWORD     # the password you sign in with
+claude mcp add --transport http --scope user --callback-port 39472 renor http://localhost:3471/mcp
+```
+
+`MVP_HOST=0.0.0.0` is the address inside the container, and `-p 127.0.0.1:` keeps it off your network. Without `MVP_HOST` the server listens on the container's own loopback and the published port reaches nothing. On a public address the server speaks plain HTTP and refuses to start unless `MVP_BASE_URL` is an `https://` URL, so put a TLS proxy in front. The same image runs the command-line server over stdio, on the same volume: `docker run -i --rm -v renor-data:/data renor-engine mcp`.
+
+**Render.** [Deploy](https://render.com/deploy?repo=https://github.com/patrickpassosb/renor-engine) reads `render.yaml`: it asks for your email, generates the password (the service's Environment tab shows it) and attaches a 1 GB disk at `/data`. A disk needs a paid instance type. The MCP URL is `https://<service>.onrender.com/mcp`.
+
+**Railway.** Create a service from this repository; `railway.toml` builds the `Dockerfile`. Then, in the service: attach a volume at `/data`, set `MVP_OWNER_EMAIL`, `MVP_OWNER_PASSWORD` and `MVP_ALLOWED_CALLBACK_URIS`, and generate a domain. Without the volume, each deploy starts from an empty memory.
+
+**Fly.io.** The steps are at the top of `fly.toml`: `fly launch --copy-config --no-deploy`, `fly secrets set` for the email and password, then `fly deploy --ha=false` (one machine, since the volume belongs to it). The MCP URL is `https://<app>.fly.dev/mcp`.
+
+Then connect an agent to `<url>/mcp` as in [Connect Claude Code over HTTP](#connect-claude-code-over-http) and sign in as the owner. The hosts' own health checks are not configured: they call from outside the container under a host name the server does not answer to; the image's `HEALTHCHECK` covers `docker run`.
+
 ## Two different tool lists
 
 The command-line server publishes eight tools: `search`, `evidence`, `keyword`, `entity`, `remember_fact`, `facts`, `status` and `note`. Naming its connection adds the five hive tools (below). The HTTP server publishes a different set of twenty-four tools, including `remember`, `get_context` and the five hive tools `whats_new`, `ask_agent`, `list_requests`, `answer_request` and `close_request`. [skill/SKILL.md](../skill/SKILL.md) describes the HTTP tools for an agent.

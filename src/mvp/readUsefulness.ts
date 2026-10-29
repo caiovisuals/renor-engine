@@ -226,7 +226,7 @@ export function searchItems(
     const rows = listStatement(
       db, ids.length, marks => `SELECT lower(f.event_id) AS event, e.canonical_name AS subject, f.predicate AS predicate
        FROM facts f JOIN entities e ON e.id = f.subject_entity_id
-       WHERE lower(f.event_id) IN (${marks})`,
+       WHERE f.event_id COLLATE NOCASE IN (${marks})`,
     ).all(...paddedList(ids)) as Array<{ event: string; subject: string; predicate: string }>;
     for (const row of rows) named.set(row.event, row);
   }

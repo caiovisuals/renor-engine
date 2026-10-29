@@ -10,6 +10,7 @@ import { loadMvpConfig, type MvpConfig } from '../../src/mvp/config';
 import { createMvpApp } from '../../src/mvp/server';
 import { createEmbeddingProvider, queryEmbeddingCachePath, QUERY_CACHE_MAX_ENTRIES } from '../../src/mvp/engine';
 import { CachingEmbeddingProvider } from '../../src/embeddings/caching';
+import { CallPhases } from '../../src/callPhases';
 
 /**
  * The hosted read path embeds a query once. Driven through the real Vertex provider with `fetch` replaced by a
@@ -125,6 +126,19 @@ describe('createEmbeddingProvider: the Vertex query cache', () => {
     expect(second).toEqual(first);
     expect(first).toHaveLength(768);
     expect(fake.urls.every(u => u === 'https://oauth.fake.test/token' || /^https:\/\/[a-z0-9-]+-aiplatform\.googleapis\.com\//.test(u))).toBe(true);
+  });
+
+  it('notes on each call whether its query vector came from the cache, for the Server-Timing query_cache entry', async () => {
+    fakeVertex();
+    const { config } = workspace();
+    const provider = createEmbeddingProvider(config)!;
+    cleanups.push(() => (provider as CachingEmbeddingProvider).close());
+    const asked = new CallPhases();
+    await asked.run(() => provider.embedQuery!('a query the cache has not seen'));
+    expect(asked.queryCacheStatus()).toBe('miss');
+    const repeated = new CallPhases();
+    await repeated.run(() => provider.embedQuery!('a query the cache has not seen'));
+    expect(repeated.queryCacheStatus()).toBe('hit');
   });
 
   it('keeps the cache in the workspace\'s own private state directory, one file per workspace', async () => {

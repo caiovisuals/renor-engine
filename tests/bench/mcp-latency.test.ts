@@ -152,8 +152,16 @@ describe('mcp latency bench', () => {
     expect(all.calls).toEqual(/:scoped$/);
 
     expect(benchOptionsFromArgs([]).options).toMatchObject({ sizes: [100, 1000, 10000], runs: 7, embeddings: 'hash', dims: 768, evidence: 'default', queries: 'default', perCall: false });
+    expect(benchOptionsFromArgs([]).options.narrowLedgerCheck).toBe(false);
+    expect(benchOptionsFromArgs(['--narrow-ledger-check']).options).toMatchObject({ narrowLedgerCheck: true });
+    expect(benchOptionsFromArgs([]).options.learningLog).toBe(false);
+    expect(benchOptionsFromArgs(['--learning-log']).options).toMatchObject({ learningLog: true });
+    expect(benchOptionsFromArgs(['--mirror-cap-mib', '400']).options).toMatchObject({ mirrorCapMib: 400 });
+    expect(() => benchOptionsFromArgs(['--mirror-cap-mib', '0'])).toThrow(/--mirror-cap-mib must be a whole number of MiB, 1 or more/);
+    expect(() => benchOptionsFromArgs(['--mirror-cap-mib', '1.5'])).toThrow(/--mirror-cap-mib must be a whole number of MiB, 1 or more/);
     expect(benchOptionsFromArgs(['--shape', 'live']).options).toMatchObject({ sizes: [LIVE_SHAPE.notes], padSections: 10, facts: 671, factSubjects: 220 });
-    expect(() => benchOptionsFromArgs(['--embeddings', 'local'])).toThrow(/--embeddings must be hash, vertex, cache-only or none/);
+    expect(benchOptionsFromArgs(['--embeddings', 'dense']).options).toMatchObject({ embeddings: 'dense' });
+    expect(() => benchOptionsFromArgs(['--embeddings', 'local'])).toThrow(/--embeddings must be hash, dense, vertex, cache-only or none/);
     expect(() => benchOptionsFromArgs(['--profile', '--cpu-profile', 'x.cpuprofile'])).toThrow(/run them separately/);
   });
 

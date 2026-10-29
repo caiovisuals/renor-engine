@@ -18,6 +18,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { formatReceipt, receiptOn, type Recalled } from './receipt';
 
 export const DEFAULT_URL = 'https://mcp.renor.cloud/mcp';
 export const DEFAULT_MAX_TOKENS = 400;
@@ -74,6 +75,8 @@ export interface RecallResult {
   args?: GetContextArgs;
   /** The memory lines injected, in reply order (facts first). */
   items: string[];
+  /** The kind and date of each injected line, for the receipt (receipt.ts): no text. */
+  recalled: Recalled[];
   elapsedMs: number;
 }
 
@@ -214,29 +217,32 @@ function capped(line: string): string {
  * The memory lines of a get_context reply (facts first, then matched memories, each made inert and cut to
  * MAX_ITEM_CHARS), or why there are none: the reply is malformed, not ok, judged unrelated, or under the floor.
  */
-export function replyLines(replyText: string, config: Pick<RecallConfig, 'minSimilarity'>): { lines: string[]; reason: string } {
+export function replyLines(replyText: string, config: Pick<RecallConfig, 'minSimilarity'>): { lines: string[]; kinds: Recalled[]; reason: string } {
   let body: Reply;
-  try { body = JSON.parse(replyText) as Reply; } catch { return { lines: [], reason: 'malformed' }; }
-  if (!body || typeof body !== 'object' || body.ok === false) return { lines: [], reason: 'not-ok' };
+  try { body = JSON.parse(replyText) as Reply; } catch { return { lines: [], kinds: [], reason: 'malformed' }; }
+  if (!body || typeof body !== 'object' || body.ok === false) return { lines: [], kinds: [], reason: 'not-ok' };
   const relevance = body.relevance;
-  if (relevance?.relevant === false) return { lines: [], reason: 'unrelated' };
+  if (relevance?.relevant === false) return { lines: [], kinds: [], reason: 'unrelated' };
   if (config.minSimilarity !== undefined) {
     // A floor needs a number to compare: a reply without one (no verdict for this model) is not let through.
-    if (typeof relevance?.similarity !== 'number') return { lines: [], reason: 'no-similarity' };
-    if (relevance.similarity < config.minSimilarity) return { lines: [], reason: 'below-min-similarity' };
+    if (typeof relevance?.similarity !== 'number') return { lines: [], kinds: [], reason: 'no-similarity' };
+    if (relevance.similarity < config.minSimilarity) return { lines: [], kinds: [], reason: 'below-min-similarity' };
   }
   const lines: string[] = [];
+  const kinds: Recalled[] = [];
   for (const f of body.facts ?? []) {
     if (!f.subject || !f.predicate || f.object === undefined) continue;
     lines.push(capped(`${f.untrusted ? '[untrusted] ' : ''}current fact: ${inert(`${f.subject} ${f.predicate}: ${f.object}`)}${f.scope ? ` (${inert(f.scope)})` : ''}`));
+    kinds.push({ kind: 'fact' });
   }
   for (const m of body.memories ?? []) {
     // A memory the query did not match is the reply's filler: discounted by get_context's own description.
     if (!m.text || m.matched === false) continue;
     const date = typeof m.session_date === 'string' ? `${inert(m.session_date.slice(0, 10))} ` : '';
     lines.push(capped(`${m.untrusted ? '[untrusted] ' : ''}${m.replaced ? '[replaced by a later correction] ' : ''}${date}${inert(m.text)}`));
+    kinds.push({ kind: 'memory', ...(typeof m.session_date === 'string' ? { date: m.session_date } : {}) });
   }
-  return { lines, reason: lines.length === 0 ? 'empty' : 'lines' };
+  return { lines, kinds, reason: lines.length === 0 ? 'empty' : 'lines' };
 }
 
 /**
@@ -262,18 +268,18 @@ export function fitBlock(lines: string[], maxTokens: number): { context: string;
 }
 
 /** The text to inject for a get_context reply, or why there is none. */
-export function presentRecall(replyText: string, config: Pick<RecallConfig, 'maxTokens' | 'minSimilarity'>): { context: string | null; reason: string; items: string[] } {
-  const { lines, reason } = replyLines(replyText, config);
-  if (lines.length === 0) return { context: null, reason, items: [] };
+export function presentRecall(replyText: string, config: Pick<RecallConfig, 'maxTokens' | 'minSimilarity'>): { context: string | null; reason: string; items: string[]; recalled: Recalled[] } {
+  const { lines, kinds, reason } = replyLines(replyText, config);
+  if (lines.length === 0) return { context: null, reason, items: [], recalled: [] };
   const block = fitBlock(lines, config.maxTokens);
-  if (!block) return { context: null, reason: 'over-budget', items: [] };
-  return { context: block.context, reason: 'injected', items: block.items };
+  if (!block) return { context: null, reason: 'over-budget', items: [], recalled: [] };
+  return { context: block.context, reason: 'injected', items: block.items, recalled: block.indices.map(i => kinds[i]) };
 }
 
 /** The whole lookup for one prompt. Never throws, never outlives config.timeoutMs by more than a tick. */
 export async function autoRecall(prompt: string, config: RecallConfig, call: GetContextCaller): Promise<RecallResult> {
   const started = Date.now();
-  const done = (r: Omit<RecallResult, 'elapsedMs' | 'items'> & { items?: string[] }): RecallResult => ({ items: [], ...r, elapsedMs: Date.now() - started });
+  const done = (r: Omit<RecallResult, 'elapsedMs' | 'items' | 'recalled'> & { items?: string[]; recalled?: Recalled[] }): RecallResult => ({ items: [], recalled: [], ...r, elapsedMs: Date.now() - started });
   const request = recallRequest(prompt, config);
   if ('skip' in request) return done({ context: null, reason: request.skip });
   const controller = new AbortController();
@@ -407,7 +413,12 @@ export async function runHook(stdin: string, env: NodeJS.ProcessEnv = process.en
       + `A server whose embedding model has no calibrated bar never gives one; set ${FLOOR_ENV}=none for it. (Said once per endpoint.)`);
   }
   if (!result.context) return '';
-  return JSON.stringify({ hookSpecificOutput: { hookEventName: 'UserPromptSubmit', additionalContext: result.context } });
+  // The receipt (RENOR_RECALL_RECEIPT=1) is shown to the user as systemMessage: counts and dates only, never memory text.
+  const receipt = receiptOn(env) ? formatReceipt(result.recalled) : null;
+  return JSON.stringify({
+    hookSpecificOutput: { hookEventName: 'UserPromptSubmit', additionalContext: result.context },
+    ...(receipt ? { systemMessage: receipt } : {}),
+  });
 }
 
 function readStdin(): Promise<string> {

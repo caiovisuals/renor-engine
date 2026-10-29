@@ -47,3 +47,9 @@ python3 scripts/eval/beam/export-official-answers.py \
   --output ~/bench-data/beam/official-results \
   --scale 100K --name renor-answers.json
 ```
+
+## Reader presets (`beam-product-qa.py`)
+
+`--provider` is one of `fireworks` (the first runs), `nebius`, or `opencode-go` (the OpenCode Go subscription, `deepseek-v4.1-flash` at the lowest
+reasoning setting, a screening reader: US$0 metered, tokens, requests and the Go allowance of each request recorded, five errors in a row stop the run).
+A reasoning-on reader can spend the output cap on reasoning and return an empty answer: count empty answers before reading a score (LEDGER BH).
